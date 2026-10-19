@@ -147,6 +147,31 @@ def _has_unextracted_columns() -> bool:
     return row is not None
 
 
+def _has_arrangements_without_smart_name() -> bool:
+    """True while any `songs` row has an arrangement entry without a
+    `smart_name` key.
+
+    The full pass re-queues such rows (see the smart-name rule in
+    `background_scan`), but the tree-signature fast path skips that pass on a
+    settled library. Loose-folder rows indexed before the loose index stored
+    smart names are the case: without this probe they keep their old
+    duplicate names ("Combo", "Combo") until a manual Refresh. The extractors
+    write the key for every arrangement, so the probe clears itself after one
+    rescan. `json_type` gives NULL only for an absent key, not for an explicit
+    JSON null."""
+    try:
+        row = appstate.meta_db.conn.execute(
+            "SELECT 1 FROM songs, json_each(songs.arrangements) "
+            "WHERE json_type(json_each.value, '$.smart_name') IS NULL LIMIT 1"
+        ).fetchone()
+    except Exception as e:
+        # Same contract as the column probe: a failure costs at most a
+        # delayed backfill, never the scan.
+        log.debug("scan: smart-name probe failed: %s", e)
+        return False
+    return row is not None
+
+
 def _record_dir_signature(all_songs, dlc: Path) -> None:
     sig = _stat_dirs(dlc, _library_dirs(all_songs, dlc))
     if sig is not None:   # a dir vanished mid-scan → skip; next scan is full
@@ -244,7 +269,8 @@ def background_scan(force: bool = False):
     # `force` (manual Refresh) always does the full pass. Seeding above is
     # idempotent — it only writes when a builtin is missing — so it does not
     # perturb the mtimes on a settled library.
-    if not force and not _has_unextracted_columns():
+    if (not force and not _has_unextracted_columns()
+            and not _has_arrangements_without_smart_name()):
         stored = _load_dir_signature()
         if stored is not None and stored.get("dlc") == str(dlc):
             current = _stat_dirs(dlc, stored["dirs"].keys())

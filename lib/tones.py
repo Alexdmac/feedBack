@@ -27,7 +27,7 @@ def tokens(s: str) -> set[str]:
     Used for fuzzy arrangement↔XML matching: arrangement names carry spaces
     ("Bonus Lead") while file stems are underscored ("song_bonus_lead"), and a
     plain substring check is ambiguous ("lead" is a substring of "bonuslead").
-    Shared with the playback path in `server.py` so the two stay consistent.
+    The XML tone lookup in lib/routers/ws_highway.py uses it.
     """
     return {t for t in re.split(r"[^a-z0-9]+", (s or "").lower()) if t}
 

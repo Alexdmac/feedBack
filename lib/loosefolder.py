@@ -26,6 +26,11 @@ import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from song import (
+    Arrangement, arrangement_properties, compute_smart_names,
+    distinct_arrangement_names,
+)
+
 AUDIO_NAMES = ["audio.wem", "song.wem"]
 # Match every extension server.get_song_art is prepared to serve
 # (jpeg/png/webp). Without `.jpeg`/`.webp`, loose folders shipping
@@ -206,6 +211,13 @@ def _parse_xml_meta(xml_path: Path) -> dict:
         except (ValueError, TypeError):
             pass
 
+        # Path flags for the smart name, read the same way as the player
+        # reads them. A bad flag value must not drop the arrangement.
+        try:
+            arr_props = arrangement_properties(root)
+        except (ValueError, OverflowError):
+            arr_props = {}
+
         return {
             "title":          txt("title"),
             "artist":         txt("artistName"),
@@ -214,20 +226,49 @@ def _parse_xml_meta(xml_path: Path) -> dict:
             "duration":       duration,
             "tuning_offsets": offsets,
             "arr_from_tag":   arr_from_tag,  # may be None
+            "arr_props":      arr_props,
         }
     except Exception:
         return {}
+
+
+def _name_arrangements(arrangements: list[dict], props_by_file: dict) -> None:
+    """Set the smart name and a distinct display name of each entry, in place.
+
+    The smart name comes from the <arrangementProperties> path flags of the
+    XML file that the entry names, as in the player. An entry that has a
+    string ``smart_name`` (from manifest.json) keeps it. If two or more
+    entries have the same name (two "Combo" parts), the names get a number:
+    "Combo", "Combo 2" (see ``song.distinct_arrangement_names``). The player
+    numbers its names the same way, so the library and the arrangement
+    switcher agree. The ``type`` and ``index`` keys do not change: the sort
+    order and the role tunings use ``type``, and the play statistics use
+    ``index``.
+    """
+    computed = compute_smart_names([
+        Arrangement(name=a["name"], **props_by_file.get(a["file"], {}))
+        for a in arrangements
+    ])
+    smart = [a["smart_name"] if isinstance(a.get("smart_name"), str) else sn
+             for a, sn in zip(arrangements, computed)]
+    names = distinct_arrangement_names([a["name"] for a in arrangements], smart)
+    for a, sn, name in zip(arrangements, smart, names):
+        a["smart_name"] = sn
+        a["name"] = name
 
 
 def _detect_arrangements(path: Path) -> tuple[list[dict], dict]:
     """
     Parse all arrangement XMLs.
     Returns (arrangements_list, shared_meta).
+    Each arrangement has `type`, `name`, `file`, `index` and `smart_name`.
+    `_name_arrangements` makes the names distinct.
     shared_meta contains title/artist/album/year/duration/tuning_offsets
     sourced from the highest-priority arrangement (lead > combo > rhythm >
     bass) — picking the guitar tuning when both bass and lead are present —
     plus `bass_tuning_offsets` from the first bass arrangement (None when the
-    folder has none), so the index can carry both tunings.
+    folder has none), so the index can carry both tunings. `arr_props` holds
+    the path flags of each arrangement XML by file name.
     """
     arrangements = []
     # Track which arrangement priority sourced shared_meta so a later,
@@ -237,6 +278,8 @@ def _detect_arrangements(path: Path) -> tuple[list[dict], dict]:
     # First tuning seen per arrangement ROLE, kept alongside the guitar-first
     # song tuning so the library can answer for the part a player plays.
     role_tunings: dict[str, list[int] | None] = {"bass": None, "rhythm": None}
+    # <arrangementProperties> path flags per XML file name, for smart names.
+    props_by_file: dict[str, dict] = {}
 
     for xml in sorted(_iter_local_xmls(path)):
         # Trust the XML root over the filename — a custom named
@@ -278,6 +321,7 @@ def _detect_arrangements(path: Path) -> tuple[list[dict], dict]:
                 and meta.get("tuning_offsets")):
             role_tunings[arr_type] = list(meta["tuning_offsets"])
 
+        props_by_file[xml.name] = meta.get("arr_props") or {}
         arrangements.append({
             "type":     arr_type,
             "name":     arr_name,
@@ -289,9 +333,12 @@ def _detect_arrangements(path: Path) -> tuple[list[dict], dict]:
     for i, a in enumerate(arrangements):
         a["index"] = i
         del a["priority"]
+    _name_arrangements(arrangements, props_by_file)
 
     for role, offs in role_tunings.items():
         shared_meta[f"{role}_tuning_offsets"] = offs
+    # extract_meta needs the flags again when manifest.json gives the list.
+    shared_meta["arr_props"] = props_by_file
     return arrangements, shared_meta
 
 
@@ -434,6 +481,9 @@ def extract_meta(path: Path, dlc_root: Path | None = None) -> dict:
 
     manifest_arr = _validate_manifest_arrangements(manifest.get("arrangements"))
     if manifest_arr is not None:
+        # The manifest list replaces the parsed list, but its entries get
+        # smart names and distinct names in the same way.
+        _name_arrangements(manifest_arr, xml_meta.get("arr_props") or {})
         arrangements = manifest_arr
 
     audio = find_audio(path)
