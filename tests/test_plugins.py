@@ -3331,7 +3331,9 @@ def asset_client(tmp_path, reset_plugin_state):
 
     plugin_dir = tmp_path / "stems"
     (plugin_dir / "assets" / "sub").mkdir(parents=True)
-    (plugin_dir / "assets" / "worklet.js").write_text("registerProcessor('x', class {});\n")
+    # Bytes, not write_text: the route serves the file verbatim, and text mode
+    # would write "\r\n" on Windows while the test expects "\n".
+    (plugin_dir / "assets" / "worklet.js").write_bytes(b"registerProcessor('x', class {});\n")
     (plugin_dir / "assets" / "plugin.css").write_text(".x-[11px]{font-size:11px}\n")
     (plugin_dir / "assets" / "sub" / "data.bin").write_bytes(b"\x00\x01\x02")
     # A sibling Python module OUTSIDE assets/ that must never be reachable.

@@ -25,6 +25,7 @@ update `BUNDLED_ROOTS` below.
 import ast
 import importlib.util
 import pathlib
+import sysconfig
 
 import pytest
 
@@ -33,6 +34,15 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # Directories every packaging path copies wholesale, plus the files copied by name.
 BUNDLED_ROOTS = ("lib", "plugins", "data", "static")
 BUNDLED_FILES = ("server.py", "main.py")
+
+# Where the running interpreter keeps the stdlib and installed packages. A
+# virtualenv inside the repo (`uv venv .venv`, as scripts/run-local.ps1 sets up)
+# puts site-packages under REPO_ROOT, so these must be ruled out before the repo
+# check or `fastapi` would count as first-party.
+_INTERPRETER_DIRS = {
+    pathlib.Path(sysconfig.get_path(key)).resolve()
+    for key in ("stdlib", "platstdlib", "purelib", "platlib")
+}
 
 
 def _server_toplevel_imports():
@@ -74,6 +84,8 @@ def _first_party_origin(name):
     if not origin.is_absolute():
         return None                              # a sentinel, not a real path
     origin = origin.resolve()
+    if any(origin.is_relative_to(d) for d in _INTERPRETER_DIRS):
+        return None                              # stdlib or an installed dependency
     try:
         origin.relative_to(REPO_ROOT)
     except ValueError:
