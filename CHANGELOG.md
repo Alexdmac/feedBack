@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Eleven offline practice plugins are bundled.** From the got-feedback
+  plugin repos: Metronome, Section Map, Step Mode, Fretboard View, Tab View,
+  Jumping Tab, Practice Journal, Setlists, Song Preview, Themes and Lyrics
+  Karaoke. Tab View's alphaTab renderer (1.8.2, MPL-2.0, Bravura font OFL)
+  now ships in `plugins/tabview/assets/vendor/alphatab` instead of loading
+  from jsDelivr, so it works offline. Metronome's upstream script had a
+  top-level `return` that is a syntax error in the browser, which kept it
+  from loading at all; that is fixed here.
 - **Tray launcher for Windows.** `scripts/rockstar_tray.py` runs the server
   with no console window behind a RockStar tray icon (Open RockStar, Open log,
   Quit), so you can see that the app is running and stop it cleanly. A second

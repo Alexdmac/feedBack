@@ -1,0 +1,10 @@
+{
+  "id": "fretboard",
+  "name": "Fretboard View",
+  "version": "1.0.0",
+  "private": false,
+  "script": "screen.js",
+  "category": "practice",
+  "description": "Interactive fretboard reference and note trainer.",
+  "icon": "assets/thumb.svg"
+}

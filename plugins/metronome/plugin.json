@@ -1,0 +1,10 @@
+{
+  "id": "metronome",
+  "name": "Metronome",
+  "version": "1.0.0",
+  "private": false,
+  "script": "screen.js",
+  "category": "practice",
+  "description": "Built-in metronome and count-in.",
+  "icon": "assets/thumb.svg"
+}
