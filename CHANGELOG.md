@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Tray launcher for Windows.** `scripts/rockstar_tray.py` runs the server
+  with no console window behind a RockStar tray icon (Open RockStar, Open log,
+  Quit), so you can see that the app is running and stop it cleanly. A second
+  start only opens the browser. `scripts/install-tray-shortcut.ps1` installs
+  the tray packages (`requirements-tray.txt`) and adds Desktop and Start menu
+  shortcuts (`-Startup` also starts it at sign-in, `-Port` picks the port).
+  `main.server_options()` now holds the uvicorn settings both entry points use.
+- **Note detection is bundled.** `plugins/note_detect` (from
+  got-feedback/feedBack-plugin-notedetect 1.32.0, MIT) scores playing from your
+  mic, feeds the live HUD, stats and achievements, and marks each miss as
+  early, late, sharp, flat or not played.
+- **Import Rocksmith packs in the app.** The new `pack_import` plugin converts
+  dropped or chosen `.psarc` files, or a file or folder already on the PC, with
+  `tools/psarc_import`, retries multi-song packs as song packs, and rescans the
+  library. Dropping a `.psarc` on the library's add-songs picker sends it there.
+  Windows only (it needs Rocksmith 2014 DLC Builder).
 - **Core reader for source rigs (feedpak 1.18.0).** A pack can declare what a
   MIDI part should sound like by binding a rig; core now reads that binding and
   hands it to the client instead of dropping it. Three parts: the

@@ -14,6 +14,16 @@ if (typeof self !== 'undefined') {
     };
 }
 
+// Detector confidence (0..1) from the cumulative-mean-normalised difference
+// function (CMNDF) value at the chosen period: 1 - d'(tau), clamped. A clean
+// periodic signal dips close to 0 (confidence ≈ 1); noise / aperiodic input
+// stays near 1 (confidence ≈ 0). Same definition as Trace Tuner's YIN
+// confidence (https://github.com/Fannon/trace-tuner, MIT). Non-finite → 0.
+function _yinConfidence(cmndfAtTau) {
+    if (!Number.isFinite(cmndfAtTau)) return 0;
+    return Math.max(0, Math.min(1, 1 - cmndfAtTau));
+}
+
 function _yinDetect(buffer, sampleRate) {
     const threshold = 0.15;
     const halfLen = Math.floor(buffer.length / 2);
@@ -81,9 +91,9 @@ function _yinDetect(buffer, sampleRate) {
     // negated test also rejects NaN.
     if (!(betterTau >= tau - 1 && betterTau <= tau + 1)) betterTau = tau;
 
-    return { freq: sampleRate / betterTau, confidence: 1 - yinBuffer[tau], rms };
+    return { freq: sampleRate / betterTau, confidence: _yinConfidence(yinBuffer[tau]), rms };
 }
 
 // Allow direct import in Node.js test environments; harmless in browser workers
 // where the `module` global is undefined.
-if (typeof module !== 'undefined') module.exports = { _yinDetect };
+if (typeof module !== 'undefined') module.exports = { _yinDetect, _yinConfidence };
