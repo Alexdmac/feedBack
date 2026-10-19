@@ -1129,9 +1129,9 @@ def _inject_tones(xml_str: str, tone_events: list[tuple[float, str]]) -> str:
     except _ET.ParseError:
         return xml_str  # don't corrupt XML on parse failure
 
-    # Record the initial tone as <tonebase> (unless one already exists) so tone
-    # extraction (lib/tones.py::_xml_tone_changes) and loose-XML playback know
-    # the base tone instead of leaving it empty.
+    # Record the initial tone as <tonebase>, unless one already exists. Then
+    # the loose-XML playback in lib/routers/ws_highway.py has a base tone, not
+    # an empty one.
     _base_el = root.find('tonebase')
     if _base_el is None:
         _ET.SubElement(root, 'tonebase').text = tone_events[0][1]

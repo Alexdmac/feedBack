@@ -848,9 +848,9 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             # be paired exactly (RS names the JSON and XML with the same stem).
             arr_tone_names = {}  # the SELECTED arrangement's own Tone_A..D only
             matched_stem = None
-            # Strip + lowercase both sides when matching ArrangementName,
-            # mirroring lib/tones.py — a manifest with padded whitespace
-            # must not fall through to an unrelated arrangement.
+            # Strip and lowercase both sides of the ArrangementName match.
+            # Without this, a manifest name with padded whitespace does not
+            # match, and the lookup can use an unrelated arrangement.
             arr_name_lower = arr.name.strip().lower() if arr else ""
 
             def _manifest_entries(path):
@@ -893,8 +893,9 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                             continue
                         # Only the SELECTED arrangement's own Tone_A..D — never
                         # borrowed from another manifest. An unrelated map would
-                        # mislabel `N/A` tone-change markers; `Tone {id}` is the
-                        # correct fallback (matching lib/tones.py).
+                        # give `N/A` tone-change markers wrong names. When the
+                        # map has no name for an id, `Tone {id}` is the correct
+                        # fallback.
                         return _tone_names(attrs), jf.stem.lower()
                 return None
 
@@ -918,15 +919,15 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             # Parse XMLs. When the arrangement has a recorded XML file
             # (`own_xml`), use only that file. Else prefer the XML paired with
             # the matched manifest (identical stem). When no manifest matched
-            # (loose/custom song), fall back to a name-token match — but rank
-            # by how few *extra* stem tokens a candidate carries, mirroring
-            # lib/tones.py: {"lead"} is a subset of both `song_lead` and
-            # `song_bonus_lead`, so a plain subset test still ties. A unique
-            # fewest-extra match wins; an exact tie among token candidates is
-            # treated as ambiguous — `_token_ambiguous` then suppresses the
-            # rank-2 best-effort fallback, so no arrangement's tone timeline
-            # is guessed at (matching lib/tones.py, which attaches nothing on
-            # a tie). The tokenizer is in lib/tones.py.
+            # (loose or custom song), use a match on the name tokens from
+            # `tokens()` in lib/tones.py. A candidate XML must have all tokens
+            # of the arrangement name. A plain subset test gives a tie:
+            # {"lead"} is a subset of both `song_lead` and `song_bonus_lead`.
+            # Thus rank the candidates by the number of *extra* stem tokens.
+            # The unique candidate with the fewest extra tokens wins. An exact
+            # tie is ambiguous. Then `_token_ambiguous` stops the rank-2
+            # best-effort fallback, so the lookup does not guess a tone
+            # timeline.
             from tones import tokens as _name_tokens
             _arr_tokens = _name_tokens(arr.name) if arr else set()
             _token_pick = None
