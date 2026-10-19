@@ -45,6 +45,12 @@ plugins/minigames/__pycache__/
 !plugins/tuner/
 !plugins/tuner/**
 plugins/tuner/__pycache__/
+!plugins/note_detect/
+!plugins/note_detect/**
+plugins/note_detect/__pycache__/
+!plugins/pack_import/
+!plugins/pack_import/**
+plugins/pack_import/__pycache__/
 !plugins/input_setup/
 !plugins/input_setup/**
 !plugins/drum_highway_3d/
