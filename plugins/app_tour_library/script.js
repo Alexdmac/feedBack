@@ -10,7 +10,7 @@
         id: 'library-provider',
         selector: '#lib-provider',
         title: 'Choose a library',
-        content: 'Use this menu to switch between your local library and any connected remote libraries. FeedBack remembers the last library you picked.',
+        content: 'Use this menu to switch between your local library and any connected remote libraries. RockStar remembers the last library you picked.',
         shape: 'spotlight',
         position: 'bottom',
         waitFor: '#lib-provider'

@@ -527,6 +527,9 @@ def transcribe_vocals_remote(
     # connection or an unreadable stem file would otherwise surface as requests.RequestException
     # or OSError and escape the one handler written to log-and-continue — turning "this song's
     # lyrics failed" into "the whole batch died".
+    from netpolicy import OFFLINE_MESSAGE, network_allowed
+    if not network_allowed():
+        raise RuntimeError(OFFLINE_MESSAGE)
     try:
         with open(vocals_path, "rb") as f:
             resp = requests.post(

@@ -17,8 +17,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0f172a">
-    <meta name="description" content="fee[dB]ack — practice loop for your guitar library: play along, track accuracy, level up.">
-    <title>fee[dB]ack</title>
+    <meta name="description" content="RockStar — practice loop for your guitar library: play along, track accuracy, level up.">
+    <title>RockStar</title>
     <!-- Splitscreen pop-out windows (`?ssFollower=1`) get driven into follower
          mode by the splitscreen plugin AFTER it loads, which is well after
          the parser has rendered v3-sidebar / v3-topbar / #player-controls /
@@ -144,7 +144,7 @@
          the inline brand is the no-JS fallback. -->
     <aside id="v3-sidebar" class="w-64 border-r border-fb-border/50 flex-col shrink-0 hidden md:flex">
         <div id="v3-brand" class="p-6">
-            <img src="/static/v3/brand/feedback-logo-light.png" alt="fee[dB]ack" style="width:100%;height:auto;display:block">
+            <span class="font-extrabold tracking-tight text-fb-text text-3xl">Rock<span class="text-fb-primary">Star</span></span>
         </div>
         <nav id="v3-nav" class="flex-1 overflow-y-auto px-3 pb-6 space-y-6" aria-label="Primary"></nav>
     </aside>
@@ -185,7 +185,7 @@
         <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
             <div class="flex items-end gap-1.5">
                 <a href="#" onclick="showScreen('home');return false" class="text-xl font-bold bg-gradient-to-r from-accent-light to-purple-400 bg-clip-text text-transparent">
-                    FeedBack
+                    RockStar
                 </a>
                 <span id="app-version" class="text-xs text-gray-600 mb-0.5"></span>
             </div>
@@ -643,12 +643,12 @@
                             <span class="fb-srow-icon"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M19 5a9 9 0 010 14M5 9v6h4l5 5V4L9 9H5z"/></svg></span>
                             <div class="fb-srow-main">
                                 <div class="fb-srow-title">Live guitar tone source</div>
-                                <div class="fb-srow-desc">Choose External/Spark if your guitar tone comes from hardware like Spark LIVE. fee[dB]ack still scores your playing but won't warn that no internal amp tone is loaded.</div>
+                                <div class="fb-srow-desc">Choose External/Spark if your guitar tone comes from hardware like Spark LIVE. RockStar still scores your playing but won't warn that no internal amp tone is loaded.</div>
                             </div>
                         </div>
                         <select id="setting-live-guitar-tone-source"
                             class="fb-srow-wide bg-dark-700 border border-gray-800 rounded-xl px-3 py-2.5 text-sm text-gray-300 outline-none">
-                            <option value="internal">fee[dB]ack internal tone</option>
+                            <option value="internal">RockStar internal tone</option>
                             <option value="external_hardware">External amp / hardware pedalboard</option>
                             <option value="spark_control_x">Spark LIVE + Spark Control X</option>
                         </select>
@@ -760,7 +760,7 @@
                         <div class="fb-srow">
                             <div class="fb-srow-main">
                                 <div class="fb-srow-title">Fullscreen</div>
-                                <div class="fb-srow-desc">Run fee[dB]ack in fullscreen mode. On macOS, changes take effect on the next launch.</div>
+                                <div class="fb-srow-desc">Run RockStar in fullscreen mode. On macOS, changes take effect on the next launch.</div>
                             </div>
                             <div class="fb-srow-control">
                                 <label class="fb-switch">
@@ -774,7 +774,7 @@
                     <div class="fb-srow fb-srow-stack">
                         <div class="fb-srow-main">
                             <div class="fb-srow-title">Library folder path</div>
-                            <div class="fb-srow-desc">The folder fee[dB]ack scans for your song library.</div>
+                            <div class="fb-srow-desc">The folder RockStar scans for your song library.</div>
                         </div>
                         <div class="fb-srow-control">
                             <input type="text" id="dlc-path" placeholder="/path/to/your/library"
@@ -904,7 +904,7 @@
                         <div class="fb-srow-main">
                             <div class="fb-srow-title">About</div>
                             <div class="fb-srow-desc">
-                                fee[dB]ack <span id="app-version-about" class="text-gray-500"></span> · Licensed under
+                                RockStar <span id="app-version-about" class="text-gray-500"></span> · based on fee[dB]ack · Licensed under
                                 <a id="about-license-link" href="https://github.com/got-feedback/feedback/blob/main/LICENSE" target="_blank" rel="noopener" class="text-accent hover:text-accent-light underline">GNU AGPL v3.0</a> ·
                                 <a id="about-source-link" href="https://github.com/got-feedback/feedback" target="_blank" rel="noopener" class="text-accent hover:text-accent-light underline">Source code repository</a>.
                                 Free software — if you run a modified version that interacts with users over a network, you must make the modified source available to those users.
@@ -1169,7 +1169,7 @@
                     <span class="v3-pop-label">Guitar tone</span>
                     <select id="player-live-guitar-tone-source"
                         class="v3-pop-select max-w-[210px]">
-                        <option value="internal">fee[dB]ack internal tone</option>
+                        <option value="internal">RockStar internal tone</option>
                         <option value="external_hardware">External amp / hardware pedalboard</option>
                         <option value="spark_control_x">Spark LIVE + Spark Control X</option>
                     </select>

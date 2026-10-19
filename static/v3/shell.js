@@ -368,7 +368,7 @@
     // ── Boot ────────────────────────────────────────────────────────────────
     async function boot() {
         var _v3brand = document.getElementById('v3-brand');
-        if (_v3brand) _v3brand.innerHTML = '<img src="/static/v3/brand/feedback-logo-light.png" alt="fee[dB]ack" style="width:100%;height:auto;display:block">';
+        if (_v3brand) _v3brand.innerHTML = window.fbBrand ? window.fbBrand.wordmarkHTML({ size: 'text-3xl' }) : 'RockStar';
         renderSidebar();
         renderTopbar();
         ensureBackdrop();

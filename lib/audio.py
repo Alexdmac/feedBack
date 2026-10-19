@@ -467,9 +467,17 @@ def convert_wem(wem_path: str, output_base: str) -> str:
     ww2ogg = shutil.which("ww2ogg")
     if ww2ogg:
         ogg = output_base + ".ogg"
+        ww2ogg_cmd = [ww2ogg, wem_path, "-o", ogg]
+        # Rocksmith WEMs need the aoTuV codebooks. Without --pcb, ww2ogg looks
+        # for packed_codebooks.bin in the CWD and exits 1 when it is not there.
+        # Use the codebook file next to the binary (the DLC Builder Tools
+        # folder ships it).
+        pcb = Path(ww2ogg).parent / "packed_codebooks_aoTuV_603.bin"
+        if pcb.is_file():
+            ww2ogg_cmd += ["--pcb", str(pcb)]
         try:
             r = subprocess.run(
-                [ww2ogg, wem_path, "-o", ogg],
+                ww2ogg_cmd,
                 capture_output=True,
                 timeout=120,
             )
@@ -482,6 +490,15 @@ def convert_wem(wem_path: str, output_base: str) -> str:
             r = None
         if r is not None:
             if r.returncode == 0 and os.path.exists(ogg) and os.path.getsize(ogg) > 0:
+                # ww2ogg leaves wrong granule positions, so the reported
+                # duration is wrong (327 s for a 288 s song). revorb rewrites
+                # them in place. Skip it if it is not on PATH.
+                revorb = shutil.which("revorb")
+                if revorb:
+                    try:
+                        subprocess.run([revorb, ogg], capture_output=True, timeout=120)
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        log.warning("revorb failed (%s): %s", revorb, exc)
                 return ogg
             stderr = (r.stderr or b'').decode(errors='replace').strip() or f"exit code {r.returncode}"
             errors.append(

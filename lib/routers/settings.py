@@ -1079,7 +1079,7 @@ def import_settings(bundle: dict):
         applied_core.append(relpath)
     if db_restore_staged:
         warnings.append(
-            "library database restored; restart FeedBack to load it "
+            "library database restored; restart RockStar to load it "
             "(scores, favorites, playlists, and play history)"
         )
 

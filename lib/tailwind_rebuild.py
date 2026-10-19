@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 
 from env_compat import getenv_compat
+from netpolicy import network_allowed
 
 log = logging.getLogger("feedBack.tailwind")
 
@@ -146,7 +147,7 @@ def _tailwind_cmd() -> list[str] | None:
     if exe:
         return [exe]
     npx = shutil.which("npx")
-    if npx:
+    if npx and network_allowed():
         return [npx, "-y", f"tailwindcss@{_TAILWIND_VERSION}"]
     return None
 

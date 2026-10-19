@@ -1,6 +1,6 @@
 {
-  "name": "fee[dB]ack",
-  "short_name": "feedback",
+  "name": "RockStar",
+  "short_name": "RockStar",
   "description": "Practice loop for your guitar library — play along, track accuracy, level up.",
   "start_url": "/v3",
   "display": "standalone",

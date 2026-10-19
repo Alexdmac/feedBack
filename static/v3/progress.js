@@ -103,7 +103,7 @@
             '<div class="flex items-center justify-between gap-3 flex-wrap">' +
             '<div class="min-w-0">' +
             '<h3 class="text-lg font-bold text-fb-text">Calibration challenge</h3>' +
-            '<p class="text-sm text-fb-textDim mt-1">Play the <span class="text-fb-text">fee[dB]ack Diagnostic</span> with note detection and finish at ' +
+            '<p class="text-sm text-fb-textDim mt-1">Play the <span class="text-fb-text">RockStar Diagnostic</span> with note detection and finish at ' +
             '<span class="text-fb-text font-semibold">100% accuracy</span>' +
             (pending ? ' to reach Mastery Rank 1.' : ' to prove your setup (you skipped this — rank already granted).') + '</p></div>' +
             '<div class="flex items-center gap-2 shrink-0">' +

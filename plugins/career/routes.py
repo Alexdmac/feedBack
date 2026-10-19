@@ -943,6 +943,9 @@ def setup(app, context):
         pack = venue.get("pack")
         if not _pack_published(pack):
             raise HTTPException(404, "No pack published for this venue yet.")
+        from netpolicy import OFFLINE_MESSAGE, network_allowed
+        if not network_allowed():
+            raise HTTPException(503, OFFLINE_MESSAGE)
         stars_total, _, _ = _stars()
         if stars_total < venue["star_threshold"]:
             raise HTTPException(403, "Venue not unlocked yet.")

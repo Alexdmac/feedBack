@@ -1,10 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="fee[dB]ack">
-  <!-- fee[dB]ack app mark: the [dB] motif (decibel pun) on the navy tile.
-       Sky dB with dimmer brackets; legible down to favicon sizes. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RockStar">
+  <!-- RockStar app mark: a sky star on the navy tile. Legible down to favicon sizes. -->
   <rect width="64" height="64" rx="14" fill="#111827"/>
-  <text x="32" y="33" text-anchor="middle" dominant-baseline="central"
-        font-family="Inter, system-ui, -apple-system, Segoe UI, sans-serif"
-        font-weight="800" font-size="30" letter-spacing="-1">
-    <tspan fill="#94a3b8">[</tspan><tspan fill="#0ea5e9">dB</tspan><tspan fill="#94a3b8">]</tspan>
-  </text>
+  <polygon fill="#0ea5e9" points="32.00,12.10 37.82,26.09 52.92,27.30 41.42,37.16 44.93,51.90 32.00,44.00 19.07,51.90 22.58,37.16 11.08,27.30 26.18,26.09"/>
 </svg>

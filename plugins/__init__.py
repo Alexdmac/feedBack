@@ -999,6 +999,11 @@ def _install_requirements(plugin_dir: Path, plugin_id: str):
     if marker.exists() and marker.read_text().strip() == req_hash:
         return True  # Already installed, same requirements
 
+    from netpolicy import network_allowed
+    if not network_allowed():
+        log.warning("Plugin %r needs its requirements installed, but offline mode blocks pip", plugin_id)
+        return False
+
     log.info("Installing requirements for plugin %r (this can take a while for large deps)...", plugin_id)
     try:
         result = subprocess.run(
@@ -2061,6 +2066,9 @@ def _check_plugin_update(plugin_dir: Path) -> dict | None:
     git_dir = plugin_dir / ".git"
     if not git_dir.exists():
         return None
+    from netpolicy import network_allowed
+    if not network_allowed():
+        return None
     try:
         # Fetch latest from remote (quick, refs only)
         subprocess.run(
@@ -2264,6 +2272,9 @@ def register_plugin_api(app: FastAPI):
                 git_dir = p["_dir"] / ".git"
                 if not git_dir.exists():
                     return {"error": "Not a git repository"}
+                from netpolicy import OFFLINE_MESSAGE, network_allowed
+                if not network_allowed():
+                    return {"error": OFFLINE_MESSAGE}
                 cwd = str(p["_dir"])
                 try:
                     # Stash any local modifications so pull doesn't fail

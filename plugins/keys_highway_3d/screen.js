@@ -26,7 +26,8 @@
      * ====================================================================== */
 
     const THREE_URL = '/static/vendor/three/three.module.min.js';
-    const THREE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
+    // Offline mode (window.FEEDBACK_OFFLINE): no CDN fallback, retry the vendored copy.
+    const THREE_CDN = window.FEEDBACK_OFFLINE ? THREE_URL : 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
 
     const SCALE = 2.25;
     const K = SCALE / 300;
