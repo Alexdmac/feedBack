@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 from routers import settings as settings_router
 import io
+import json
 import sys
 import zipfile
 from pathlib import Path
@@ -121,7 +122,11 @@ def test_background_scan_discovers_both_suffixes(tmp_path, scan_server):
     (dlc / "new.feedpak").write_bytes(b"")
     (dlc / "legacy.sloppak").write_bytes(b"")
     (dlc / "ignore.zip").write_bytes(b"")  # not a package — must be skipped
-    (tmp_path / "config.json").write_text('{"dlc_dir": "%s"}' % dlc)
+    # json.dumps, not %s: a Windows path interpolated raw produces invalid JSON
+    # escapes (\U, \A), the config silently fails to parse, and the scan then
+    # finds no DLC folder and extracts nothing.
+    (tmp_path / "config.json").write_text(
+        json.dumps({"dlc_dir": str(dlc)}), encoding="utf-8")
 
     seen: list[str] = []
 
@@ -149,7 +154,8 @@ def test_dir_signature_fast_path_skips_unchanged_tree(tmp_path, scan_server):
     dlc = tmp_path / "dlc"
     dlc.mkdir()
     (dlc / "a.feedpak").write_bytes(b"")
-    (tmp_path / "config.json").write_text('{"dlc_dir": "%s"}' % dlc)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"dlc_dir": str(dlc)}), encoding="utf-8")
 
     scan = importlib.import_module("scan")
     seen: list[str] = []

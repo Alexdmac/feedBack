@@ -36,10 +36,12 @@ def test_write_runtime_config_covers_user_dir_and_excludes_highway(tmp_path, mon
     cfg = tw._write_runtime_config(tmp_path)
     text = cfg.read_text()
 
+    # The config holds forward-slash paths even on Windows (Tailwind's globs
+    # need them), so compare against as_posix(), not str().
     assert "require(" in text                       # reuses base config
-    assert str(app / "static") in text              # core static scanned
-    assert str(app / "plugins") in text             # baked-in plugins scanned
-    assert str(user) in text                        # runtime user plugins scanned
+    assert (app / "static").as_posix() in text      # core static scanned
+    assert (app / "plugins").as_posix() in text     # baked-in plugins scanned
+    assert user.as_posix() in text                  # runtime user plugins scanned
     assert "highway_3d" in text                     # exclusion preserved
 
 
@@ -51,7 +53,7 @@ def test_write_runtime_config_omits_user_dir_when_unset(tmp_path, monkeypatch):
     monkeypatch.delenv("FEEDBACK_PLUGINS_DIR", raising=False)
 
     text = tw._write_runtime_config(tmp_path).read_text()
-    assert str(app / "static") in text
+    assert (app / "static").as_posix() in text
     # no user dir entry beyond the app tree
     assert "userplugins" not in text
 

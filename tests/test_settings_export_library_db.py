@@ -216,7 +216,11 @@ def test_import_core_undeclared_path_skipped_not_fatal(client, server_mod, tmp_p
 
 # ── Startup swap ────────────────────────────────────────────────────────────
 
-def test_apply_pending_db_restore_swaps_and_clears_sidecars(server_mod, tmp_path):
+def test_apply_pending_db_restore_swaps_and_clears_sidecars(tmp_path):
+    # No server_mod here: the swap runs at startup, before the DB connection
+    # opens. A live server's WAL connection keeps -shm memory-mapped and the DB
+    # open, and on Windows that makes the -shm write below fail (Errno 22) and
+    # the delete of web_library.db fail (WinError 32).
     main = tmp_path / "web_library.db"
     new_db = _valid_db_bytes(tmp_path, name="new.db", marker="new")
     # Simulate a live DB with stale WAL sidecars + a (valid) staged restore.
