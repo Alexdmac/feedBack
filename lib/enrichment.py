@@ -39,6 +39,7 @@ from appconfig import _load_config
 from dlc_paths import _get_dlc_dir, _resolve_dlc_path
 from env_compat import env_flag_compat as _env_flag
 from metadata_db import _artist_title_from_filename
+from netpolicy import network_allowed
 
 import logging
 log = logging.getLogger("feedBack.server")
@@ -138,7 +139,8 @@ def _enrich_network_enabled() -> bool:
     marks the test/CI environment, where pytest must never reach the network
     no matter what a test triggers."""
     return not (_env_flag("FEEDBACK_ENRICH_OFFLINE")
-                or _env_flag("FEEDBACK_SKIP_STARTUP_TASKS"))
+                or _env_flag("FEEDBACK_SKIP_STARTUP_TASKS")
+                or not network_allowed())
 
 
 def _mb_http_get(path: str, params: dict) -> dict | None:

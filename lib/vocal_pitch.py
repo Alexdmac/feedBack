@@ -122,6 +122,9 @@ def extract_pitch_remote(
     # first because it inherits from OSError — listing OSError first
     # would steal the network-failure path and label it as a vocals
     # read error.
+    from netpolicy import OFFLINE_MESSAGE, network_allowed
+    if not network_allowed():
+        raise RuntimeError(OFFLINE_MESSAGE)
     try:
         with open(vocals_path, "rb") as f:
             resp = requests.post(

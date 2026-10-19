@@ -19,7 +19,8 @@
      * ====================================================================== */
 
     const THREE_URL = '/static/vendor/three/three.module.min.js';
-    const THREE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
+    // Offline mode (window.FEEDBACK_OFFLINE): no CDN fallback, retry the vendored copy.
+    const THREE_CDN = window.FEEDBACK_OFFLINE ? THREE_URL : 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
 
     const PALETTES = {
         default: [
@@ -859,6 +860,9 @@
             const raw = _readStore(LS_SYNTH_VOL);
             const parsed = raw === null ? NaN : parseFloat(raw);
             if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) _synthVolume = parsed;
+            // Offline mode: the player script and kit presets come from
+            // surikov.github.io, so the pad synth stays silent.
+            if (window.FEEDBACK_OFFLINE) return;
             if (!_playerScriptLoaded) {
                 await _loadScript(WAF_PLAYER_URL);
                 _playerScriptLoaded = true;

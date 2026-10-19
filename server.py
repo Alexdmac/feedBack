@@ -14,13 +14,14 @@ from typing import ClassVar
 
 from logging_setup import configure_logging
 from env_compat import getenv_compat
+from netpolicy import network_allowed
 configure_logging()
 
 log = logging.getLogger("feedBack.server")
 
 from fastapi import FastAPI, File, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from safepath import safe_join
 from appconfig import _load_config
@@ -1715,15 +1716,31 @@ def tailwind_css(request: Request):
 app.mount("/static", _RevalidatedStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+_REMOTE_FONT_LINK_RE = re.compile(
+    r'[ \t]*<link[^>]*https://fonts\.(?:googleapis|gstatic)\.com[^>]*>[ \t]*\r?\n?')
+
+
+def _index_response():
+    """Serve the app shell. In offline mode (FEEDBACK_OFFLINE), drop the Google
+    Fonts links (the UI then uses system-ui) and set window.FEEDBACK_OFFLINE
+    so plugins skip their CDN loads."""
+    path = STATIC_DIR / "v3" / "index.html"
+    if network_allowed():
+        return FileResponse(str(path))
+    html = _REMOTE_FONT_LINK_RE.sub("", path.read_text(encoding="utf-8"))
+    html = html.replace("<head>", "<head>\n    <script>window.FEEDBACK_OFFLINE = true;</script>", 1)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/")
 def index():
-    return FileResponse(str(STATIC_DIR / "v3" / "index.html"))
+    return _index_response()
 
 
 @app.get("/v3")
 def index_v3():
     # Retained as a back-compat alias for links minted while v3 was opt-in.
-    return FileResponse(str(STATIC_DIR / "v3" / "index.html"))
+    return _index_response()
 
 
 @app.get("/pane")

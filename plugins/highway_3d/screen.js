@@ -18,7 +18,8 @@
     // same origin to avoid the first-launch CDN round-trip and to pin the
     // version against breakages from upstream Three.js drift.
     const THREE_URL = '/static/vendor/three/three.module.min.js';
-    const THREE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
+    // Offline mode (window.FEEDBACK_OFFLINE): no CDN fallback, retry the vendored copy.
+    const THREE_CDN = window.FEEDBACK_OFFLINE ? THREE_URL : 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
 
     /* ── Butterchurn audio-reactive background ──────────────────────────
      * Mounts a Butterchurn (WebGL MilkDrop) canvas BEHIND the transparent

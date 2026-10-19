@@ -187,7 +187,10 @@ def _post_to_wall(kind, payload):
     error. Mirrors the lib/lyrics_transcribe outbound pattern (explicit timeout,
     no raise on non-2xx — the caller's state machine decides)."""
     import requests  # local import: only needed when a wall is configured
+    from netpolicy import network_allowed
 
+    if not network_allowed():
+        return None  # treated as a network error: the row stays pending
     path = "/api/unlock" if kind == "unlock" else "/api/remove"
     try:
         resp = requests.post(
@@ -243,7 +246,12 @@ def _drain_loop():
 
 def _maybe_start_drain():
     global _drain_started
+    from netpolicy import network_allowed
+
     if _drain_started or not _WALL_URL:
+        return
+    if not network_allowed():
+        _state["log"].info("achievements wall drain worker not started (offline mode)")
         return
     _drain_started = True
     threading.Thread(target=_drain_loop, name="ach-wall-drain", daemon=True).start()
