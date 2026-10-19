@@ -32,6 +32,7 @@ from song import (
     chord_template_to_wire,
     chord_to_wire,
     compute_smart_names,
+    distinct_arrangement_names,
     hand_shape_to_wire,
     key_to_tonic_pc,
     load_song,
@@ -239,6 +240,14 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
 
         # Smart names are needed for smart-mode arrangement selection.
         smart_names = compute_smart_names(song.arrangements)
+        # Display names. A loose folder can have two parts with the same name
+        # (two "Combo" parts), so number the repeated names the same way as
+        # the library index does (loosefolder._name_arrangements). Keep
+        # `Arrangement.name` as it is: the tone lookup below matches it
+        # against the XML file names.
+        arr_names = [a.name for a in song.arrangements]
+        if is_loose:
+            arr_names = distinct_arrangement_names(arr_names, smart_names)
 
         # Pick arrangement: explicit request > user preference > most notes
         best = -1
@@ -286,7 +295,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                     if pref:
                         for i in bass_idxs:
                             nm = (smart_names[i] if naming_mode == "smart" and i < len(smart_names)
-                                  else getattr(song.arrangements[i], "name", ""))
+                                  else arr_names[i])
                             if nm == pref:
                                 pref_bass = i
                                 break
@@ -304,8 +313,8 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                 if naming_mode == "smart":
                     best = _pick_smart_arrangement(song.arrangements, smart_names, pref)
                 else:
-                    for i, a in enumerate(song.arrangements):
-                        if a.name == pref:
+                    for i, nm in enumerate(arr_names):
+                        if nm == pref:
                             best = i
                             break
         if best < 0:
@@ -493,7 +502,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
         arr_list = [
             {
                 "index": i,
-                "name": a.name,
+                "name": arr_names[i],
                 "smart_name": smart_names[i],
                 "notes": len(a.notes) + sum(len(c.notes) for c in a.chords),
             }
@@ -505,7 +514,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             "title": song.title,
             "artist": song.artist,
             "duration": song.song_length,
-            "arrangement": arr.name,
+            "arrangement": arr_names[best],
             "arrangement_smart_name": smart_names[best],
             "arrangement_index": best,
             # Echo the resolved naming mode so highway.js doesn't have to

@@ -21,6 +21,8 @@ from song import (
     chord_to_wire,
     sanitize_tempos,
     compute_smart_names,
+    distinct_arrangement_names,
+    arrangement_properties,
     base_open_string_midis,
     key_to_tonic_pc,
     note_from_wire,
@@ -1392,6 +1394,66 @@ def test_smart_names_arrangement_properties_defaults():
     assert arr.path_bass is False
     assert arr.bonus_arr is False
     assert arr.represent == 0
+
+
+# ── arrangement_properties ───────────────────────────────────────────────────
+
+def test_arrangement_properties_reads_the_path_flags():
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(
+        '<song><arrangementProperties pathLead="0" pathRhythm="1" pathBass="0"'
+        ' bonusArr="1" represent="0"/></song>')
+    assert arrangement_properties(root) == {
+        "path_lead": False, "path_rhythm": True, "path_bass": False,
+        "bonus_arr": True, "represent": 0,
+    }
+    # The keys are Arrangement fields, so the result can go straight in.
+    assert compute_smart_names(
+        [Arrangement(name="Combo", **arrangement_properties(root))]
+    ) == ["Bonus Rhythm"]
+
+
+def test_arrangement_properties_without_the_element_is_all_zero():
+    import xml.etree.ElementTree as ET
+    assert arrangement_properties(ET.fromstring("<song/>")) == {
+        "path_lead": False, "path_rhythm": False, "path_bass": False,
+        "bonus_arr": False, "represent": 0,
+    }
+
+
+# ── distinct_arrangement_names ───────────────────────────────────────────────
+
+def test_distinct_names_number_repeats_in_display_order():
+    # The main Lead (index 2) keeps the plain name although it is last in the
+    # list: the numbers follow the smart display order, not the list order.
+    names = ["Combo", "Combo", "Combo", "Bass"]
+    smart = ["Alt. Lead", "Rhythm", "Lead", "Bass"]
+    assert distinct_arrangement_names(names, smart) == [
+        "Combo 2", "Combo 3", "Combo", "Bass"]
+
+
+def test_distinct_names_keep_unique_names():
+    names = ["Lead", "Rhythm", "Bass"]
+    assert distinct_arrangement_names(names, names) == names
+
+
+def test_distinct_names_skip_a_number_that_is_taken():
+    # load_song names a "part real_bass_22" chart "Bass 2", so "Bass 2" can
+    # already exist next to two "Bass" parts.
+    names = ["Bass", "Bass", "Bass 2"]
+    smart = ["Bass", "Alt. Bass", "Bonus Bass"]
+    assert distinct_arrangement_names(names, smart) == ["Bass", "Bass 3", "Bass 2"]
+
+
+def test_distinct_names_use_list_order_without_smart_names():
+    assert distinct_arrangement_names(["Combo", "Combo"], [None, None]) == [
+        "Combo", "Combo 2"]
+
+
+def test_distinct_names_do_not_change_the_input_list():
+    names = ["Combo", "Combo"]
+    distinct_arrangement_names(names, ["Lead", "Rhythm"])
+    assert names == ["Combo", "Combo"]
 
 
 # ── tempos (per-chart §6.10 + shared sanitizer) ──────────────────────────────

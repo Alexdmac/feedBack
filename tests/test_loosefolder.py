@@ -343,3 +343,150 @@ def test_extract_meta_manifest_tuning_does_not_become_the_bass_tuning(tmp_path):
     meta = loosefolder.extract_meta(tmp_path)
     assert meta["tuning_offsets"] == [-2, -2, -2, -2, -2, -2]
     assert meta["bass_tuning_offsets"] is None
+
+
+# ── Distinct names for two or more parts of the same type ────────────────────
+
+_PROPS_XML = """<?xml version="1.0" encoding="utf-8"?>
+<song>
+  <title>T</title>
+  <artistName>A</artistName>
+  <albumName>Alb</albumName>
+  <albumYear>2024</albumYear>
+  <songLength>100</songLength>
+  <arrangement>{arrangement}</arrangement>
+  <offset>0</offset>
+  <tuning string0="0" string1="0" string2="0" string3="0" string4="0" string5="0"/>
+  <arrangementProperties pathLead="{lead}" pathRhythm="{rhythm}" pathBass="{bass}" bonusArr="{bonus}" represent="{represent}"/>
+</song>
+"""
+
+
+def _write_props_xml(path: Path, arrangement="Combo", *, lead=0, rhythm=0,
+                     bass=0, bonus=0, represent=0):
+    path.write_text(_PROPS_XML.format(
+        arrangement=arrangement, lead=lead, rhythm=rhythm, bass=bass,
+        bonus=bonus, represent=represent,
+    ), encoding="utf-8")
+
+
+def _by_index(meta):
+    return sorted(meta["arrangements"], key=lambda a: a["index"])
+
+
+def test_two_combo_parts_get_distinct_names(tmp_path):
+    """Two combo XMLs used to give two arrangements named "Combo". The first
+    in display order keeps "Combo" and the other one becomes "Combo 2". The
+    type, file and index of each entry do not change."""
+    (tmp_path / "audio.wem").write_bytes(b"\0")
+    _write_props_xml(tmp_path / "arr_combo1_RS2.xml", lead=1, represent=1)
+    _write_props_xml(tmp_path / "arr_combo2_RS2.xml", rhythm=1, represent=1)
+    _write_props_xml(tmp_path / "arr_bass_RS2.xml", "Bass", bass=1, represent=1)
+
+    arrs = _by_index(loosefolder.extract_meta(tmp_path))
+    assert [(a["index"], a["type"], a["file"]) for a in arrs] == [
+        (0, "combo", "arr_combo1_RS2.xml"),
+        (1, "combo", "arr_combo2_RS2.xml"),
+        (2, "bass", "arr_bass_RS2.xml"),
+    ]
+    assert [a["name"] for a in arrs] == ["Combo", "Combo 2", "Bass"]
+    assert [a["smart_name"] for a in arrs] == ["Lead", "Rhythm", "Bass"]
+
+
+def test_main_part_keeps_the_plain_name(tmp_path):
+    """`arr_lead2_RS2.xml` sorts before `arr_lead_RS2.xml`, so it gets index
+    0. The number follows the display order (the smart name), not the index:
+    the main Lead keeps "Lead" and the alternative part becomes "Lead 2"."""
+    (tmp_path / "audio.wem").write_bytes(b"\0")
+    _write_props_xml(tmp_path / "arr_lead_RS2.xml", "Lead", lead=1, represent=1)
+    _write_props_xml(tmp_path / "arr_lead2_RS2.xml", "Lead", lead=1, represent=0)
+
+    arrs = _by_index(loosefolder.extract_meta(tmp_path))
+    assert [a["file"] for a in arrs] == ["arr_lead2_RS2.xml", "arr_lead_RS2.xml"]
+    assert [a["smart_name"] for a in arrs] == ["Alt. Lead", "Lead"]
+    assert [a["name"] for a in arrs] == ["Lead 2", "Lead"]
+
+
+def test_each_repeated_type_gets_its_own_numbers(tmp_path):
+    (tmp_path / "audio.wem").write_bytes(b"\0")
+    _write_props_xml(tmp_path / "arr_combo_RS2.xml", lead=1, represent=1)
+    _write_props_xml(tmp_path / "arr_combo2_RS2.xml", lead=1)
+    _write_props_xml(tmp_path / "arr_combo3_RS2.xml", rhythm=1, represent=1)
+    _write_props_xml(tmp_path / "arr_rhythm_RS2.xml", "Rhythm", rhythm=1, bonus=1)
+    _write_props_xml(tmp_path / "arr_rhythm2_RS2.xml", "Rhythm", rhythm=1)
+    _write_props_xml(tmp_path / "arr_bass_RS2.xml", "Bass", bass=1, represent=1)
+    _write_props_xml(tmp_path / "arr_bass2_RS2.xml", "Bass", bass=1, bonus=1)
+
+    arrs = _by_index(loosefolder.extract_meta(tmp_path))
+    # Index order is type priority, then file name ("2" sorts before "_").
+    assert [a["file"] for a in arrs] == [
+        "arr_combo2_RS2.xml", "arr_combo3_RS2.xml", "arr_combo_RS2.xml",
+        "arr_rhythm2_RS2.xml", "arr_rhythm_RS2.xml",
+        "arr_bass2_RS2.xml", "arr_bass_RS2.xml",
+    ]
+    assert [a["type"] for a in arrs] == [
+        "combo", "combo", "combo", "rhythm", "rhythm", "bass", "bass"]
+    assert [a["smart_name"] for a in arrs] == [
+        "Alt. Lead", "Rhythm", "Lead", "Alt. Rhythm", "Bonus Rhythm",
+        "Bonus Bass", "Bass"]
+    assert [a["name"] for a in arrs] == [
+        "Combo 2", "Combo 3", "Combo", "Rhythm", "Rhythm 2", "Bass 2", "Bass"]
+
+
+def test_unique_names_do_not_change(tmp_path):
+    (tmp_path / "audio.wem").write_bytes(b"\0")
+    _write_props_xml(tmp_path / "arr_lead_RS2.xml", "Lead", lead=1, represent=1)
+    _write_props_xml(tmp_path / "arr_rhythm_RS2.xml", "Rhythm", rhythm=1, represent=1)
+    _write_props_xml(tmp_path / "arr_bass_RS2.xml", "Bass", bass=1, represent=1)
+
+    arrs = _by_index(loosefolder.extract_meta(tmp_path))
+    assert [a["name"] for a in arrs] == ["Lead", "Rhythm", "Bass"]
+    assert [a["smart_name"] for a in arrs] == ["Lead", "Rhythm", "Bass"]
+
+
+def test_combo_parts_without_path_flags_get_distinct_names(tmp_path):
+    """Without <arrangementProperties> the smart names come from the names
+    ("Combo" is a Lead part), and the second combo still becomes "Combo 2"."""
+    (tmp_path / "audio.wem").write_bytes(b"\0")
+    _write_min_xml(tmp_path / "arr_combo1_RS2.xml", arrangement="Combo")
+    _write_min_xml(tmp_path / "arr_combo2_RS2.xml", arrangement="Combo")
+
+    arrs = _by_index(loosefolder.extract_meta(tmp_path))
+    assert [a["name"] for a in arrs] == ["Combo", "Combo 2"]
+    assert [a["smart_name"] for a in arrs] == ["Lead", "Alt. Lead"]
+
+
+def test_bad_represent_value_keeps_the_arrangement(tmp_path):
+    """A bad flag value must not drop the arrangement from the index. The
+    flags of that XML are then all zero, so its smart name comes from its
+    name."""
+    (tmp_path / "audio.wem").write_bytes(b"\0")
+    _write_props_xml(tmp_path / "arr_combo1_RS2.xml", lead=1, represent=1)
+    _write_props_xml(tmp_path / "arr_combo2_RS2.xml", rhythm=1, represent="abc")
+
+    arrs = _by_index(loosefolder.extract_meta(tmp_path))
+    assert [a["file"] for a in arrs] == ["arr_combo1_RS2.xml", "arr_combo2_RS2.xml"]
+    assert [a["name"] for a in arrs] == ["Combo", "Combo 2"]
+    assert [a["smart_name"] for a in arrs] == ["Lead", "Alt. Lead"]
+
+
+def test_manifest_arrangement_list_gets_distinct_names(tmp_path):
+    """A manifest.json arrangement list replaces the parsed list. Its entries
+    get smart names from the flags of the XML files that they name, and
+    repeated names get a number. A string smart_name in the manifest stays."""
+    (tmp_path / "audio.wem").write_bytes(b"\0")
+    _write_props_xml(tmp_path / "arr_combo1_RS2.xml", rhythm=1, represent=1)
+    _write_props_xml(tmp_path / "arr_combo2_RS2.xml", lead=1, represent=1)
+    _write_props_xml(tmp_path / "arr_bass_RS2.xml", "Bass", bass=1, represent=1)
+    (tmp_path / "manifest.json").write_text(json.dumps({"arrangements": [
+        {"type": "combo", "name": "Combo", "file": "arr_combo1_RS2.xml", "index": 0},
+        {"type": "combo", "name": "Combo", "file": "arr_combo2_RS2.xml", "index": 1},
+        {"type": "bass", "name": "Bass", "file": "arr_bass_RS2.xml", "index": 2,
+         "smart_name": "Alt. Bass"},
+    ]}), encoding="utf-8")
+
+    arrs = loosefolder.extract_meta(tmp_path)["arrangements"]
+    assert [a["file"] for a in arrs] == [
+        "arr_combo1_RS2.xml", "arr_combo2_RS2.xml", "arr_bass_RS2.xml"]
+    assert [a["smart_name"] for a in arrs] == ["Rhythm", "Lead", "Alt. Bass"]
+    assert [a["name"] for a in arrs] == ["Combo 2", "Combo", "Bass"]

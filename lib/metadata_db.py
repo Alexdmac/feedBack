@@ -25,6 +25,9 @@ import time
 from pathlib import Path
 
 from song import compute_smart_names
+# The sort key lives in song.py so loosefolder.py can use it too. The private
+# name stays for the callers here and in routers/ws_highway.py.
+from song import arr_smart_sort_key as _arr_smart_sort_key
 from tunings import DEFAULT_PERSPECTIVE, ROLE_PERSPECTIVES
 from tunings import perspective as _perspective
 
@@ -205,8 +208,6 @@ def _ensure_smart_names(arrangements: list[dict]) -> list[dict]:
 
     # Always sort by smart priority order so the client receives a consistent
     # list regardless of how the DB row was originally stored.
-    # _arr_smart_sort_key is defined later in this module but resolved at
-    # call-time, so the forward reference is safe.
     arrangements.sort(key=_arr_smart_sort_key)
     return arrangements
 
@@ -363,37 +364,6 @@ def next_library_cursor(sort: str, last_song: dict | None) -> str | None:
 # accuracy badge, the Repertoire meter, the mastery filter/sort, and the P3
 # growth-edge recommender (matches the frontend MASTERY_ACCURACY).
 MASTERY_ACCURACY = 0.9
-
-
-_SMART_TYPE_BASE: dict[str, int] = {"Lead": 0, "Rhythm": 10, "Bass": 20}
-
-
-def _arr_smart_sort_key(entry: dict) -> tuple[int, int]:
-    """Sort key for arrangement entries ordered by smart naming priority.
-
-    Order: Lead → Alt. Lead [1,2,…] → Bonus Lead [1,2,…]
-           → Rhythm → Alt. Rhythm → Bonus Rhythm
-           → Bass → Alt. Bass → Bonus Bass → other (stable fallback)
-    """
-    sn = entry.get("smart_name")
-    if not sn:
-        return (99, 0)
-    for label, base in _SMART_TYPE_BASE.items():
-        if sn == label:
-            return (base, 0)
-        alt_prefix = f"Alt. {label}"
-        if sn == alt_prefix:
-            return (base + 1, 0)
-        if sn.startswith(alt_prefix + " "):
-            suffix = sn[len(alt_prefix) + 1:]
-            return (base + 1, int(suffix) if suffix.isdigit() else 0)
-        bonus_prefix = f"Bonus {label}"
-        if sn == bonus_prefix:
-            return (base + 2, 0)
-        if sn.startswith(bonus_prefix + " "):
-            suffix = sn[len(bonus_prefix) + 1:]
-            return (base + 2, int(suffix) if suffix.isdigit() else 0)
-    return (99, 0)
 
 
 # Strips a trailing tag parenthetical from a filename stem — "(440Hz)",

@@ -768,10 +768,11 @@
     // opens THAT arrangement in the highway via playSong(filename, index).
     // Shared by the grid card and the tree row so both views render the same
     // badges with the same click-to-open behaviour. Capped at 4 to match the
-    // card layout.
+    // card layout. whitespace-nowrap keeps a two-word name ("Combo 2") on one
+    // line: the card's chip row is one line high and clips a second line.
     function arrChipsHtml(song) {
         return (song.arrangements || []).slice(0, 4).map((a) =>
-            '<button data-arr="' + esc(a.index != null ? a.index : '') + '" title="Play ' + esc(a.name) + '" class="text-[0.625rem] px-1.5 py-0.5 rounded bg-gray-800/60 text-fb-textDim hover:bg-fb-primary hover:text-white transition">' + esc(a.name) + '</button>').join('');
+            '<button data-arr="' + esc(a.index != null ? a.index : '') + '" title="Play ' + esc(a.name) + '" class="text-[0.625rem] px-1.5 py-0.5 rounded whitespace-nowrap bg-gray-800/60 text-fb-textDim hover:bg-fb-primary hover:text-white transition">' + esc(a.name) + '</button>').join('');
     }
 
     // ⚑ multi-chart chip (P5c, design §7.1): the persistent "other versions
