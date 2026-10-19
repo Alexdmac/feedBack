@@ -871,6 +871,75 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
     return result
 
 
+_SMART_TYPE_BASE: dict[str, int] = {"Lead": 0, "Rhythm": 10, "Bass": 20}
+
+
+def arr_smart_sort_key(entry: dict) -> tuple[int, int]:
+    """Sort key for arrangement entries ordered by smart naming priority.
+
+    Order: Lead → Alt. Lead [1,2,…] → Bonus Lead [1,2,…]
+           → Rhythm → Alt. Rhythm → Bonus Rhythm
+           → Bass → Alt. Bass → Bonus Bass → other (stable fallback)
+    """
+    sn = entry.get("smart_name")
+    if not sn:
+        return (99, 0)
+    for label, base in _SMART_TYPE_BASE.items():
+        if sn == label:
+            return (base, 0)
+        alt_prefix = f"Alt. {label}"
+        if sn == alt_prefix:
+            return (base + 1, 0)
+        if sn.startswith(alt_prefix + " "):
+            suffix = sn[len(alt_prefix) + 1:]
+            return (base + 1, int(suffix) if suffix.isdigit() else 0)
+        bonus_prefix = f"Bonus {label}"
+        if sn == bonus_prefix:
+            return (base + 2, 0)
+        if sn.startswith(bonus_prefix + " "):
+            suffix = sn[len(bonus_prefix) + 1:]
+            return (base + 2, int(suffix) if suffix.isdigit() else 0)
+    return (99, 0)
+
+
+def distinct_arrangement_names(names: list[str],
+                               smart_names: list[str | None]) -> list[str]:
+    """Return ``names`` with a number added to each repeated name.
+
+    A song can have two or more parts with the same name, for example two
+    "Combo" parts in a loose folder. The first part of a repeated name keeps
+    the name. Each other part gets the next free number: "Combo", "Combo 2",
+    "Combo 3". Unique names do not change.
+
+    "First" is in display order: the ``arr_smart_sort_key`` order of the
+    parallel ``smart_names`` list, with list order as the tiebreak. Thus the
+    main part (from its path flags) keeps the name without a number.
+    """
+    repeated = {n for n in names if names.count(n) > 1}
+    if not repeated:
+        return list(names)
+    taken = set(names)
+    seen: set[str] = set()
+    out = list(names)
+    order = sorted(
+        range(len(names)),
+        key=lambda i: (arr_smart_sort_key({"smart_name": smart_names[i]}), i),
+    )
+    for i in order:
+        name = names[i]
+        if name not in repeated:
+            continue
+        if name not in seen:
+            seen.add(name)
+            continue
+        n = 2
+        while f"{name} {n}" in taken:
+            n += 1
+        out[i] = f"{name} {n}"
+        taken.add(out[i])
+    return out
+
+
 def _finite_float(value, default: float = 0.0) -> float:
     """Coerce ``value`` to a finite float, falling back to ``default``.
 
@@ -1046,6 +1115,26 @@ def _hand_shape_arpeggio_flag(elem) -> bool:
         if _bool(elem, attr):
             return True
     return False
+
+
+def arrangement_properties(root) -> dict:
+    """Return the ``<arrangementProperties>`` path flags of an arrangement XML.
+
+    ``root`` is the parsed ``<song>`` element. The keys are the names of the
+    ``Arrangement`` fields (path_lead, path_rhythm, path_bass, bonus_arr,
+    represent). A song without the element gets all-zero flags. A bad
+    ``represent`` value raises ``ValueError`` or ``OverflowError``.
+    """
+    props = {"path_lead": False, "path_rhythm": False, "path_bass": False,
+             "bonus_arr": False, "represent": 0}
+    el = root.find("arrangementProperties")
+    if el is not None:
+        props["path_lead"] = _bool(el, "pathLead")
+        props["path_rhythm"] = _bool(el, "pathRhythm")
+        props["path_bass"] = _bool(el, "pathBass")
+        props["bonus_arr"] = _bool(el, "bonusArr")
+        props["represent"] = _int(el, "represent", 0)
+    return props
 
 
 def _chord_template_arpeggio_flag(elem) -> bool:
@@ -1477,15 +1566,7 @@ def parse_arrangement(xml_path: str) -> Arrangement:
     hand_shapes.sort(key=lambda h: h.start_time)
 
     # Parse <arrangementProperties> for smart naming
-    path_lead = path_rhythm = path_bass = bonus_arr = False
-    represent = 0
-    el = root.find("arrangementProperties")
-    if el is not None:
-        path_lead = _bool(el, "pathLead")
-        path_rhythm = _bool(el, "pathRhythm")
-        path_bass = _bool(el, "pathBass")
-        bonus_arr = _bool(el, "bonusArr")
-        represent = _int(el, "represent", 0)
+    props = arrangement_properties(root)
 
     return Arrangement(
         name=arr_name,
@@ -1497,11 +1578,11 @@ def parse_arrangement(xml_path: str) -> Arrangement:
         hand_shapes=hand_shapes,
         chord_templates=chord_templates,
         phrases=phrases,
-        path_lead=path_lead,
-        path_rhythm=path_rhythm,
-        path_bass=path_bass,
-        bonus_arr=bonus_arr,
-        represent=represent,
+        path_lead=props["path_lead"],
+        path_rhythm=props["path_rhythm"],
+        path_bass=props["path_bass"],
+        bonus_arr=props["bonus_arr"],
+        represent=props["represent"],
         cent_offset=cent_offset,
     )
 
