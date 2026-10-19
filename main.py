@@ -33,12 +33,18 @@ def run() -> None:
 
     import uvicorn
 
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run(
-        "server:app",
-        host=host,
-        port=port,
+    uvicorn.run("server:app", **server_options())
+
+
+def server_options() -> dict:
+    """Keyword arguments for ``uvicorn.run`` / ``uvicorn.Config``.
+
+    Shared with ``scripts/rockstar_tray.py``, which runs the same server on a
+    thread behind a tray icon.
+    """
+    return dict(
+        host=os.environ.get("HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT", "8000")),
         # Skips uvicorn's logging.config.dictConfig(LOGGING_CONFIG) call so
         # our structlog handlers are never overwritten.  Every uvicorn log
         # record — including early startup messages — passes through the same

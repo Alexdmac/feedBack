@@ -1,0 +1,4 @@
+# Extra packages for the Windows tray launcher (scripts/rockstar_tray.py).
+# Not needed for Docker or for scripts/run-local.ps1.
+pystray>=0.19
+pillow>=10

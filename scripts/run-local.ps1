@@ -9,6 +9,8 @@
 #
 # Then run:  pwsh -File scripts\run-local.ps1
 # Open http://localhost:8000 in a browser. Press Ctrl+C to stop the server.
+# To run it without a console window, behind a tray icon, see
+# scripts\install-tray-shortcut.ps1.
 #
 # Override any folder or the port with an environment variable before you run
 # the script, for example:  $env:DLC_DIR = 'D:\Songs'
