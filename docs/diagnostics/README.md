@@ -43,7 +43,7 @@ Source: `docs/diagnostics/feedBack-diagnostic-basic-guitar.sloppak` (next to
 `feedBack-desktop/scripts/bundle-feedBack.sh`).
 
 Unlike `tutorials-builtin/`, `diagnostics-builtin/` **is** included in the
-library scan. Tracks appear under **FeedBack** /
+library scan. Tracks appear under **RockStar** /
 **Technique Assessment Diagnostics**.
 
 Existing destination files are not overwritten unless the bundled source
@@ -58,7 +58,7 @@ custom copy or an unreleased build:
 1. Copy `feedBack-diagnostic-basic-guitar.sloppak` into your FeedBack
    DLC folder (e.g. `diagnostics-test/` or any scanned path).
 2. Restart FeedBack or trigger a library rescan if the song does not appear.
-3. Load **FeedBack Diagnostic — Basic Guitar**.
+3. Load **RockStar Diagnostic — Basic Guitar**.
 4. Play the **Diagnostic Guitar** arrangement.
 5. Confirm the 3D highway shows open notes and power-chord gems.
 6. Turn **Detect** on — note_detect should push the chart to the desktop

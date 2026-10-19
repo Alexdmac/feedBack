@@ -289,8 +289,8 @@ def build_chart():
     }
 
     manifest = {
-        'title': 'FeedBack Diagnostic — Basic Guitar',
-        'artist': 'FeedBack',
+        'title': 'RockStar Diagnostic — Basic Guitar',
+        'artist': 'RockStar',
         'album': 'Technique Assessment Diagnostics',
         'year': 2026,
         'duration': round(end_t, 3),

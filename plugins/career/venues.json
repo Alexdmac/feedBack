@@ -25,7 +25,7 @@
         },
         {
             "id": "arena",
-            "name": "Feedback Arena",
+            "name": "RockStar Arena",
             "description": "Ten thousand seats. Try not to think about it.",
             "star_threshold": 150,
             "pack": {

@@ -29,7 +29,7 @@
             {
                 id: 'hero', shape: 'spotlight', position: 'bottom',
                 selector: '#v3-hero', waitFor: '#v3-hero',
-                title: 'Welcome to fee[dB]ack',
+                title: 'Welcome to RockStar',
                 content: 'This is your home base. Hit Start Playing to drop straight into a song from your library.',
             },
             {

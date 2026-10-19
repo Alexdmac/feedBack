@@ -352,7 +352,7 @@
         overlay.innerHTML =
             '<div class="bg-fb-card rounded-xl border border-fb-border/50 w-full max-w-lg p-6 space-y-5">' +
             '<div class="text-center">' +
-            '<div class="text-2xl">' + (window.fbBrand ? window.fbBrand.wordmarkHTML({ size: 'text-2xl' }) : 'fee[dB]ack') + '</div>' +
+            '<div class="text-2xl">' + (window.fbBrand ? window.fbBrand.wordmarkHTML({ size: 'text-2xl' }) : 'RockStar') + '</div>' +
             '<p id="v3-ob-subtitle" class="text-sm text-fb-textDim mt-1">' + (editing ? 'Edit your player profile' : 'Set up your player profile') + '</p>' +
             stepDots + '</div>' +
             // Step 1 — name + avatar (the original form, unchanged DOM).
@@ -396,7 +396,7 @@
             // it on desktop. See feedBack-desktop#46.
             '<div id="v3-ob-step5" class="hidden">' +
             '<label class="block text-xs uppercase tracking-wider text-fb-textDim mb-2">How do you want to hear yourself?</label>' +
-            '<p class="text-sm text-fb-textDim mb-3">fee[dB]ack can run your guitar through built-in <span class="text-fb-text">amp simulations</span> (NAM / IRs / plugins) so you hear a processed tone. If you already play through your <span class="text-fb-text">own amp or rig</span>, leave this off — you’ll get clean, silent monitoring and never an idle buzz.</p>' +
+            '<p class="text-sm text-fb-textDim mb-3">RockStar can run your guitar through built-in <span class="text-fb-text">amp simulations</span> (NAM / IRs / plugins) so you hear a processed tone. If you already play through your <span class="text-fb-text">own amp or rig</span>, leave this off — you’ll get clean, silent monitoring and never an idle buzz.</p>' +
             '<label class="flex items-start gap-3 cursor-pointer rounded-lg border border-fb-border/50 bg-fb-bg/40 p-3">' +
             '<input type="checkbox" id="v3-ob-ampsims" class="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-800 text-fb-primary focus:ring-fb-primary">' +
             '<span class="text-sm text-fb-text">Use in-app amp simulations' +
@@ -406,7 +406,7 @@
             // Step 6 — calibration offer (first-run only).
             '<div id="v3-ob-step6" class="hidden">' +
             '<label class="block text-xs uppercase tracking-wider text-fb-textDim mb-2">Calibration challenge</label>' +
-            '<p class="text-sm text-fb-textDim">Prove your setup: play the <span class="text-fb-text">fee[dB]ack Diagnostic</span> with note detection and finish at <span class="text-fb-text font-semibold">100% accuracy</span> to reach <span class="text-fb-text font-semibold">Mastery Rank 1</span>.</p>' +
+            '<p class="text-sm text-fb-textDim">Prove your setup: play the <span class="text-fb-text">RockStar Diagnostic</span> with note detection and finish at <span class="text-fb-text font-semibold">100% accuracy</span> to reach <span class="text-fb-text font-semibold">Mastery Rank 1</span>.</p>' +
             '<p class="text-sm text-fb-textDim mt-2">Not ready? Skip it and you’ll start at Rank 1 anyway — you can still play it later from the Progress screen.</p></div>' +
             '<p id="v3-ob-error" class="text-sm text-fb-accent hidden"></p>' +
             '<div class="flex justify-end gap-3">' +

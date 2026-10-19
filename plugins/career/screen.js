@@ -921,7 +921,7 @@
         ctx.fillText(`${stubCount} ticket stub${stubCount === 1 ? '' : 's'}${hours ? ` · ${hours} played` : ''}`, W / 2, 512);
         ctx.fillStyle = 'rgba(240,226,195,0.4)';
         ctx.font = '400 13px Georgia, serif';
-        ctx.fillText('fee[dB]ack · career passport', W / 2, H - 44);
+        ctx.fillText('RockStar · career passport', W / 2, H - 44);
         return canvas;
     }
 
@@ -1391,7 +1391,7 @@
         });
         ctx.fillStyle = 'rgba(240,226,195,0.4)';
         ctx.font = '400 13px Georgia, serif';
-        ctx.fillText(`${ppLabel(data.instrument || 'guitar')} · fee[dB]ack career`, W / 2, H - 42);
+        ctx.fillText(`${ppLabel(data.instrument || 'guitar')} · RockStar career`, W / 2, H - 42);
         return canvas;
     }
 

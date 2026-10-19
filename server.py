@@ -342,7 +342,7 @@ def _stat_for_cache(f: Path) -> tuple[float, int]:
 _STARTUP_STATUS_INIT = {
     "running": True,
     "phase": "booting",
-    "message": "Starting FeedBack server...",
+    "message": "Starting RockStar server...",
     "current_plugin": "",
     "loaded": 0,
     "total": 0,
