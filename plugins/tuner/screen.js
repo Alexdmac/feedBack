@@ -584,6 +584,8 @@
     }
 
     window._tunerReloadConfig = loadConfig;
+    // Settings page → re-read the confidence-meter / history toggles live.
+    window._tunerApplyDisplayPrefs = () => { _state.insights?.applyPrefs(); };
 
     async function saveConfig() {
         // '_current' is the live song tuning; 'free-tune' is now tracked via the
@@ -630,6 +632,7 @@
         _state.autoOpened = auto;
         await _loadScript('/api/plugins/tuner/utils/tuning-utils.js');
         await _loadScript('/api/plugins/tuner/utils/audio.js');
+        await _loadScript('/api/plugins/tuner/utils/insights.js');
         await _loadScript('/api/plugins/tuner/utils/ui.js');
         loadSettings();
         await loadConfig();
@@ -656,6 +659,9 @@
         _state.uiContainer.classList.add('flex');
         _tunerUIApi.positionPanel();
         _tunerUIApi.updateFreeTuneUI();
+        // Fresh confidence meter + history for this session (measures the canvas,
+        // so it must run after the panel is visible).
+        _state.insights?.onOpen();
         // "Skip" is the auto-open nudge's explicit dismiss; hidden for a manual
         // open (the × / click-away already close those).
         if (_state.skipBtn) _state.skipBtn.classList.toggle('hidden', !auto);
@@ -768,6 +774,7 @@
     Promise.all([
         _loadScript('/api/plugins/tuner/utils/tuning-utils.js'),
         _loadScript('/api/plugins/tuner/utils/audio.js'),
+        _loadScript('/api/plugins/tuner/utils/insights.js'),
         _loadScript('/api/plugins/tuner/utils/ui.js'),
     ]).then(async () => {
         _tunerUIApi = window._tunerUI(_state, {

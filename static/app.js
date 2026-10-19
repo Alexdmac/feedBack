@@ -515,14 +515,19 @@ async function uploadSongs(fileList) {
     // clearly-invalid picks. The server validates again.
     const failures = [];
     const files = [];
+    const packs = [];
     for (const f of all) {
         const lower = f.name.toLowerCase();
         if (lower.endsWith('.feedpak') || lower.endsWith('.sloppak')) {
             files.push(f);
+        } else if (lower.endsWith('.psarc') && typeof window.feedBackPackImport === 'function') {
+            // Rocksmith packs need converting: the pack_import plugin does that.
+            packs.push(f);
         } else {
             failures.push(`${f.name}: only .feedpak or .sloppak accepted`);
         }
     }
+    if (packs.length) window.feedBackPackImport(packs);
     if (files.length === 0) {
         if (failures.length) alert(failures.join('\n'));
         return;

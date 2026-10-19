@@ -18,6 +18,9 @@ This plugin adds a floating "Tuner" button to the FeedBack interface, providing 
 - **Audio Device Selection**: Choose specific input devices and channels (Mono, Left, Right) for professional interfaces.
 - **Themable UI**: Styled with Tailwind CSS to match your FeedBack theme.
 - **Visualizations**: Pick from different visualizations to suit your needs (Currently: Default, Strobe, Analogue Gauge, Mace Fx III, and Toilet Tuner)
+- **Confidence Meter**: A slim bar under the visualization showing how confident the pitch detector is in the current reading (derived from YIN's normalised difference at the detected period). Works with every visualization; toggle it in the plugin settings.
+- **Tuning History**: A small strip graph of the cents deviation over the last ~5 seconds, with a centre line at 0 cents and the ±5 cent in-tune band marked. Silent or low-confidence frames leave gaps, and the trace restarts when the target note/string changes. Toggle it in the plugin settings.
+  - The confidence meter and tuning history are ported from [Trace Tuner](https://github.com/Fannon/trace-tuner) by Simon Heimler (MIT License).
 
 ## Available Visualizations
 
@@ -80,6 +83,9 @@ Access advanced settings via the FeedBack Plugin Manager (Settings -> Plugins ->
 
 
 ## Changelog
+
+### [1.4.0] - 2026-10-19
+- Added a confidence meter and a tuning-history graph to the tuner panel, ported from [Trace Tuner](https://github.com/Fannon/trace-tuner) (MIT). Both can be hidden from the plugin settings.
 
 ### [1.3.1] - 2026-06-04
 - JUCE bridge audio input: when running inside FeedBack Desktop the tuner taps the engine's raw audio stream (`getRawAudioFrame`) and runs its own tuning-optimised YIN over it, falling back to the browser microphone pipeline otherwise.

@@ -10,6 +10,27 @@
         </label>
     </div>
 
+    <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <div>
+            <h3 class="text-sm font-medium text-gray-200">Confidence meter</h3>
+            <p class="text-[11px] text-gray-500">Show how confident the pitch detector is in the current reading.</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="tuner-show-confidence" class="sr-only peer" checked onchange="window._tunerToggleDisplay('showConfidence', this.checked)">
+            <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+        </label>
+    </div>
+    <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <div>
+            <h3 class="text-sm font-medium text-gray-200">Tuning history</h3>
+            <p class="text-[11px] text-gray-500">Show a graph of the cents deviation over the last few seconds.</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="tuner-show-history" class="sr-only peer" checked onchange="window._tunerToggleDisplay('showHistory', this.checked)">
+            <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+        </label>
+    </div>
+
     <script>
     if (window.feedBackDesktop && window.feedBackDesktop.isDesktop) {
         document.currentScript.insertAdjacentHTML('beforebegin', `
@@ -97,6 +118,33 @@
             window._tunerToggleBrowserAudio = (forceBrowser) => {
                 config.audioInputMode = forceBrowser ? 'browser' : 'auto';
                 save();
+            };
+
+            // Display toggles (confidence meter / tuning history) are a per-viewer
+            // preference kept in localStorage, like the tuner's device/channel
+            // choice — the same key utils/insights.js reads.
+            const _DISPLAY_KEY = 'feedBack_tuner_display';
+            function loadDisplayPrefs() {
+                const prefs = { showConfidence: true, showHistory: true };
+                try {
+                    const s = JSON.parse(localStorage.getItem(_DISPLAY_KEY) || '{}');
+                    if (typeof s.showConfidence === 'boolean') prefs.showConfidence = s.showConfidence;
+                    if (typeof s.showHistory === 'boolean') prefs.showHistory = s.showHistory;
+                } catch (e) { /* storage unavailable → defaults */ }
+                return prefs;
+            }
+            (function syncDisplayToggles() {
+                const prefs = loadDisplayPrefs();
+                const c = document.getElementById('tuner-show-confidence');
+                const h = document.getElementById('tuner-show-history');
+                if (c) c.checked = prefs.showConfidence;
+                if (h) h.checked = prefs.showHistory;
+            })();
+            window._tunerToggleDisplay = (key, enabled) => {
+                const prefs = loadDisplayPrefs();
+                prefs[key] = !!enabled;
+                try { localStorage.setItem(_DISPLAY_KEY, JSON.stringify(prefs)); } catch (e) { /* unavailable */ }
+                if (window._tunerApplyDisplayPrefs) window._tunerApplyDisplayPrefs();
             };
 
             window._tunerToggleAutoOpen = (enabled) => {

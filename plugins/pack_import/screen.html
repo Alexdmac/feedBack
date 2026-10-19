@@ -1,0 +1,36 @@
+<!-- Import Rocksmith Packs — injected into div#plugin-pack_import.screen. -->
+<div class="max-w-3xl mx-auto px-4 py-6 space-y-5">
+  <div>
+    <h2 class="text-xl font-semibold text-white">Import Rocksmith packs</h2>
+    <p class="text-sm text-gray-400 mt-1">
+      Converts Rocksmith 2014 <code>.psarc</code> files into songs in your library, using
+      Rocksmith 2014 DLC Builder. Song packs that hold many songs (such as
+      <code>songs.psarc</code>) work too. Files that were already converted are skipped.
+    </p>
+  </div>
+
+  <div id="pi-unavailable" class="hidden rounded-lg border border-yellow-700 bg-yellow-900/30 px-4 py-3 text-sm text-yellow-200"></div>
+
+  <div id="pi-drop" class="rounded-lg border-2 border-dashed border-gray-600 px-4 py-8 text-center cursor-pointer hover:border-blue-500">
+    <p class="text-gray-200">Drop <code>.psarc</code> files here, or click to choose them.</p>
+    <p class="text-xs text-gray-500 mt-1">The files are copied, converted, then the copies are removed. Your originals are never changed.</p>
+    <input id="pi-files" type="file" accept=".psarc" multiple class="hidden">
+  </div>
+
+  <div>
+    <label for="pi-path" class="block text-sm text-gray-300 mb-1">Or convert a file or folder already on this PC (best for big packs):</label>
+    <div class="flex gap-2">
+      <input id="pi-path" type="text" placeholder="D:\Rocksmith 2014 Edition - Remastered\dlc"
+             class="flex-1 px-3 py-1.5 rounded bg-dark-500 border border-dark-400 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500">
+      <button id="pi-path-go" class="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-sm text-white">Convert</button>
+    </div>
+  </div>
+
+  <div id="pi-job" class="hidden space-y-2">
+    <div class="flex items-center justify-between">
+      <span id="pi-job-title" class="text-sm text-gray-200"></span>
+      <span id="pi-job-state" class="text-xs text-gray-400"></span>
+    </div>
+    <pre id="pi-log" class="fb-selectable text-xs text-gray-300 bg-dark-600 border border-dark-400 rounded p-3 overflow-auto" style="max-height:24rem; white-space:pre-wrap;"></pre>
+  </div>
+</div>

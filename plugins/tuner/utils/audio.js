@@ -48,16 +48,19 @@
     function _handleYinResult(result) {
         const rms = result ? result.rms : 0;
         const hasSignal = rms > 0.01;
+        // Detector confidence (0..1) for the panel's confidence meter / history.
+        const confidence = (result && Number.isFinite(result.confidence))
+            ? Math.max(0, Math.min(1, result.confidence)) : 0;
 
         if (!result || (!hasSignal && result.confidence < 0.5) || (result.freq < _TUNER_MIN_DETECTABLE_HZ && result.freq !== 0)) {
             _validFrameCount = 0; _freqHistory = []; _lastFreq = 0;
-            if (_onResult) _onResult({ smoothedFreq: null, rms, hasSignal: false });
+            if (_onResult) _onResult({ smoothedFreq: null, rms, hasSignal: false, confidence });
             return;
         }
 
         if (result.confidence < 0.5 && hasSignal) {
             _validFrameCount = 0; _freqHistory = []; _lastFreq = 0;
-            if (_onResult) _onResult({ smoothedFreq: null, rms, hasSignal: false });
+            if (_onResult) _onResult({ smoothedFreq: null, rms, hasSignal: false, confidence });
             return;
         }
 
@@ -66,13 +69,13 @@
         _validFrameCount++;
 
         if (_validFrameCount <= _WARMUP_FRAMES) {
-            if (_onResult) _onResult({ smoothedFreq: null, rms, hasSignal });
+            if (_onResult) _onResult({ smoothedFreq: null, rms, hasSignal, confidence });
             return;
         }
 
         const smoothedFreq = _median(_freqHistory);
         _lastFreq = smoothedFreq;
-        if (_onResult) _onResult({ smoothedFreq, rms, hasSignal });
+        if (_onResult) _onResult({ smoothedFreq, rms, hasSignal, confidence });
     }
 
     // True while a frame is being processed by the worker, unless that frame is
@@ -155,7 +158,7 @@
                 _yinWorker.postMessage({ samples: frame, sampleRate: bridgeSampleRate }, [frame.buffer]);
             } catch (e) {
                 console.warn('[tuner] bridge raw audio poll failed:', e && e.message ? e.message : e);
-                if (_onResult) _onResult({ smoothedFreq: null, rms: 0, hasSignal: false });
+                if (_onResult) _onResult({ smoothedFreq: null, rms: 0, hasSignal: false, confidence: 0 });
             }
         }, 30);
 

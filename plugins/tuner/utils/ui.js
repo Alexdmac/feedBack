@@ -305,6 +305,8 @@ window._tunerUI = function(state, actions) {
     function renderStringNotes() {
         if (!state.stringNoteContainer) return;
         state.stringNoteContainer.innerHTML = '';
+        // A (re)rendered string row means the tuning / target set changed.
+        state.insights?.clearHistory();
         // Show the mic-verify control only for a selected (non-free) tuning.
         if (state.verifyRow) {
             const hasTuning = !!(state.selectedTuning && state.selectedTuning.length && !state.freeTune);
@@ -327,6 +329,7 @@ window._tunerUI = function(state, actions) {
             btn.onclick = () => {
                 state.manualTargetFreq = state.manualTargetFreq === f ? null : f;
                 _syncStringHighlight(state.manualTargetFreq);
+                state.insights?.clearHistory();
             };
             state.stringNoteContainer.appendChild(btn);
         });
@@ -368,8 +371,17 @@ window._tunerUI = function(state, actions) {
         _markVerifiedStrings([]);
     }
 
+    // Confidence meter + tuning history (utils/insights.js). Only fed while the
+    // panel is open — updateUI also runs with the panel closed (it drives the
+    // live badge), and nothing should be drawn then.
+    function _feedInsights(cents, confidence, targetFreq) {
+        if (!state.insights || !state.enabled) return;
+        state.insights.update(cents, confidence, targetFreq);
+    }
+
     function updateUI(result) {
         const { smoothedFreq, rms, hasSignal } = result;
+        const confidence = Number.isFinite(result.confidence) ? result.confidence : 0;
         const vizMode = state.manualTargetFreq ? 'manual'
             : (state.freeTune || !(state.selectedTuning && state.selectedTuning.length > 0) ? 'free' : 'auto');
 
@@ -381,6 +393,7 @@ window._tunerUI = function(state, actions) {
             _lastAutoTargetFreq = null;
             if (state.activeViz) state.activeViz.update(null, 0, 0, vizMode, null, referencePitch);
             _syncStringHighlight(state.manualTargetFreq);
+            _feedInsights(null, confidence, null);
             if (window.feedBack && window.feedBack.emit) {
                 window.feedBack.emit('tuner:frame', { note: null, cents: 0, freq: 0, hasSignal: false });
             }
@@ -425,6 +438,7 @@ window._tunerUI = function(state, actions) {
         if (state.activeViz) state.activeViz.update(note, cents, displayFreq, vizMode, targetFreq, referencePitch, state.useFlats);
         if (state.freeTune) _syncStringHighlight(null);
         else _syncActiveStringFromFreq(targetFreq, isManual);
+        _feedInsights(cents, confidence, targetFreq);
         if (window.feedBack && window.feedBack.emit) {
             window.feedBack.emit('tuner:frame', { note, cents, freq: displayFreq, hasSignal: true });
         }
@@ -672,6 +686,7 @@ window._tunerUI = function(state, actions) {
             state.freeTune = !state.freeTune;
             if (state.freeTune) state.manualTargetFreq = null;
             updateFreeTuneUI();
+            state.insights?.clearHistory();
             actions.saveConfig();
         });
 
@@ -682,6 +697,10 @@ window._tunerUI = function(state, actions) {
         state.vizContainer = document.createElement('div');
         state.vizContainer.className = 'w-full';
         state.uiContainer.appendChild(state.vizContainer);
+
+        // Confidence meter + tuning history graph (ported from Trace Tuner).
+        // Lives outside vizContainer so it works with every visualization.
+        state.insights = window._tunerInsights ? window._tunerInsights.mount(state.uiContainer) : null;
 
         // Mic-verify control (working-tuning PR 9b): play each string in tune to
         // confirm your tuning — promotes 'assumed' → 'verified'. Shown only for a
@@ -732,7 +751,10 @@ window._tunerUI = function(state, actions) {
         // vertically centered, so its rect shifts with viewport height.
         // initUI() runs once (guarded above), so this binds a single listener.
         window.addEventListener('resize', () => {
-            if (state.uiContainer && !state.uiContainer.classList.contains('hidden')) positionPanel();
+            if (state.uiContainer && !state.uiContainer.classList.contains('hidden')) {
+                positionPanel();
+                state.insights?.resize();
+            }
         });
     }
 

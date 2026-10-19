@@ -1,0 +1,12 @@
+{
+  "id": "pack_import",
+  "name": "Import Rocksmith Packs",
+  "version": "1.0.0",
+  "bundled": true,
+  "category": "tools",
+  "description": "Convert Rocksmith 2014 .psarc files into songs from inside the app.",
+  "nav": { "label": "Import packs", "screen": "plugin-pack_import" },
+  "screen": "screen.html",
+  "script": "screen.js",
+  "routes": "routes.py"
+}

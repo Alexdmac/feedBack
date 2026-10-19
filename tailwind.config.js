@@ -27,6 +27,8 @@ module.exports = {
         // longer scans it — its arbitrary values live in its own sheet, not
         // core's. Pilot for decentralizing all bundled plugins' CSS.
         '!./plugins/highway_3d/**',
+        // note_detect also ships its own stylesheet (`styles`: assets/plugin.css).
+        '!./plugins/note_detect/**',
     ],
     theme: {
         extend: {
