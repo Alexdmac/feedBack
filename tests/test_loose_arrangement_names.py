@@ -4,6 +4,9 @@ The library index (lib/loosefolder.py) and the highway WebSocket number a
 repeated name in the same way ("Combo", "Combo 2"), so the library card and
 the arrangement switcher show the same distinct names. A scan probe makes an
 existing library get the new names without a manual Refresh.
+
+Each part also gets the tone changes of its own XML file, also when two
+parts have the same name.
 """
 
 from __future__ import annotations
@@ -13,11 +16,13 @@ import importlib
 import json
 import sys
 import unittest.mock as mock
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import loosefolder
+from song import Arrangement, arrangement_from_wire, arrangement_to_wire, load_song
 
 
 _XML = """<?xml version="1.0" encoding="utf-8"?>
@@ -146,6 +151,195 @@ def test_saved_numbered_name_picks_that_part(make_client):
         info = _song_info(client, "/ws/highway/Artist/Song")
     assert info["arrangement_index"] == 0
     assert info["arrangement"] == "Combo 2"
+
+
+# ── tone changes: each part reads its own XML file ──────────────────────────
+
+_TONE_XML = """<?xml version="1.0" encoding="utf-8"?>
+<song>
+  <title>T</title>
+  <artistName>A</artistName>
+  <songLength>100</songLength>
+  <arrangement>{arrangement}</arrangement>
+  <offset>0</offset>
+  <tuning string0="0" string1="0" string2="0" string3="0" string4="0" string5="0"/>
+  <arrangementProperties pathLead="{lead}" pathRhythm="{rhythm}" pathBass="{bass}" bonusArr="0" represent="1"/>
+  <tonebase>{base}</tonebase>
+  <tones count="1"><tone time="{time}" id="1" name="{tone}"/></tones>
+  <levels count="1"><level difficulty="0"><notes count="1"><note time="1.0" string="0" fret="{fret}"/></notes><chords count="0"/><anchors count="0"/><handShapes count="0"/></level></levels>
+</song>
+"""
+
+# file, <arrangement>, path flags, <tonebase>, tone change (time, name).
+# Each file has its own tones. The old lookup gave both Combo parts the
+# tones of arr_bass_RS2.xml. "combo" is not a token of "arr_combo1_RS2",
+# so it used the first XML file in name order.
+_COMBO_PARTS = [
+    ("arr_combo1_RS2.xml", "Combo", {"rhythm": 1}, "C1 Clean", (11.0, "C1 Drive")),
+    ("arr_combo2_RS2.xml", "Combo", {"lead": 1}, "C2 Clean", (22.0, "C2 Lead")),
+    ("arr_bass_RS2.xml", "Bass", {"bass": 1}, "B Clean", (33.0, "B Fuzz")),
+]
+
+# The old lookup gave both Rhythm parts the tones of arr_rhythm_RS2.xml:
+# "rhythm2" is a different token, so arr_rhythm_RS2.xml was the only match.
+_RHYTHM_PARTS = [
+    ("arr_rhythm_RS2.xml", "Rhythm", {"rhythm": 1}, "R1 Clean", (11.0, "R1 Crunch")),
+    ("arr_rhythm2_RS2.xml", "Rhythm", {"rhythm": 1}, "R2 Clean", (22.0, "R2 Fuzz")),
+    ("arr_bass_RS2.xml", "Bass", {"bass": 1}, "B Clean", (33.0, "B Fuzz")),
+]
+
+
+def _write_tone_song(dlc_root, parts):
+    """Write a loose folder with one XML file for each part. The note of
+    each XML file is on its own fret: part 1 on fret 1, and so on. Thus a
+    test can find the XML file of a loaded part from its notes frame."""
+    song = dlc_root / "Artist" / "Song"
+    song.mkdir(parents=True)
+    (song / "audio.wem").write_bytes(b"RIFF\x00")
+    for fret, (fname, arrangement, flags, base, (time, tone)) in enumerate(parts, 1):
+        flags = {"lead": 0, "rhythm": 0, "bass": 0, **flags}
+        (song / fname).write_text(
+            _TONE_XML.format(arrangement=arrangement, base=base, time=time,
+                             tone=tone, fret=fret, **flags),
+            encoding="utf-8")
+    return song
+
+
+def _frames(client, path):
+    """The first frame of each type, up to the ready frame."""
+    frames = {}
+    with client.websocket_connect(path) as ws:
+        for _ in range(200):
+            msg = ws.receive_json()
+            if msg.get("error"):
+                raise AssertionError(f"WS error frame: {msg}")
+            frames.setdefault(msg.get("type"), msg)
+            if msg.get("type") == "ready":
+                return frames
+    raise AssertionError("no ready frame received")
+
+
+def _tone_frames_by_file(server, parts):
+    """Load each part in turn. Return {XML file name: tone_changes frame},
+    where the notes frame identifies the XML file of the loaded part."""
+    got = {}
+    with TestClient(server.app) as client:
+        for i in range(len(parts)):
+            frames = _frames(client, f"/ws/highway/Artist/Song?arrangement={i}")
+            fname = parts[frames["notes"]["data"][0]["f"] - 1][0]
+            got[fname] = frames.get("tone_changes")
+    return got
+
+
+def _expected_tone_frames(parts):
+    return {
+        fname: {"type": "tone_changes", "base": base,
+                "data": [{"t": time, "name": tone}]}
+        for fname, _arr, _flags, base, (time, tone) in parts
+    }
+
+
+def test_load_song_records_the_xml_file_of_each_part(tmp_path):
+    song = load_song(str(_write_tone_song(tmp_path, _COMBO_PARTS)))
+    got = {Path(a.source_xml).name: a.notes[0].fret for a in song.arrangements}
+    assert got == {"arr_combo1_RS2.xml": 1, "arr_combo2_RS2.xml": 2,
+                   "arr_bass_RS2.xml": 3}
+    # The names do not change. Only the screen numbers the repeated names.
+    assert [a.name for a in song.arrangements] == ["Combo", "Combo", "Bass"]
+
+
+def test_source_xml_stays_out_of_the_wire_format():
+    arr = Arrangement(name="Combo", source_xml="/dlc/A/S/arr_combo2_RS2.xml")
+    wire = arrangement_to_wire(arr)
+    assert "arr_combo2_RS2.xml" not in json.dumps(wire)
+    assert arrangement_from_wire(wire).source_xml == ""
+
+
+def test_each_combo_part_gets_the_tones_of_its_own_xml(make_client):
+    server = make_client()
+    _write_tone_song(server._get_dlc_dir(), _COMBO_PARTS)
+    assert _tone_frames_by_file(server, _COMBO_PARTS) == \
+        _expected_tone_frames(_COMBO_PARTS)
+
+
+def test_each_rhythm_part_gets_the_tones_of_its_own_xml(make_client):
+    server = make_client()
+    _write_tone_song(server._get_dlc_dir(), _RHYTHM_PARTS)
+    assert _tone_frames_by_file(server, _RHYTHM_PARTS) == \
+        _expected_tone_frames(_RHYTHM_PARTS)
+
+
+def test_manifest_tone_names_come_from_the_manifest_of_the_same_stem(make_client):
+    """Two parts with the ArrangementName "Combo" in their manifest JSON.
+    The old lookup used the first manifest with that name for both parts.
+    Now each part uses the manifest with the stem of its own XML file. The
+    tones come from its own XML file, and an "N/A" marker gets its name
+    from Tone_A..Tone_D of that manifest."""
+    parts = [
+        ("arr_combo1_RS2.xml", "Combo", {"rhythm": 1}, "", (11.0, "N/A")),
+        ("arr_combo2_RS2.xml", "Combo", {"lead": 1}, "", (22.0, "N/A")),
+    ]
+    server = make_client()
+    song = _write_tone_song(server._get_dlc_dir(), parts)
+    for stem, tone_a, tone_b in (("arr_combo1_RS2", "M1 Clean", "M1 Drive"),
+                                 ("arr_combo2_RS2", "M2 Clean", "M2 Lead")):
+        (song / f"{stem}.json").write_text(json.dumps({"Entries": {stem: {
+            "Attributes": {"ArrangementName": "Combo",
+                           "Tone_A": tone_a, "Tone_B": tone_b}}}}),
+            encoding="utf-8")
+
+    assert _tone_frames_by_file(server, parts) == {
+        "arr_combo1_RS2.xml": {"type": "tone_changes", "base": "M1 Clean",
+                               "data": [{"t": 11.0, "name": "M1 Drive"}]},
+        "arr_combo2_RS2.xml": {"type": "tone_changes", "base": "M2 Clean",
+                               "data": [{"t": 22.0, "name": "M2 Lead"}]},
+    }
+
+
+def test_a_part_without_a_recorded_xml_uses_the_name_match(make_client, monkeypatch):
+    """The name match stays as the fallback. With different names, it finds
+    the XML file of each part."""
+    parts = [
+        ("arr_lead_RS2.xml", "Lead", {"lead": 1}, "L Clean", (11.0, "L Lead")),
+        ("arr_rhythm_RS2.xml", "Rhythm", {"rhythm": 1}, "R Clean", (22.0, "R Crunch")),
+        ("arr_bass_RS2.xml", "Bass", {"bass": 1}, "B Clean", (33.0, "B Fuzz")),
+    ]
+    server = make_client()
+    _write_tone_song(server._get_dlc_dir(), parts)
+    from routers import ws_highway
+    real_load_song = ws_highway.load_song
+
+    def _load_without_paths(path):
+        song = real_load_song(path)
+        for a in song.arrangements:
+            a.source_xml = ""
+        return song
+    monkeypatch.setattr(ws_highway, "load_song", _load_without_paths)
+    assert _tone_frames_by_file(server, parts) == _expected_tone_frames(parts)
+
+
+def test_an_xml_file_in_a_subfolder_is_not_read_for_tones(make_client):
+    """load_song also reads an XML file in a subfolder, but the tone lookup
+    of a loose folder reads only the files in the folder itself."""
+    parts = [("arr_lead_RS2.xml", "Lead", {"lead": 1}, "L Clean", (11.0, "L Lead"))]
+    server = make_client()
+    song = _write_tone_song(server._get_dlc_dir(), parts)
+    (song / "backup").mkdir()
+    (song / "backup" / "arr_lead_RS2.xml").write_text(
+        _TONE_XML.format(arrangement="Lead", base="Old Clean", time=44.0,
+                         tone="Old Lead", fret=2, lead=1, rhythm=0, bass=0),
+        encoding="utf-8")
+    expected = _expected_tone_frames(parts)["arr_lead_RS2.xml"]
+    frets = set()
+    with TestClient(server.app) as client:
+        for i in range(2):
+            frames = _frames(client, f"/ws/highway/Artist/Song?arrangement={i}")
+            fret = frames["notes"]["data"][0]["f"]
+            frets.add(fret)
+            assert "Old" not in json.dumps(frames.get("tone_changes"))
+            if fret == 1:
+                assert frames["tone_changes"] == expected
+    assert frets == {1, 2}  # Both parts loaded.
 
 
 # ── scan: rows without smart_name bypass the tree-signature fast path ────────

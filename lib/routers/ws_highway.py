@@ -150,6 +150,29 @@ def _drum_part_id_for_wire(drum_parts: list[dict] | None, selected_id: str | Non
     return selected_id if selected_id is not None and len(drum_parts or []) > 1 else None
 
 
+def _arrangement_xml(arr, xml_paths: list[Path]) -> Path | None:
+    """Return the entry of `xml_paths` that is the XML file of `arr`.
+
+    `load_song` records this file in `Arrangement.source_xml`. Return None
+    when `arr` has no recorded file. Also return None when the file is not
+    in `xml_paths`, for example an XML file in a subfolder of a loose folder.
+    """
+    src = getattr(arr, "source_xml", "") or ""
+    if not src:
+        return None
+    try:
+        want = Path(src).resolve()
+    except OSError:
+        return None
+    for xp in xml_paths:
+        try:
+            if xp.resolve() == want:
+                return xp
+        except OSError:
+            continue
+    return None
+
+
 @router.websocket("/ws/highway/{filename:path}")
 async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                      naming_mode: str = "legacy", drum_part: str = ""):
@@ -243,8 +266,8 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
         # Display names. A loose folder can have two parts with the same name
         # (two "Combo" parts), so number the repeated names the same way as
         # the library index does (loosefolder._name_arrangements). Keep
-        # `Arrangement.name` as it is: the tone lookup below matches it
-        # against the XML file names.
+        # `Arrangement.name` as it is: as a fallback, the tone lookup below
+        # matches it against the manifest names and the XML file names.
         arr_names = [a.name for a in song.arrangements]
         if is_loose:
             arr_names = distinct_arrangement_names(arr_names, smart_names)
@@ -808,6 +831,14 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                 await websocket.send_json(payload)
         else:
             xml_paths = sorted(_xml_walk("*.xml"))
+            # The XML file that load_song read for the selected arrangement.
+            # Two parts of one type can have the same name ("Combo", "Combo").
+            # Thus a match on the name can select the XML file or the manifest
+            # of the other part. When the arrangement has a recorded XML file
+            # in `xml_paths`, read the tones only from it. Take the Tone_A..D
+            # names from the manifest JSON with the same stem. The name match
+            # below is the fallback for an arrangement without a recorded file.
+            own_xml = _arrangement_xml(arr, xml_paths)
 
             # Build tone ID→name map from the manifest JSON for the selected
             # arrangement. Match on the entry's `ArrangementName` field, not a
@@ -846,43 +877,61 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                         m[idx] = val
                 return m
 
-            for jf in sorted(_json_walk("*.json")):
-                for entry in _manifest_entries(jf).values():
-                    if not isinstance(entry, dict):
-                        continue
-                    attrs = entry.get("Attributes")
-                    if not isinstance(attrs, dict):
-                        continue
-                    ename = attrs.get("ArrangementName")
-                    if not isinstance(ename, str) or ename.strip().lower() != arr_name_lower:
-                        continue
-                    # Only the SELECTED arrangement's own Tone_A..D — never
-                    # borrowed from another manifest. An unrelated map would
-                    # mislabel `N/A` tone-change markers; `Tone {id}` is the
-                    # correct fallback (matching lib/tones.py).
-                    arr_tone_names = _tone_names(attrs)
-                    matched_stem = jf.stem.lower()
-                    break
-                if matched_stem is not None:
-                    break
+            def _find_manifest(json_paths):
+                """(Tone_A..D map, JSON stem) of the first entry in
+                `json_paths` whose ArrangementName is the name of the
+                selected arrangement, or None."""
+                for jf in json_paths:
+                    for entry in _manifest_entries(jf).values():
+                        if not isinstance(entry, dict):
+                            continue
+                        attrs = entry.get("Attributes")
+                        if not isinstance(attrs, dict):
+                            continue
+                        ename = attrs.get("ArrangementName")
+                        if not isinstance(ename, str) or ename.strip().lower() != arr_name_lower:
+                            continue
+                        # Only the SELECTED arrangement's own Tone_A..D — never
+                        # borrowed from another manifest. An unrelated map would
+                        # mislabel `N/A` tone-change markers; `Tone {id}` is the
+                        # correct fallback (matching lib/tones.py).
+                        return _tone_names(attrs), jf.stem.lower()
+                return None
 
-            # Parse XMLs. Prefer the XML paired with the matched manifest
-            # (identical stem). When no manifest matched (loose/custom song), fall
-            # back to a name-token match — but rank by how few *extra* stem
-            # tokens a candidate carries, mirroring lib/tones.py: {"lead"} is
-            # a subset of both `song_lead` and `song_bonus_lead`, so a plain
-            # subset test still ties. A unique fewest-extra match wins; an
-            # exact tie among token candidates is treated as ambiguous —
-            # `_token_ambiguous` then suppresses the rank-2 best-effort
-            # fallback, so no arrangement's tone timeline is guessed at
-            # (matching lib/tones.py, which attaches nothing on a tie).
-            # Shared tokenizer with lib/tones.py so archive playback and
-            # archive→sloppak conversion select arrangement XMLs identically.
+            json_paths = sorted(_json_walk("*.json"))
+            if own_xml is not None:
+                own_stem = own_xml.stem.lower()
+                found = _find_manifest(
+                    [jf for jf in json_paths if jf.stem.lower() == own_stem])
+                # Without a manifest of the same stem, a match on the name is
+                # safe only when no other part has the same name.
+                same_name = sum(
+                    1 for a in song.arrangements
+                    if (a.name or "").strip().lower() == arr_name_lower)
+                if found is None and same_name <= 1:
+                    found = _find_manifest(json_paths)
+            else:
+                found = _find_manifest(json_paths)
+            if found is not None:
+                arr_tone_names, matched_stem = found
+
+            # Parse XMLs. When the arrangement has a recorded XML file
+            # (`own_xml`), use only that file. Else prefer the XML paired with
+            # the matched manifest (identical stem). When no manifest matched
+            # (loose/custom song), fall back to a name-token match — but rank
+            # by how few *extra* stem tokens a candidate carries, mirroring
+            # lib/tones.py: {"lead"} is a subset of both `song_lead` and
+            # `song_bonus_lead`, so a plain subset test still ties. A unique
+            # fewest-extra match wins; an exact tie among token candidates is
+            # treated as ambiguous — `_token_ambiguous` then suppresses the
+            # rank-2 best-effort fallback, so no arrangement's tone timeline
+            # is guessed at (matching lib/tones.py, which attaches nothing on
+            # a tie). The tokenizer is in lib/tones.py.
             from tones import tokens as _name_tokens
             _arr_tokens = _name_tokens(arr.name) if arr else set()
             _token_pick = None
             _token_ambiguous = False
-            if _arr_tokens and matched_stem is None:
+            if own_xml is None and _arr_tokens and matched_stem is None:
                 _cands = []
                 for xp in xml_paths:
                     stem_tokens = _name_tokens(xp.stem)
@@ -897,21 +946,25 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                         _token_ambiguous = True
 
             def _xml_rank(xp):
+                if own_xml is not None:
+                    return 0 if xp == own_xml else 2
                 if matched_stem and xp.stem.lower() == matched_stem:
                     return 0
                 if _token_pick is not None and xp == _token_pick:
                     return 1
                 return 2
             sorted_xml = sorted(xml_paths, key=lambda xp: (_xml_rank(xp), xp.name))
-            # When the arrangement was positively identified (manifest stem
-            # pair or a unique token match), tone data must come only from
-            # that XML — a rank-2 fallback XML belongs to another
-            # arrangement. A token tie is likewise suppressed (guessing among
-            # equally-named XMLs would be wrong). Only a genuine no-match
-            # case (loose/custom song with no usable manifest and no name overlap)
-            # keeps the long-standing rank-2 best-effort source.
+            # Three things identify the arrangement positively: its recorded
+            # XML file, a manifest stem pair or a unique token match. Then
+            # tone data must come only from that XML — a rank-2 fallback XML
+            # belongs to another arrangement. A token tie is likewise
+            # suppressed (guessing among equally-named XMLs would be wrong).
+            # Only a genuine no-match case (loose/custom song with no usable
+            # manifest and no name overlap) keeps the long-standing rank-2
+            # best-effort source.
             _suppress_fallback = (
-                matched_stem is not None or _token_pick is not None or _token_ambiguous
+                own_xml is not None or matched_stem is not None
+                or _token_pick is not None or _token_ambiguous
             )
             sent_tones = False
             tone_base = ""  # <tonebase> of the preferred arrangement XML

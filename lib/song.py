@@ -202,6 +202,13 @@ class Arrangement:
     # follows the song-level tempo; when present a Reader uses it for this
     # chart and ignores the song-level tempo.
     tempos: list | None = None
+    # Path of the arrangement XML file that load_song() read. "" for other
+    # sources. Two parts of one type can have the same name ("Combo",
+    # "Combo"). The highway uses this path to read the tone changes of each
+    # part from its own XML file. Runtime data only: arrangement_to_wire()
+    # does not write it, so it is not part of the wire format, a sloppak or
+    # a feedpak. It is not chart data, so equality ignores it.
+    source_xml: str = field(default="", compare=False)
 
 
 @dataclass
@@ -1712,6 +1719,7 @@ def load_song(extracted_dir: str) -> Song:
 
         # Parse arrangement
         arrangement = parse_arrangement(str(xml_path))
+        arrangement.source_xml = str(xml_path)
 
         # Override path flags with manifest values when available. The XML
         # bundled inside official DLC archives often has all flags as "0", while
