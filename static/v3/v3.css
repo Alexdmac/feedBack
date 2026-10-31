@@ -1362,3 +1362,11 @@ html.fb-immersive #v3-main > .screen.active {
 /* Skeleton placeholder shown only if a window's fetch hasn't landed; mirrors a
    real card's vertical structure so it occupies an identical row height. */
 .v3-card-skel { pointer-events: none; }
+
+/* ── Home: Continue card + compact "Jump back in" strip ─────────────────────
+   The right column of the hero row is a flex column; the Continue card fills
+   whatever the strip leaves, so both columns end on the same baseline. */
+.v3-continue-fill { flex: 1 1 auto; min-height: 16rem; }
+.v3-jump-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.v3-jump-title { font-size: 0.6875rem; line-height: 1rem; }
+.v3-jump-acc { font-size: 0.5625rem; line-height: 1; padding: 0.125rem 0.25rem; }

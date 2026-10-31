@@ -2,7 +2,8 @@
  * fee[dB]ack v0.3.0 — Dashboard / Home (#v3-home).
  *
  * Composes data from the backends built in other prompts: profile (15),
- * song-stats/recent (14), continue (16), library stats + plugins. Each widget
+ * song-stats/recent (14), continue (16), library stats + plugins, plus the
+ * start of the Song Library (rendered by songs.js's shared cards). Each widget
  * fetches + renders independently and DEGRADES GRACEFULLY — a missing/empty
  * endpoint shows a placeholder, never blocks first paint (design/05 §1).
  * Vanilla JS, fb-* tokens (constitution P-II).
@@ -13,6 +14,9 @@
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const enc = encodeURIComponent;
+    const JUMP_COUNT = 5;       // tiles in the compact "Jump back in" strip
+    // 12 fills whole rows at every grid breakpoint (2 / 3 / 4 / 6 columns).
+    const LIBRARY_COUNT = 12;
     const jget = async (u) => { try { const r = await fetch(u); return r.ok ? r.json() : null; } catch (e) { return null; } };
 
     function libArtUrl(song) {
@@ -28,19 +32,6 @@
         const idx = Math.floor(Math.random() * total);
         const data = await jget('/api/library?size=1&page=' + idx);
         return data && data.songs && data.songs[0] ? data.songs[0] : null;
-    }
-
-    // Accuracy badge ramp (design/04-badges.md §C): ≥90% good, 50–89% mid, <50% low.
-    function accuracyBadge(acc) {
-        if (acc == null) return '';
-        // Floor, never round: 100% must mean every note hit.
-        const pct = Math.floor(acc * 100);
-        const color = acc >= 0.9 ? 'bg-fb-good' : (acc >= 0.5 ? 'bg-fb-mid' : 'bg-fb-low');
-        const text = acc >= 0.5 && acc < 0.9 ? 'text-black' : 'text-white';
-        return '<span class="absolute bottom-0 right-0 ' + color + '/90 ' + text +
-            ' px-2 py-1 rounded-tl-md text-xs font-bold flex items-center gap-1">' +
-            '<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>' +
-            pct + '%</span>';
     }
 
     function songArt(url, extra) {
@@ -62,13 +53,6 @@
             f = (fn.endsWith('.feedpak') || fn.endsWith('.sloppak')) ? 'sloppak' : '';
         }
         return f === 'sloppak' ? 'FEEDPAK' : f === 'loose' ? 'FOLDER' : '';
-    }
-    // Corner badge for art-thumbnail cards (sloppak accented, others muted).
-    function fmtBadge(song) {
-        const l = fmtName(song);
-        if (!l) return '';
-        const c = l === 'FEEDPAK' ? 'bg-fb-primary text-white' : 'bg-black/70 text-fb-textDim';
-        return '<span class="absolute bottom-0 left-0 ' + c + ' text-[0.5625rem] font-bold px-1.5 py-0.5 rounded-tr-md tracking-wide">' + l + '</span>';
     }
     // Inline pill for the hero (Pick/Continue) card, where the art is text-overlaid
     // and a corner badge would collide — sits next to the card's label instead.
@@ -102,7 +86,7 @@
         // Kick off independent fetches.
         const [profile, version, cont, libStats, plugins, recent] = await Promise.all([
             jget('/api/profile'), jget('/api/version'), jget('/api/session/continue'),
-            jget('/api/library/stats'), jget('/api/plugins'), jget('/api/stats/recent?limit=6'),
+            jget('/api/library/stats'), jget('/api/plugins'), jget('/api/stats/recent?limit=' + JUMP_COUNT),
         ]);
 
         const name = (profile && profile.display_name) || 'there';
@@ -114,9 +98,9 @@
 
         // "Jump back in": scored recents, else fall back to recently-added songs
         // so the section is never empty on a fresh profile.
-        let recentList = Array.isArray(recent) ? recent : [];
+        let recentList = Array.isArray(recent) ? recent.slice(0, JUMP_COUNT) : [];
         if (!recentList.length) {
-            const lib = await jget('/api/library?sort=recent&size=6&page=0');
+            const lib = await jget('/api/library?sort=recent&size=' + JUMP_COUNT + '&page=0');
             recentList = ((lib && lib.songs) || []).map((s) => ({
                 filename: s.filename, title: s.title, artist: s.artist,
                 art_url: libArtUrl(s), best_accuracy: null,
@@ -135,7 +119,7 @@
             const bars = Array.from({ length: segs }, (_, i) =>
                 '<span class="flex-1 h-1.5 rounded-full ' + (i < filled ? 'bg-fb-primary' : 'bg-gray-500/40') + '"></span>').join('');
             continueCard =
-                '<button id="v3-continue" data-tour="continue" class="group relative text-left rounded-xl overflow-hidden border border-fb-border/50 bg-fb-card aspect-square self-start flex flex-col justify-end">' +
+                '<button id="v3-continue" data-tour="continue" class="group relative text-left rounded-xl overflow-hidden border border-fb-border/50 bg-fb-card v3-continue-fill flex flex-col justify-end">' +
                 songArt(cont.art_url, 'absolute inset-0 w-full h-full object-cover opacity-60 group-hover:opacity-70 transition') +
                 '<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent"></div>' +
                 tuningChip(cont.tuning_name, 'absolute top-3 right-3') +
@@ -147,7 +131,7 @@
                 '<span class="absolute top-3 left-3 text-fb-text/80 group-hover:text-fb-text">▶</span></button>';
         } else if (pick) {
             continueCard =
-                '<button id="v3-pick" data-tour="continue" data-fn="' + esc(pick.filename) + '" class="group relative text-left rounded-xl overflow-hidden border border-fb-border/50 bg-fb-card aspect-square self-start flex flex-col justify-end">' +
+                '<button id="v3-pick" data-tour="continue" data-fn="' + esc(pick.filename) + '" class="group relative text-left rounded-xl overflow-hidden border border-fb-border/50 bg-fb-card v3-continue-fill flex flex-col justify-end">' +
                 songArt(libArtUrl(pick), 'absolute inset-0 w-full h-full object-cover opacity-60 group-hover:opacity-70 transition') +
                 '<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent"></div>' +
                 tuningChip(pick.tuning_name, 'absolute top-3 right-3') +
@@ -158,29 +142,43 @@
                 '<span class="absolute top-3 left-3 text-fb-text/80 group-hover:text-fb-text">▶</span></button>';
         } else {
             continueCard =
-                '<div data-tour="continue" class="rounded-xl border border-fb-border/50 bg-fb-card/60 aspect-square self-start flex flex-col items-center justify-center text-center p-4">' +
+                '<div data-tour="continue" class="rounded-xl border border-fb-border/50 bg-fb-card/60 v3-continue-fill flex flex-col items-center justify-center text-center p-4">' +
                 '<div class="text-fb-textDim text-sm mb-3">Pick a song to get started</div>' +
                 '<button id="v3-continue-pick" class="bg-fb-card hover:bg-fb-card/70 border border-fb-border/50 text-fb-text text-sm px-4 py-2 rounded-md">Browse library</button></div>';
         }
 
-        // Recently played.
-        let recentSection;
+        // "Jump back in": a compact strip under the Continue card, so the right
+        // column ends flush with the hero's bottom edge.
+        let jumpStrip;
         if (recentList.length) {
-            const cards = recentList.map((r) =>
-                '<button data-recent="' + esc(r.filename) + '" data-arr="' + esc(r.arrangement != null ? r.arrangement : '') + '" class="group text-left">' +
-                '<div class="relative aspect-square rounded-lg overflow-hidden bg-fb-card">' +
+            const tiles = recentList.map((r) =>
+                '<button data-recent="' + esc(r.filename) + '" data-arr="' + esc(r.arrangement != null ? r.arrangement : '') + '" class="group text-left min-w-0" title="' + esc(r.title) + (r.artist ? ' — ' + esc(r.artist) : '') + '">' +
+                '<div class="relative aspect-square rounded-md overflow-hidden bg-fb-card">' +
                 songArt(r.art_url, 'w-full h-full object-cover transition-transform duration-300 group-hover:scale-105') +
-                accuracyBadge(r.best_accuracy) + fmtBadge(r) + '</div>' +
-                '<div class="mt-1 text-sm text-fb-text truncate">' + esc(r.title) + '</div>' +
-                '<div class="text-xs text-fb-textDim truncate">' + esc(r.artist) + '</div></button>').join('');
-            recentSection =
-                '<section class="mt-10"><h3 class="text-2xl font-bold text-fb-text mb-4">Jump back in!</h3>' +
-                '<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">' + cards + '</div></section>';
+                miniAccuracy(r.best_accuracy) + '</div>' +
+                '<div class="v3-jump-title mt-1 text-fb-text truncate">' + esc(r.title) + '</div></button>').join('');
+            jumpStrip =
+                '<section id="v3-jump" class="rounded-xl border border-fb-border/50 bg-fb-card/60 p-3">' +
+                '<h3 class="text-xs uppercase tracking-wider text-fb-textDim mb-2">Jump back in</h3>' +
+                '<div class="v3-jump-row grid gap-2">' + tiles + '</div></section>';
         } else {
-            recentSection =
-                '<section class="mt-10"><h3 class="text-2xl font-bold text-fb-text mb-4">Jump back in!</h3>' +
+            jumpStrip =
+                '<section id="v3-jump" class="rounded-xl border border-fb-border/50 bg-fb-card/60 p-3">' +
+                '<h3 class="text-xs uppercase tracking-wider text-fb-textDim mb-2">Jump back in</h3>' +
                 '<p class="text-fb-textDim text-sm">Play a song to see it here.</p></section>';
         }
+
+        // Song Library: the start of the library, filled in after first paint
+        // by songs.js (same cards as the Song Library page).
+        const librarySection =
+            '<section id="v3-home-library" class="mt-10">' +
+            '<div class="flex items-end justify-between gap-4 mb-4">' +
+            '<div><h3 class="text-2xl font-bold text-fb-text">Song Library</h3>' +
+            '<p id="v3-home-library-sub" class="text-sm text-fb-textDim"></p></div>' +
+            '<button id="v3-home-library-all" class="text-sm font-medium text-fb-primary hover:text-fb-primaryHi whitespace-nowrap">See all songs →</button>' +
+            '</div>' +
+            '<div id="v3-home-library-grid"><p class="text-fb-textDim text-sm">Loading your library…</p></div>' +
+            '</section>';
 
         root.innerHTML =
             '<div class="max-w-7xl mx-auto px-6 md:px-8 pb-8">' +
@@ -206,7 +204,7 @@
             '<button id="v3-start" class="bg-fb-primary hover:bg-fb-primaryHi text-white px-6 py-2 rounded-md font-medium shadow-lg shadow-fb-primary/20">Start Playing</button>' +
             '<button id="v3-lessons-btn" class="bg-transparent border border-fb-textDim hover:border-white text-white px-6 py-2 rounded-md font-medium">Lessons</button>' +
             '</div></div></div>' +
-            continueCard +
+            '<div class="flex flex-col gap-4">' + continueCard + jumpStrip + '</div>' +
             '</div>' +
             // Stats row. The third slot belongs to the career plugin (it
             // replaces the slot's content on v3:dashboard-rendered); the
@@ -219,7 +217,7 @@
             statCard(String(pluginCount), 'active', 'text-fb-good') +
             '</div>' +
             '</div>' +
-            recentSection +
+            librarySection +
             '</div>';
 
         // Wire interactions.
@@ -233,6 +231,7 @@
         root.querySelector('#v3-pick')?.addEventListener('click', () => window.playSong && window.playSong(enc(pick.filename)));
         root.querySelector('#v3-continue-pick')?.addEventListener('click', () => window.showScreen && window.showScreen('v3-songs'));
         root.querySelector('#v3-lessons-btn')?.addEventListener('click', () => window.showScreen && window.showScreen('v3-lessons'));
+        root.querySelector('#v3-home-library-all')?.addEventListener('click', openLibrary);
         root.querySelectorAll('[data-recent]').forEach((b) =>
             b.addEventListener('click', () => {
                 if (!window.playSong) return;
@@ -242,6 +241,8 @@
                 window.playSong(enc(b.getAttribute('data-recent')), arr === '' || arr == null ? undefined : Number(arr));
             }));
 
+        renderLibrary(root);
+
         // Let prompt 18 enhance the audio-routing card once it exists.
         if (window.v3AudioRouting && typeof window.v3AudioRouting.render === 'function') {
             try { window.v3AudioRouting.render(document.getElementById('v3-audio-routing')); } catch (e) { /* */ }
@@ -250,6 +251,45 @@
         // tour can wait for the real cards instead of attaching to nodes from a
         // prior render that this innerHTML swap just replaced.
         try { document.dispatchEvent(new CustomEvent('v3:dashboard-rendered')); } catch (e) { /* older runtimes */ }
+    }
+
+    function openLibrary() {
+        if (window.v3Songs && typeof window.v3Songs.openLibrary === 'function') window.v3Songs.openLibrary();
+        else if (window.showScreen) window.showScreen('v3-songs');
+    }
+
+    // Fill the Song Library section via songs.js's shared card renderer.
+    async function renderLibrary(root) {
+        const grid = root.querySelector('#v3-home-library-grid');
+        const sub = root.querySelector('#v3-home-library-sub');
+        const all = root.querySelector('#v3-home-library-all');
+        if (!grid) return;
+        const api = window.v3Songs;
+        let info = null;
+        if (api && typeof api.renderPreview === 'function') {
+            try { info = await api.renderPreview(grid, { limit: LIBRARY_COUNT }); } catch (e) { info = null; }
+        }
+        if (!grid.isConnected) return;   // a newer render replaced this one
+        if (!info || !info.shown) {
+            grid.innerHTML =
+                '<div class="rounded-xl border border-dashed border-fb-border/60 p-8 text-center">' +
+                '<p class="text-fb-textDim text-sm mb-3">' + (info ? 'Your library is empty. Import a pack or point RockStar at your songs folder to get started.' : 'Couldn\'t load your library.') + '</p>' +
+                '<button data-home-open-library class="bg-fb-card hover:bg-fb-card/70 border border-fb-border/50 text-fb-text text-sm px-4 py-2 rounded-md">Open Song Library</button></div>';
+            grid.querySelector('[data-home-open-library]')?.addEventListener('click', openLibrary);
+            if (sub) sub.textContent = '';
+            return;
+        }
+        if (sub) sub.textContent = info.total + ' song' + (info.total === 1 ? '' : 's') + (info.sortLabel ? ' · ' + info.sortLabel : '');
+        if (all) all.textContent = info.total > info.shown ? 'See all ' + info.total + ' songs →' : 'Open Song Library →';
+    }
+
+    // Small accuracy pill for the compact Jump-back-in tiles.
+    function miniAccuracy(acc) {
+        if (acc == null) return '';
+        const pct = Math.floor(acc * 100);
+        const color = acc >= 0.9 ? 'bg-fb-good' : (acc >= 0.5 ? 'bg-fb-mid' : 'bg-fb-low');
+        const text = acc >= 0.5 && acc < 0.9 ? 'text-black' : 'text-white';
+        return '<span class="v3-jump-acc absolute bottom-0 right-0 ' + color + '/90 ' + text + ' font-bold rounded-tl-md">' + pct + '%</span>';
     }
 
     function statCard(value, unit, unitColor) {

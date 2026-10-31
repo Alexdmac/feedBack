@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Home now opens with your Song Library.** Below the stat cards, Home shows
+  the first twelve songs in your saved Song Library sort, using the same cards
+  as the Song Library page (play, favorite, save, menu, arrangement chips,
+  artist links). "See all songs" opens the full library. "Jump back in"
+  moved into a compact strip under the Continue card so the hero row ends on
+  one line.
 - **Eleven offline practice plugins are bundled.** From the got-feedback
   plugin repos: Metronome, Section Map, Step Mode, Fretboard View, Tab View,
   Jumping Tab, Practice Journal, Setlists, Song Preview, Themes and Lyrics
