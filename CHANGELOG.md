@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Support/donation links.** The red "Support Us!" Patreon button in the
+  top bar is gone; RockStar no longer shows any support or donation links.
+
 ### Added
 - **Eleven offline practice plugins are bundled.** From the got-feedback
   plugin repos: Metronome, Section Map, Step Mode, Fretboard View, Tab View,
