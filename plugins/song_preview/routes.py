@@ -33,7 +33,34 @@ _transcode_locks: dict[str, threading.Lock] = {}
 _locks_mutex = threading.Lock()
 
 # Cap the OGG cache. Without this, the directory grows one file per song forever.
-_CACHE_MAX_BYTES = 256 * 1024 * 1024
+# A clip is about 420 KB, so 1 GiB holds about 2400 clips. The cache holds the
+# sloppak clips, and the loose clips only of a library that the app cannot
+# write to (see _LIBRARY_CLIP_NAME).
+_CACHE_MAX_BYTES = 1024 * 1024 * 1024
+
+# Background warm-up of loose-folder previews: make every missing clip one
+# time, so a hover never waits for a decode. FEEDBACK_PREVIEW_WARMUP=0 turns
+# it off. One worker, one song at a time, so it takes about one CPU core.
+_WARMUP_START_DELAY_S = 20.0
+_WARMUP_REPEAT_S = 600.0
+# Stop a warm-up pass at this fraction of the cap, so it never evicts clips.
+_WARMUP_CACHE_FRACTION = 0.9
+_warmup_stop = threading.Event()
+_warmup_thread: threading.Thread | None = None
+_warmup_state_lock = threading.Lock()
+_warmup_failed_keys: set[str] = set()
+_warmup_state: dict = {
+    "enabled": False, "running": False, "passes": 0,
+    "total": 0, "done": 0, "made": 0, "failed": 0, "stopped": "",
+}
+
+# The clip of a loose song goes into its own folder, with the name that a
+# feedpak uses for its clip. The clips then move with the library, to another
+# PC or to a Linux install. The cache dir is the fallback for a library that
+# the app cannot write to.
+_LIBRARY_CLIP_NAME = "preview.ogg"
+# FAT keeps file times to 2 s, so a copied clip can look up to 2 s too old.
+_CLIP_MTIME_SLACK_S = 2.0
 
 # Hard cap on a single preview clip we'll read into memory. Real previews are
 # tens of KB to a few MB; anything larger is either malformed or a crafted
@@ -233,6 +260,98 @@ def _sloppak_preview_ogg(sloppak_path: Path) -> Path:
     return out
 
 
+def _contained_file(path: Path, root: Path) -> Path | None:
+    """Resolve ``path`` and return it only when it is a file inside ``root``.
+
+    Defeats a symlinked .wem that points outside the folder, which would
+    otherwise turn convert_wem into an arbitrary-file decode primitive.
+    """
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def _loose_preview_source(song_dir: Path) -> tuple[Path, str]:
+    """Pick the source WEM of a loose-folder preview and its cache key.
+
+    Returns ``(wem_path, cache_key)``. The key includes the WEM's mtime+size,
+    so a re-encoded WEM invalidates the clip (mirrors how the host's own
+    loose-folder audio cache is keyed). Raises ``HTTPException`` (400/404)
+    when the folder has no usable audio.
+    """
+    # Host libs (lib/ is on sys.path via the plugin loader / the _LIB shim
+    # above). Imported lazily so module import doesn't hard-depend on the
+    # host being fully wired — matches how the audio module is pulled in
+    # elsewhere in this plugin.
+    try:
+        import loosefolder as loosefolder_mod  # noqa: PLC0415
+    except ImportError as e:
+        print(f"[song_preview] loose-folder preview unavailable (host libs): {e}")
+        raise HTTPException(status_code=404, detail="loose-folder preview unavailable")
+
+    wem = loosefolder_mod.find_audio(song_dir)
+    if wem is None:
+        raise HTTPException(status_code=404, detail="loose folder has no audio")
+    # Re-resolve and re-confirm containment. Mirrors the host's own guard.
+    wem_resolved = _contained_file(wem, song_dir.resolve())
+    if wem_resolved is None:
+        raise HTTPException(status_code=400, detail="audio escapes the loose folder")
+
+    try:
+        wem_stat = wem_resolved.stat()
+    except OSError:
+        raise HTTPException(status_code=404, detail="loose folder has no audio")
+
+    # v2-loose: the clip starts at the chorus. The v1-loose clips (loudest
+    # 30 s) are made again, and LRU eviction removes them.
+    key_input = f"v2-loose:{song_dir}:{wem_stat.st_mtime}:{wem_stat.st_size}"
+    cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:20]
+    return wem_resolved, cache_key
+
+
+def _is_cached(cache_key: str) -> bool:
+    """True when the clip of ``cache_key`` is already in the cache."""
+    try:
+        return (_get_cache_dir() / f"{cache_key}.ogg").stat().st_size > 1000
+    except OSError:
+        return False
+
+
+def _library_clip(song_dir: Path) -> Path | None:
+    """The clip in the song folder, or None when it is missing or stale.
+
+    Stale means older than a .wem of the folder, for example after new audio.
+    """
+    clip = _contained_file(song_dir / _LIBRARY_CLIP_NAME, song_dir.resolve())
+    if clip is None:
+        return None
+    try:
+        st = clip.stat()
+        if not 1000 < st.st_size <= _MAX_PREVIEW_BYTES:
+            return None
+        newest = max((p.stat().st_mtime for p in song_dir.glob("*.wem")), default=0.0)
+    except OSError:
+        return None
+    return clip if st.st_mtime + _CLIP_MTIME_SLACK_S >= newest else None
+
+
+def _write_atomic(data: bytes, out: Path) -> None:
+    """Write ``data`` to ``out`` through a .tmp, so no reader sees half a clip."""
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        tmp.replace(out)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def _loose_preview_ogg(song_dir: Path) -> Path:
     """Generate (and cache) a preview OGG for a loose-folder song.
 
@@ -241,51 +360,32 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
     extract and nowhere natural to inject one. Instead we generate a preview
     on demand from the folder's own WEM — decode it via the host's
     ``convert_wem`` (vgmstream → ogg/mp3), trim+fade a clip out of it — and
-    cache the result. No file is written into the user's loose folder.
+    write the result into the folder as ``preview.ogg``. When the app cannot
+    write there, the clip goes into the cache dir.
 
-    Cache key includes the WEM's mtime+size, so re-encoding the audio
-    in place naturally invalidates a stale preview (mirrors how the host's
-    own loose-folder audio cache is keyed).
+    A clip older than a WEM of the folder is stale (see ``_library_clip``).
+    The cache key includes the WEM's mtime+size, so re-encoding the audio
+    in place also invalidates a cached clip (mirrors how the host's own
+    loose-folder audio cache is keyed).
 
     Any failure to produce a preview (missing decoder, song too short, no
     audio) raises ``HTTPException(404)`` so the client memoises it and the
     hover loop stops retrying — there's no per-card Fix affordance for loose
     songs, and these failure modes are persistent, not transient.
     """
-    # Host libs (lib/ is on sys.path via the plugin loader / the _LIB shim
-    # above). Imported lazily so module import doesn't hard-depend on the
-    # host being fully wired — matches how the audio module is pulled in
-    # elsewhere in this plugin.
     try:
-        import loosefolder as loosefolder_mod  # noqa: PLC0415
         from audio import convert_wem, _ffmpeg_cmd  # noqa: PLC0415
     except ImportError as e:
         print(f"[song_preview] loose-folder preview unavailable (host libs): {e}")
         raise HTTPException(status_code=404, detail="loose-folder preview unavailable")
 
-    wem = loosefolder_mod.find_audio(song_dir)
-    if wem is None:
-        raise HTTPException(status_code=404, detail="loose folder has no audio")
-
-    # Re-resolve and re-confirm containment: defeats a symlinked audio.wem
-    # pointing outside the folder, which would otherwise turn convert_wem
-    # into an arbitrary-file decode primitive. Mirrors the host's own guard.
-    wem_resolved = wem.resolve()
-    try:
-        wem_resolved.relative_to(song_dir.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="audio escapes the loose folder")
-
-    try:
-        wem_stat = wem_resolved.stat()
-    except OSError:
-        raise HTTPException(status_code=404, detail="loose folder has no audio")
-
-    key_input = f"v1-loose:{song_dir}:{wem_stat.st_mtime}:{wem_stat.st_size}"
-    cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:20]
+    wem_resolved, cache_key = _loose_preview_source(song_dir)
     out = _get_cache_dir() / f"{cache_key}.ogg"
     lock = _transcode_lock(cache_key)
     with lock:
+        clip = _library_clip(song_dir)
+        if clip is not None:
+            return clip
         if out.exists() and out.stat().st_size > 1000:
             _touch_cache_entry(out)
             return out
@@ -293,10 +393,14 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
         try:
             with tempfile.TemporaryDirectory(prefix="song_preview_loose_") as td:
                 tmp_dir = Path(td)
-                # convert_wem returns the decoded full-mix path (.ogg/.mp3/.wav).
-                converted = convert_wem(str(wem_resolved), str(tmp_dir / "full"))
+                # keep_wav: the clip builder reads the audio with ffmpeg again,
+                # so the MP3 encode of the full song (about 2 s) is waste.
+                converted = convert_wem(
+                    str(wem_resolved), str(tmp_dir / "full"), keep_wav=True
+                )
                 data, _reason = _backfill.build_preview_from_audio_file(
-                    Path(converted), _ffmpeg_cmd(), tmp_dir
+                    Path(converted), _ffmpeg_cmd(), tmp_dir,
+                    start_hint=_backfill.loose_chorus_start(song_dir),
                 )
         except HTTPException:
             raise
@@ -310,19 +414,139 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
         if not data:
             raise HTTPException(status_code=404, detail="could not generate preview")
 
-        # Atomic write, same discipline as the sloppak preview cache.
-        tmp = out.with_suffix(out.suffix + ".tmp")
+        clip = song_dir / _LIBRARY_CLIP_NAME
         try:
-            tmp.write_bytes(data)
-            tmp.replace(out)
-        finally:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
+            _write_atomic(data, clip)
+            return clip
+        except OSError as e:
+            # Read-only share, or a directory with the clip's name.
+            print(f"[song_preview] cannot write {_LIBRARY_CLIP_NAME} for "
+                  f"{song_dir.name} ({e}), so the clip goes into the cache")
+        _write_atomic(data, out)
         _evict_cache()
     return out
+
+
+def _loose_song_dirs(dlc_root: Path) -> list[Path]:
+    """Every loose-folder song under ``dlc_root``.
+
+    Same rule as the library scan (lib/scan.py): a folder with a non-preview
+    *.wem and an arrangement XML, and not a sloppak/feedpak directory.
+    """
+    try:
+        import loosefolder as loosefolder_mod  # noqa: PLC0415
+    except ImportError:
+        return []
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for wem in sorted(dlc_root.rglob("*.wem")):
+        if "preview" in wem.stem.lower():
+            continue
+        d = wem.parent
+        if d in seen:
+            continue
+        seen.add(d)
+        if d.name.lower().endswith((".sloppak", ".feedpak")):
+            continue
+        if loosefolder_mod.is_loose_song(d):
+            found.append(d)
+    return found
+
+
+def _cache_bytes() -> int:
+    total = 0
+    for p in _get_cache_dir().glob("*.ogg"):
+        try:
+            total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _set_warmup(**fields) -> None:
+    with _warmup_state_lock:
+        _warmup_state.update(fields)
+
+
+def _warmup_pass(dlc_root: Path) -> None:
+    """Make the missing preview clip of each loose folder, one at a time."""
+    dirs = _loose_song_dirs(dlc_root)
+    budget = int(_CACHE_MAX_BYTES * _WARMUP_CACHE_FRACTION)
+    used = _cache_bytes()
+    to_cache = False
+    made = failed = 0
+    _set_warmup(running=True, total=len(dirs), done=0, made=0, failed=0, stopped="")
+    for i, d in enumerate(dirs, 1):
+        if _warmup_stop.is_set():
+            _set_warmup(stopped="shutdown")
+            break
+        # Resolve like /audio does ((dlc_root / file).resolve()), so the
+        # cache key matches the key of a hover on the same song.
+        full = d.resolve()
+        key = None
+        try:
+            _wem, key = _loose_preview_source(full)
+            if key in _warmup_failed_keys:
+                failed += 1
+            elif _library_clip(full) is None and not _is_cached(key):
+                # Only clips that go into the cache (a library that the app
+                # cannot write to) count against the cache cap.
+                if to_cache and used >= budget:
+                    _set_warmup(stopped="cache full")
+                    break
+                out = _loose_preview_ogg(full)
+                if out.parent != full:
+                    to_cache = True
+                    used += out.stat().st_size
+                made += 1
+        except Exception as e:
+            # A song that fails once (too short, corrupt WEM) fails again:
+            # skip it in later passes until its audio changes (new key).
+            failed += 1
+            if key:
+                _warmup_failed_keys.add(key)
+            if not isinstance(e, HTTPException):
+                print(f"[song_preview] warm-up failed for {d.name}: {e}")
+        _set_warmup(done=i, made=made, failed=failed)
+    with _warmup_state_lock:
+        _warmup_state["running"] = False
+        _warmup_state["passes"] += 1
+        first_pass = _warmup_state["passes"] == 1
+    if made or first_pass:
+        print(f"[song_preview] warm-up pass: {made} clips made, {failed} failed, "
+              f"{len(dirs)} loose songs")
+
+
+def _warmup_loop() -> None:
+    if _warmup_stop.wait(_WARMUP_START_DELAY_S):
+        return
+    while True:
+        get_dlc = _context.get("get_dlc_dir")
+        if callable(get_dlc):
+            try:
+                root = Path(get_dlc())
+                if root.is_dir():
+                    _warmup_pass(root)
+            except Exception as e:
+                _set_warmup(running=False)
+                print(f"[song_preview] warm-up pass failed: {e}")
+        # Repeat, so songs imported later also get a clip.
+        if _warmup_stop.wait(_WARMUP_REPEAT_S):
+            return
+
+
+def _start_warmup() -> None:
+    global _warmup_thread
+    if os.environ.get("FEEDBACK_PREVIEW_WARMUP", "1").strip() == "0":
+        return
+    if _warmup_thread is not None and _warmup_thread.is_alive():
+        return
+    _warmup_stop.clear()
+    _set_warmup(enabled=True)
+    _warmup_thread = threading.Thread(
+        target=_warmup_loop, name="song_preview-warmup", daemon=True
+    )
+    _warmup_thread.start()
 
 
 def _range_response(path: Path, request: Request) -> StreamingResponse:
@@ -575,6 +799,14 @@ def setup(app: FastAPI, context: dict) -> None:
         """
         with _file_progress_lock:
             return _file_progress.get(file, {"stage": "idle", "progress": 0})
+
+    @app.get("/api/plugins/song_preview/warmup-status")
+    def get_warmup_status():
+        """Snapshot of the loose-folder preview warm-up (see _warmup_pass)."""
+        with _warmup_state_lock:
+            return dict(_warmup_state)
+
+    _start_warmup()
 
     @app.get("/api/plugins/song_preview/js/{filename}")
     def get_js(filename: str, request: Request):

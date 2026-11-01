@@ -34,6 +34,12 @@ def _load_sibling(name):
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _no_warmup(monkeypatch):
+    # setup() starts the preview warm-up thread unless this is "0".
+    monkeypatch.setenv("FEEDBACK_PREVIEW_WARMUP", "0")
+
+
 @pytest.fixture
 def config_dir(tmp_path):
     return tmp_path / "config"

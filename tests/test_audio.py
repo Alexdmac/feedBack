@@ -622,3 +622,48 @@ def test_convert_wem_reports_decode_failure_not_missing_decoder(tmp_path, monkey
 
     with pytest.raises(RuntimeError, match=r"Failed to decode WEM .*vgmstream: boom"):
         convert_wem(str(tmp_path / "missing.wem"), str(tmp_path / "out"))
+
+
+# --- keep_wav (song preview) --------------------------------------------------
+#
+# Platform-independent: the decoder and ffmpeg are stubbed in Python, so no
+# `@requires_posix_subprocess` marker.
+
+def _stub_vgmstream_decode(monkeypatch, ffmpeg_calls):
+    def fake_decode(vgmstream, wem_path, wav_path):
+        Path(wav_path).write_bytes(b"RIFFfakewavdata")
+        return True, ""
+
+    def fake_run(cmd, *args, **kwargs):
+        ffmpeg_calls.append(cmd)
+        Path(cmd[-1]).write_bytes(b"fakemp3")
+
+        class R:
+            returncode = 0
+            stderr = b""
+        return R()
+
+    monkeypatch.setattr("audio._vgmstream_cmd", lambda resolution_notes=None: "vgmstream-cli")
+    monkeypatch.setattr("audio._decode_wem_to_wav", fake_decode)
+    monkeypatch.setattr("audio._ffmpeg_cmd", lambda: "ffmpeg")
+    monkeypatch.setattr("audio.subprocess.run", fake_run)
+
+
+def test_convert_wem_keep_wav_skips_the_mp3_encode(tmp_path, monkeypatch):
+    """The song preview reads the decoded audio with ffmpeg again, so it
+    asks for the WAV: no MP3 encode of the full song."""
+    calls = []
+    _stub_vgmstream_decode(monkeypatch, calls)
+    result = convert_wem(str(tmp_path / "song.wem"), str(tmp_path / "out"), keep_wav=True)
+    assert result.endswith(".wav")
+    assert Path(result).exists()
+    assert calls == []
+
+
+def test_convert_wem_default_still_makes_mp3(tmp_path, monkeypatch):
+    calls = []
+    _stub_vgmstream_decode(monkeypatch, calls)
+    result = convert_wem(str(tmp_path / "song.wem"), str(tmp_path / "out"))
+    assert result.endswith(".mp3")
+    assert len(calls) == 1
+    assert not (tmp_path / "out.wav").exists()
