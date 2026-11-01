@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from jsDelivr, so it works offline. Metronome's upstream script had a
   top-level `return` that is a syntax error in the browser, which kept it
   from loading at all; that is fixed here.
+- **New `.psarc` files in the library convert automatically.** The Import
+  packs plugin checks the library folder every 30 seconds. Each `.psarc`
+  that has no song folder yet converts as soon as it stops changing (a big
+  file can still be in copy), and the new songs show in the library. The
+  `.psarc` stays where it is. A file that gives no song is not tried again
+  until it changes or the server starts again. `FEEDBACK_PSARC_AUTO_IMPORT=0`
+  turns this off. The converter scripts and the plugin now also work without
+  DLC Builder, with the libraries that an earlier import unpacked.
 - **Tray launcher for Windows.** `scripts/rockstar_tray.py` runs the server
   with no console window behind a RockStar tray icon (Open RockStar, Open log,
   Quit), so you can see that the app is running and stop it cleanly. A second
