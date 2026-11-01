@@ -190,6 +190,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pack's own preview (`audio_preview.wem`), the plugin plays that clip.
   `tools/psarc_import/Extract-Previews.ps1` copies it from each `.psarc` into
   its song folder.
+- **Song Preview of a loose-folder song starts at the chorus.** The clip
+  starts 1 s before the earliest `chorus` section of the song's charts
+  (`chorus2` counts, `prechorus` does not), else a `hook` section, else the
+  loudest 30 s as before. In a library of 1737 songs, 1256 (72 %) name a
+  chorus and 20 a hook. Most of the other songs are riff songs with no
+  chorus. The plugin makes the clips from before this change again.
 - **`GET /api/song/{f}?stems=1`** (new, opt-in) — returns the pack's playable stem
   list (`[{id, url, default}]` + `full_mix_url`), the same list the highway's WS
   `ready` sends. The stems plugin could only learn it from that WS message, which

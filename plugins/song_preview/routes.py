@@ -323,9 +323,9 @@ def _loose_preview_source(song_dir: Path) -> tuple[Path, str, bool]:
     except OSError:
         raise HTTPException(status_code=404, detail="loose folder has no audio")
 
-    # v1-loose stays the key of a clip cut from audio.wem, so clips made
-    # before the pack-preview support stay valid.
-    kind = "v1-loose-preview" if official else "v1-loose"
+    # v2-loose: a clip cut from audio.wem starts at the chorus. The v1-loose
+    # clips (loudest 30 s) are made again, and LRU eviction removes them.
+    kind = "v1-loose-preview" if official else "v2-loose"
     key_input = f"{kind}:{song_dir}:{wem_stat.st_mtime}:{wem_stat.st_size}"
     cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:20]
     return wem_resolved, cache_key, official
@@ -391,7 +391,8 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
                     )
                 else:
                     data, _reason = _backfill.build_preview_from_audio_file(
-                        Path(converted), _ffmpeg_cmd(), tmp_dir
+                        Path(converted), _ffmpeg_cmd(), tmp_dir,
+                        start_hint=_backfill.loose_chorus_start(song_dir),
                     )
         except HTTPException:
             raise
