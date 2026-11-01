@@ -363,10 +363,14 @@ def find_wem_files(extracted_dir: str) -> list[str]:
     return [str(f) for f in wem_files]
 
 
-def convert_wem(wem_path: str, output_base: str) -> str:
+def convert_wem(wem_path: str, output_base: str, keep_wav: bool = False) -> str:
     """
     Convert a WEM file to a playable format.
     Returns path to the converted audio file.
+
+    ``keep_wav=True`` returns the vgmstream WAV and skips the MP3 encode of
+    the full song (about 2 s). Use it when the caller only reads the audio
+    with ffmpeg again, e.g. the song preview clip.
     """
     # `errors` holds *attempted-decoder* failures (something ran, didn't
     # work); `resolution_notes` holds *configuration* warnings (e.g.
@@ -385,7 +389,7 @@ def convert_wem(wem_path: str, output_base: str) -> str:
         wav = output_base + ".wav"
         ok, detail = _decode_wem_to_wav(vgmstream, wem_path, wav)
         if ok:
-            ffmpeg = _ffmpeg_cmd()
+            ffmpeg = None if keep_wav else _ffmpeg_cmd()
             if ffmpeg:
                 mp3 = output_base + ".mp3"
                 # Same OSError/timeout protection as the direct-fallback

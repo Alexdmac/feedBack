@@ -178,6 +178,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in that mode.
 
 ### Changed
+- **Song Preview starts much sooner on a loose-folder song.** The first hover
+  made the clip from the full song and also encoded the full song to MP3,
+  which the clip never used: 2.5 to 2.7 s before the first sound. The clip
+  now comes from the decoded WAV (`convert_wem(..., keep_wav=True)`), about
+  0.9 s. A background job also makes the clip of every loose song one time
+  after the app starts, one song at a time, and then checks for new songs
+  every 10 minutes. After that job, a hover plays in a few milliseconds.
+  `FEEDBACK_PREVIEW_WARMUP=0` turns the job off. The clip cache cap is now
+  1 GiB (was 256 MB), so a whole library fits. When a song folder holds the
+  pack's own preview (`audio_preview.wem`), the plugin plays that clip.
+  `tools/psarc_import/Extract-Previews.ps1` copies it from each `.psarc` into
+  its song folder.
 - **`GET /api/song/{f}?stems=1`** (new, opt-in) — returns the pack's playable stem
   list (`[{id, url, default}]` + `full_mix_url`), the same list the highway's WS
   `ready` sends. The stems plugin could only learn it from that WS message, which
