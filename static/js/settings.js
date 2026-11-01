@@ -121,6 +121,8 @@ export async function loadSettings() {
     if (demucsEl) demucsEl.value = data.demucs_server_url || '';
     const leftyEl = document.getElementById('setting-lefty');
     if (leftyEl) leftyEl.checked = window.highway.getLefty();
+    const invertEl = document.getElementById('setting-invert-highway');
+    if (invertEl) invertEl.checked = window.highway.getInverted();
     const autoplayExitEl = document.getElementById('setting-autoplay-exit');
     if (autoplayExitEl) autoplayExitEl.checked = _autoplayExitEnabled();
     const showUpNextEl = document.getElementById('setting-show-upnext');
