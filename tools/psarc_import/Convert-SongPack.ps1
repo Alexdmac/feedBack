@@ -5,8 +5,9 @@ Convert the songs in a Rocksmith 2014 song pack into FeedBack loose-folder songs
 .DESCRIPTION
 Convert-Psarc.ps1 cannot import a song pack: the DLC Builder importer refuses a
 .psarc that holds more than one .xblock file. This script reads the pack with
-the same DLC Builder libraries and writes one folder per song in -Library, in
-the layout of Convert-Psarc.ps1:
+the same DLC Builder libraries (or, without DLCBuilder.exe, the newest
+libraries that an earlier run unpacked) and writes one folder per song in
+-Library, in the layout of Convert-Psarc.ps1:
     audio.wem                 main audio (the app decodes it at play time)
     arr_<part>_RS2.xml        arrangements, vocals and showlights (<offset> set to 0)
     cover.jpg                 album art
@@ -64,13 +65,23 @@ $AudioPack = @($AudioPack | ForEach-Object { $_ -split ',' } | ForEach-Object { 
 
 # ── Libraries from DLCBuilder.exe ────────────────────────────────────────────
 $exe = Join-Path $DlcBuilder 'DLCBuilder.exe'
-if (-not (Test-Path $exe)) { throw "DLC Builder not found at $exe" }
-$version = (Get-Item $exe).VersionInfo.FileVersion
-$libDir = Join-Path $env:LOCALAPPDATA "FeedBack\dlcbuilder-libs\$version"
-if (-not (Test-Path (Join-Path $libDir 'Rocksmith2014.DLCProject.dll'))) {
-    Write-Host "Unpacking DLC Builder $version libraries to $libDir"
-    & $python -I (Join-Path $PSScriptRoot 'extract_bundle.py') $exe $libDir
-    if ($LASTEXITCODE -ne 0) { throw "Could not unpack the libraries from $exe" }
+$libRoot = Join-Path $env:LOCALAPPDATA 'FeedBack\dlcbuilder-libs'
+if (Test-Path $exe) {
+    $version = (Get-Item $exe).VersionInfo.FileVersion
+    $libDir = Join-Path $libRoot $version
+    if (-not (Test-Path (Join-Path $libDir 'Rocksmith2014.DLCProject.dll'))) {
+        Write-Host "Unpacking DLC Builder $version libraries to $libDir"
+        & $python -I (Join-Path $PSScriptRoot 'extract_bundle.py') $exe $libDir
+        if ($LASTEXITCODE -ne 0) { throw "Could not unpack the libraries from $exe" }
+    }
+} else {
+    # DLC Builder is not installed: use the newest libraries that an earlier run unpacked.
+    $libDir = Get-ChildItem -LiteralPath $libRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName 'Rocksmith2014.DLCProject.dll') } |
+        Sort-Object { $v = $null; if ([version]::TryParse($_.Name, [ref]$v)) { $v } else { [version]'0.0' } } -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $libDir) { throw "DLC Builder not found at $exe, and no unpacked libraries in $libRoot" }
+    Write-Host "DLC Builder not found at $exe. Using the libraries in $libDir"
 }
 
 # Load every managed library now, on this thread. Library code runs on worker

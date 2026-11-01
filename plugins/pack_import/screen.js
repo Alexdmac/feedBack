@@ -20,6 +20,7 @@
             path: $('pi-path'),
             pathGo: $('pi-path-go'),
             unavailable: $('pi-unavailable'),
+            auto: $('pi-auto'),
             job: $('pi-job'),
             jobTitle: $('pi-job-title'),
             jobState: $('pi-job-state'),
@@ -96,6 +97,11 @@
             const st = await resp.json();
             els.unavailable.classList.toggle('hidden', !!st.available);
             els.unavailable.textContent = st.available ? '' : st.reason;
+            // A file must stay the same for one check before it converts.
+            els.auto.classList.toggle('hidden', !st.auto);
+            els.auto.textContent = st.auto
+                ? `New .psarc files in your library folder convert automatically, within ${2 * st.auto_interval} seconds after the copy ends.`
+                : '';
             if (st.job) showJob(st.job);
         } catch (e) {
             els.unavailable.classList.remove('hidden');
