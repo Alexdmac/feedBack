@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A tile in the chain has a small button that opens the plugin window.
   - Pictures: the player's own picture comes first. Put image files (PNG,
     JPEG or WebP) named after the plugins in one folder, for example
-    `Abasi.png` or `CoryWongX.png`. The folder is the new `vst_images_dir`
+    `Abasi.png` or `CoryWongX.png`. A part of the name at its start or its
+    end also matches, for example `MansoorX.png` for "Misha Mansoor X".
+    The folder is the new `vst_images_dir`
     setting, or `vst_images` in the config folder. The new
     `GET /api/vst/images` and `GET /api/vst/image/<file>` routes list and
     serve these files, and only image files directly in that folder.

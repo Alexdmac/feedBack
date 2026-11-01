@@ -533,14 +533,23 @@
         return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     }
     // The player's picture of a plugin: a file named after the short name
-    // ("Abasi.png") or the full name ("Archetype Abasi.png"), else null.
+    // ("Abasi.png") or the full name ("Archetype Abasi.png"). Else a file
+    // named after the start or the end of the short name, 4 characters or
+    // more ("MansoorX.png" for "Misha Mansoor X"). The longest match wins.
+    // Else null.
     function vstImageFor(p, images) {
         if (!p || !images) return null;
-        const keys = [vstNameKey(vstShortName(p.name)), vstNameKey(p.name)];
+        const short = vstNameKey(vstShortName(p.name));
+        const keys = [short, vstNameKey(p.name)];
         for (const k of keys) {
             if (k && typeof images[k] === 'string') return images[k];
         }
-        return null;
+        if (!short) return null;
+        const part = Object.keys(images)
+            .filter((k) => k.length >= 4 && typeof images[k] === 'string'
+                && (short.startsWith(k) || short.endsWith(k)))
+            .sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
+        return part.length ? images[part[0]] : null;
     }
     // What a click on the tile of plugin p does, from the chain (VST slots)
     // and the path keys of the one-at-a-time plugins (soloKeys):

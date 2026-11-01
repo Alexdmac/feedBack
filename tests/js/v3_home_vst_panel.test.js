@@ -143,6 +143,20 @@ test('vstNameKey and vstImageFor: the picture file named after the plugin', () =
     assert.equal(h.vstImageFor(null, images), null);
 });
 
+test('vstImageFor: a file named after the start or the end of the short name', () => {
+    const p = (name) => plugin(name, 'Neural DSP', 'C:/x/' + name + '.vst3');
+    const images = { mansoorx: '/m.png', asato: '/a.png', misha: '/mi.png', gorja: '/g.png', nolly: '/n.png', x: '/x.png', tim: '/t.png' };
+    // The end of "mishamansoorx" is longer than its start, so it wins.
+    assert.equal(h.vstImageFor(p('Archetype Misha Mansoor X'), images), '/m.png');
+    assert.equal(h.vstImageFor(p('Archetype Mateus Asato'), images), '/a.png');
+    assert.equal(h.vstImageFor(p('Archetype Nolly X'), images), '/n.png');
+    // A spelling error does not match. A part of 3 characters or fewer does not match.
+    assert.equal(h.vstImageFor(p('Archetype Gojira'), images), null);
+    assert.equal(h.vstImageFor(p('Archetype Tim Henson X'), images), null);
+    // A full match comes before a part match.
+    assert.equal(h.vstImageFor(p('Archetype Nolly X'), Object.assign({ nollyx: '/nx.png' }, images)), '/nx.png');
+});
+
 test('vstClickPlan: a click is a footswitch, and only one Archetype plugin stays in the chain', () => {
     const abasi = plugin('Archetype Abasi', 'Neural DSP', 'C:/VST3/Archetype Abasi.vst3');
     const cory = plugin('Archetype Cory Wong X', 'Neural DSP', 'C:/VST3/Archetype Cory Wong X.vst3');
