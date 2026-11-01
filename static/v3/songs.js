@@ -73,6 +73,7 @@
         // or raw name). The gates mirror the two Settings toggles: pages are
         // local-only and default ON; the external-links row is opt-in.
         artistPage: null,
+        pendingArtist: null,   // artist page requested from Home; opened on Songs enter
         artistReturnScroll: null,   // scrollTop to restore on ← Song Library
         artistPagesEnabled: true,
         artistLinksEnabled: false,
@@ -3826,6 +3827,18 @@
     }
 
     async function onV3SongsScreenEnter() {
+        // Home's library preview asked for an artist page: make sure the Songs
+        // DOM is built (and fresh), then open it — skipping the scroll-restore
+        // paths below, which would land the user back in the grid.
+        if (state.pendingArtist) {
+            const name = state.pendingArtist;
+            state.pendingArtist = null;
+            if (!(state.built && _chromeIntact())) await render();
+            else if (_libraryDirty) { _libraryDirty = false; await reload(); }
+            refreshArtistPageGates();
+            await openArtistPage(name);
+            return;
+        }
         // A library scan / DLC-folder change marked the grid stale — re-fetch
         // from scratch instead of restoring a cached (possibly empty, pre-DLC)
         // snapshot. Must win over every fast-path below.
@@ -4228,8 +4241,88 @@
         }
     }
 
+    // ── Home-page library preview ─────────────────────────────────────────
+    // Home (#v3-home) opens with the start of the library: the first page of
+    // songs in the user's saved Songs sort, drawn with the SAME songCard() /
+    // wireCards() as the grid, so play / ♥ / 🔖 / ⋮ / arrangement chips behave
+    // identically on both screens. Unfiltered on purpose (it's the front
+    // door) — search and filters live on the full Song Library page.
+    let _previewToken = 0;
+    async function renderPreview(host, opts) {
+        if (!host) return null;
+        const limit = Math.max(1, Math.min(48, (opts && opts.limit) || 12));
+        if (!_prefsRestored) { applySavedPrefs(); _prefsRestored = true; }
+        const myToken = ++_previewToken;
+        const p = new URLSearchParams();
+        p.set('provider', state.provider);
+        p.set('sort', state.sort);
+        if (libInstrument() !== 'guitar-lead') p.set('instrument', libInstrument());
+        if (groupingActive()) p.set('group', '1');
+        p.set('page', '0');
+        p.set('size', String(limit));
+        const [data, acc] = await Promise.all([
+            jget('/api/library?' + p.toString()),
+            jget('/api/stats/best'),
+            refreshArtistPageGates(),
+        ]);
+        if (myToken !== _previewToken || !host.isConnected) return null;   // superseded
+        const songs = (data && data.songs) || [];
+        songs.forEach((s) => { state.songsById[cardKey(s)] = s; });
+        // Badges read state.accuracy. Swap the fresh map in only for this
+        // synchronous paint: overwriting it would hide new scores from the
+        // Songs screen's own applyScoreRefresh diff.
+        const savedAcc = state.accuracy;
+        if (acc) state.accuracy = acc;
+        let html = '';
+        try { html = songs.map(songCard).join(''); } finally { state.accuracy = savedAcc; }
+        host.innerHTML = songs.length
+            ? '<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">' + html + '</div>'
+            : '';
+        // Artist line → the artist page, which lives on the Songs screen.
+        // Capture phase so it wins over wireCards' in-place handler.
+        if (!host.dataset.previewWired) {
+            host.dataset.previewWired = '1';
+            host.addEventListener('click', (e) => {
+                const btn = e.target.closest && e.target.closest('[data-v3-artist]');
+                if (!btn || !host.contains(btn)) return;
+                e.stopPropagation();
+                e.preventDefault();
+                const card = btn.closest('[data-fn]');
+                const song = card && state.songsById[card.getAttribute('data-fn')];
+                if (song && song.artist) openArtistFromElsewhere(song.artist);
+            }, true);
+        }
+        wireCards(host);
+        decorateTuningChips(host);   // feature-detected; no-op without the capability
+        const sortEntry = SORTS.find(([v]) => v === state.sort);
+        return {
+            total: (data && data.total) || songs.length,
+            shown: songs.length,
+            sortLabel: sortEntry ? sortEntry[1] : '',
+        };
+    }
+
+    // "See all songs" from Home: land on the library browse view, not on an
+    // artist sub-page left open from an earlier visit.
+    function openLibraryFromElsewhere() {
+        state.pendingArtist = null;
+        if (state.artistPage) closeArtistPage();
+        if (window.showScreen) window.showScreen('v3-songs');
+    }
+
+    // Open an artist page from another screen (Home): switch to Songs, and let
+    // the screen-enter path open the page once the Songs DOM exists.
+    function openArtistFromElsewhere(name) {
+        if (!name) return;
+        state.pendingArtist = name;
+        if (window.showScreen) window.showScreen('v3-songs');
+    }
+
     window.v3Songs = {
         render: render,
+        renderPreview: renderPreview,
+        openArtist: openArtistFromElsewhere,
+        openLibrary: openLibraryFromElsewhere,
         reload: reload,
         search: search,
         setQuery: (q) => { state.q = q || ''; },
