@@ -1,5 +1,11 @@
-"""Loose-folder previews: source pick (pack preview vs audio.wem) and the
-background warm-up. Decoding is stubbed: no vgmstream or ffmpeg needed."""
+"""Loose-folder previews: source pick (pack preview vs audio.wem), the clip in
+the song folder, and the background warm-up. Decoding is stubbed: no
+vgmstream or ffmpeg needed."""
+
+import os
+import sys
+import types
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -127,3 +133,107 @@ def test_warmup_status_route(client):
     assert r.status_code == 200
     body = r.json()
     assert {"enabled", "running", "total", "done", "made", "failed"} <= set(body)
+
+
+# ── Clips in the song folder (preview.ogg) ──────────────────────────────────
+
+def _clip(song_dir, age_vs_audio, size=2000):
+    """Write preview.ogg, ``age_vs_audio`` seconds newer than audio.wem."""
+    clip = song_dir / "preview.ogg"
+    clip.write_bytes(b"c" * size)
+    t = (song_dir / "audio.wem").stat().st_mtime
+    os.utime(clip, (t + age_vs_audio, t + age_vs_audio))
+    return clip
+
+
+def test_library_clip_fresh_or_stale(tmp_path):
+    d = _song(tmp_path, "Song")
+    _clip(d, 10)
+    assert routes._library_clip(d) == (d / "preview.ogg").resolve()
+    _clip(d, -1)  # inside the 2 s slack of a FAT copy
+    assert routes._library_clip(d) is not None
+    _clip(d, -10)
+    assert routes._library_clip(d) is None
+
+
+def test_library_clip_too_small_is_ignored(tmp_path):
+    d = _song(tmp_path, "Song")
+    _clip(d, 10, size=10)
+    assert routes._library_clip(d) is None
+
+
+def test_library_clip_is_stale_after_a_new_pack_preview(tmp_path):
+    d = _song(tmp_path, "Song")
+    _clip(d, 10)
+    prev = d / "audio_preview.wem"
+    prev.write_bytes(b"prev" * 10)
+    t = (d / "audio.wem").stat().st_mtime + 60
+    os.utime(prev, (t, t))
+    assert routes._library_clip(d) is None
+
+
+@pytest.fixture
+def fake_decode(monkeypatch):
+    """Stub the decode and the clip cut. Returns the start hints passed in."""
+    hints = []
+
+    def convert_wem(_src, base, keep_wav=False):
+        wav = Path(base + ".wav")
+        wav.write_bytes(b"wav")
+        return str(wav)
+
+    def build(_path, _ffmpeg, _tmp, start_hint=None):
+        hints.append(start_hint)
+        return b"o" * 3000, "test"
+
+    monkeypatch.setitem(sys.modules, "audio", types.SimpleNamespace(
+        convert_wem=convert_wem, _ffmpeg_cmd=lambda: "ffmpeg"))
+    monkeypatch.setattr(routes, "_backfill", types.SimpleNamespace(
+        build_preview_from_audio_file=build,
+        loose_chorus_start=lambda _d: (9.0, "chorus"),
+        _render_preview_clip=lambda *_a: b"p" * 3000,
+    ))
+    return hints
+
+
+def test_loose_clip_goes_into_the_song_folder(tmp_path, cache, fake_decode):
+    d = _song(tmp_path, "Song").resolve()
+    out = routes._loose_preview_ogg(d)
+    assert out == d / "preview.ogg"
+    assert out.read_bytes() == b"o" * 3000
+    assert fake_decode == [(9.0, "chorus")]
+    assert list(cache.glob("*.ogg")) == []
+    # The next hover serves the same file and makes nothing.
+    assert routes._loose_preview_ogg(d) == out
+    assert len(fake_decode) == 1
+
+
+def test_unwritable_song_folder_uses_the_cache(tmp_path, cache, fake_decode, capsys):
+    d = _song(tmp_path, "Song").resolve()
+    (d / "preview.ogg").mkdir()  # the clip cannot replace a directory
+    out = routes._loose_preview_ogg(d)
+    assert out.parent == cache
+    assert "cannot write preview.ogg" in capsys.readouterr().out
+    assert routes._loose_preview_ogg(d) == out
+    assert len(fake_decode) == 1
+
+
+def test_warmup_skips_a_song_with_a_library_clip(tmp_path, cache, monkeypatch):
+    lib = tmp_path / "lib"
+    _clip(_song(lib, "A"), 10)
+    made = []
+    monkeypatch.setattr(routes, "_loose_preview_ogg", _fake_make(cache, made))
+    routes._warmup_pass(lib)
+    assert made == []
+
+
+def test_warmup_library_clips_ignore_the_cache_cap(tmp_path, cache, monkeypatch, fake_decode):
+    lib = tmp_path / "lib"
+    _song(lib, "A")
+    _song(lib, "B")
+    (cache / "old.ogg").write_bytes(b"x" * 5000)  # the cache is already full
+    monkeypatch.setattr(routes, "_CACHE_MAX_BYTES", 2000)
+    routes._warmup_pass(lib)
+    assert routes._warmup_state["made"] == 2
+    assert routes._warmup_state["stopped"] == ""
+    assert (lib / "A" / "preview.ogg").is_file()

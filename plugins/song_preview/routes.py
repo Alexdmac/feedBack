@@ -33,8 +33,9 @@ _transcode_locks: dict[str, threading.Lock] = {}
 _locks_mutex = threading.Lock()
 
 # Cap the OGG cache. Without this, the directory grows one file per song forever.
-# A clip is about 420 KB, so 1 GiB holds about 2400 clips: a whole library of
-# loose folders fits, and the warm-up below can fill it without eviction.
+# A clip is about 420 KB, so 1 GiB holds about 2400 clips. The cache holds the
+# sloppak clips, and the loose clips only of a library that the app cannot
+# write to (see _LIBRARY_CLIP_NAME).
 _CACHE_MAX_BYTES = 1024 * 1024 * 1024
 
 # Background warm-up of loose-folder previews: make every missing clip one
@@ -57,6 +58,14 @@ _warmup_state: dict = {
 # by tools/psarc_import/Extract-Previews.ps1. Any other *.wem with "preview"
 # in its name also counts (the library scan already skips those as main audio).
 _PREVIEW_WEM_NAMES = ("audio_preview.wem",)
+
+# The clip of a loose song goes into its own folder, with the name that a
+# feedpak uses for its clip. The clips then move with the library, to another
+# PC or to a Linux install. The cache dir is the fallback for a library that
+# the app cannot write to.
+_LIBRARY_CLIP_NAME = "preview.ogg"
+# FAT keeps file times to 2 s, so a copied clip can look up to 2 s too old.
+_CLIP_MTIME_SLACK_S = 2.0
 
 # Hard cap on a single preview clip we'll read into memory. Real previews are
 # tens of KB to a few MB; anything larger is either malformed or a crafted
@@ -339,6 +348,39 @@ def _is_cached(cache_key: str) -> bool:
         return False
 
 
+def _library_clip(song_dir: Path) -> Path | None:
+    """The clip in the song folder, or None when it is missing or stale.
+
+    Stale means older than a .wem of the folder: new audio, or a pack preview
+    that is newer than the clip.
+    """
+    clip = _contained_file(song_dir / _LIBRARY_CLIP_NAME, song_dir.resolve())
+    if clip is None:
+        return None
+    try:
+        st = clip.stat()
+        if not 1000 < st.st_size <= _MAX_PREVIEW_BYTES:
+            return None
+        newest = max((p.stat().st_mtime for p in song_dir.glob("*.wem")), default=0.0)
+    except OSError:
+        return None
+    return clip if st.st_mtime + _CLIP_MTIME_SLACK_S >= newest else None
+
+
+def _write_atomic(data: bytes, out: Path) -> None:
+    """Write ``data`` to ``out`` through a .tmp, so no reader sees half a clip."""
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        tmp.replace(out)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def _loose_preview_ogg(song_dir: Path) -> Path:
     """Generate (and cache) a preview OGG for a loose-folder song.
 
@@ -347,11 +389,13 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
     extract and nowhere natural to inject one. Instead we generate a preview
     on demand from the folder's own WEM — decode it via the host's
     ``convert_wem`` (vgmstream → ogg/mp3), trim+fade a clip out of it — and
-    cache the result. No file is written into the user's loose folder.
+    write the result into the folder as ``preview.ogg``. When the app cannot
+    write there, the clip goes into the cache dir.
 
-    Cache key includes the WEM's mtime+size, so re-encoding the audio
-    in place naturally invalidates a stale preview (mirrors how the host's
-    own loose-folder audio cache is keyed).
+    A clip older than a WEM of the folder is stale (see ``_library_clip``).
+    The cache key includes the WEM's mtime+size, so re-encoding the audio
+    in place also invalidates a cached clip (mirrors how the host's own
+    loose-folder audio cache is keyed).
 
     When the folder holds the pack's own preview clip (``audio_preview.wem``),
     that clip is the source: the charter picked it, and it is only 30 s to
@@ -372,6 +416,9 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
     out = _get_cache_dir() / f"{cache_key}.ogg"
     lock = _transcode_lock(cache_key)
     with lock:
+        clip = _library_clip(song_dir)
+        if clip is not None:
+            return clip
         if out.exists() and out.stat().st_size > 1000:
             _touch_cache_entry(out)
             return out
@@ -406,17 +453,15 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
         if not data:
             raise HTTPException(status_code=404, detail="could not generate preview")
 
-        # Atomic write, same discipline as the sloppak preview cache.
-        tmp = out.with_suffix(out.suffix + ".tmp")
+        clip = song_dir / _LIBRARY_CLIP_NAME
         try:
-            tmp.write_bytes(data)
-            tmp.replace(out)
-        finally:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
+            _write_atomic(data, clip)
+            return clip
+        except OSError as e:
+            # Read-only share, or a directory with the clip's name.
+            print(f"[song_preview] cannot write {_LIBRARY_CLIP_NAME} for "
+                  f"{song_dir.name} ({e}), so the clip goes into the cache")
+        _write_atomic(data, out)
         _evict_cache()
     return out
 
@@ -467,6 +512,7 @@ def _warmup_pass(dlc_root: Path) -> None:
     dirs = _loose_song_dirs(dlc_root)
     budget = int(_CACHE_MAX_BYTES * _WARMUP_CACHE_FRACTION)
     used = _cache_bytes()
+    to_cache = False
     made = failed = 0
     _set_warmup(running=True, total=len(dirs), done=0, made=0, failed=0, stopped="")
     for i, d in enumerate(dirs, 1):
@@ -481,12 +527,16 @@ def _warmup_pass(dlc_root: Path) -> None:
             _wem, key, _official = _loose_preview_source(full)
             if key in _warmup_failed_keys:
                 failed += 1
-            elif not _is_cached(key):
-                if used >= budget:
+            elif _library_clip(full) is None and not _is_cached(key):
+                # Only clips that go into the cache (a library that the app
+                # cannot write to) count against the cache cap.
+                if to_cache and used >= budget:
                     _set_warmup(stopped="cache full")
                     break
                 out = _loose_preview_ogg(full)
-                used += out.stat().st_size
+                if out.parent != full:
+                    to_cache = True
+                    used += out.stat().st_size
                 made += 1
         except Exception as e:
             # A song that fails once (too short, corrupt WEM) fails again:
