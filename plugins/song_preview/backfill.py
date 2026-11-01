@@ -370,6 +370,16 @@ _BORING_SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Loose folders carry Rocksmith arrangement XML, whose <section> names say
+# where the chorus is: the part of the song people know. "chorus2" counts,
+# "prechorus" and "postchorus" do not. "hook" is the next best name.
+_CHORUS_SECTION_RES = (
+    (re.compile(r"^chorus\d*$", re.IGNORECASE), "chorus"),
+    (re.compile(r"^hook\d*$", re.IGNORECASE), "hook"),
+)
+# Start this long before the chorus, so the fade-in ends as the chorus starts.
+CHORUS_LEAD_IN_SECONDS = FALLBACK_FADE_IN
+
 
 def _read_manifest_text(
     sloppak_path: Path,
@@ -562,6 +572,61 @@ def _section_aware_start(
             if best is None or t < best[0]:
                 best = (t, f"section '{name}'")
     return best
+
+
+def _xml_sections(xml_path: Path) -> list[tuple[str, float]]:
+    """``(name, startTime)`` of each ``<section>`` in an arrangement XML.
+
+    Stops at ``<levels>`` (the note data, most of the file), so a 400 KB
+    chart costs about 10 ms.
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    found: list[tuple[str, float]] = []
+    # Own the file handle: the early break must not leave the file open.
+    with open(xml_path, "rb") as f:
+        for _event, el in ET.iterparse(f, events=("start",)):
+            if el.tag == "section":
+                try:
+                    found.append((el.get("name") or "", float(el.get("startTime") or "")))
+                except ValueError:
+                    continue
+            elif el.tag == "levels":
+                break
+    return found
+
+
+def loose_chorus_start(song_dir: Path) -> tuple[float, str] | None:
+    """Start of the first chorus of a loose-folder song, from its charts.
+
+    Returns ``(start, reason)`` with ``CHORUS_LEAD_IN_SECONDS`` of lead-in,
+    or None when no chart names a chorus (or a hook). The caller clamps the
+    start to the song length.
+    """
+    try:
+        xmls = sorted(
+            p for p in song_dir.glob("*.xml")
+            if not any(s in p.stem.lower() for s in ("vocals", "showlights"))
+        )
+    except OSError:
+        return None
+    # Each chart marks its own sections: the same chorus can start up to
+    # about 1 s apart. Use the earliest mark of all the charts.
+    sections: list[tuple[str, float]] = []
+    for xml_path in xmls:
+        try:
+            sections.extend(_xml_sections(xml_path))
+        except Exception as e:  # ParseError, OSError
+            log.debug("could not read sections of %s: %s", xml_path.name, e)
+    for pattern, label in _CHORUS_SECTION_RES:
+        times = [t for name, t in sections if t > 0 and pattern.match(name)]
+        if times:
+            first = min(times)
+            return (
+                max(0.0, first - CHORUS_LEAD_IN_SECONDS),
+                f"first {label} section at {first:.1f}s",
+            )
+    return None
 
 
 def _clamp_start(start: float, song_duration: float) -> float:
@@ -834,16 +899,17 @@ def build_preview_from_audio_file(
     ffmpeg_cmd: str | None,
     tmp_dir: Path,
     duration_hint: float = 0.0,
+    start_hint: tuple[float, str] | None = None,
 ) -> tuple[bytes, str]:
     """Produce preview OGG bytes from a single, already-decoded audio file.
 
     Unlike :func:`build_preview_from_full_audio`, this takes a bare audio
     file with no sidecar manifest, arrangements or lyrics — it's the path
     for **loose-folder songs**, whose audio is a converted ``audio.wem``
-    with none of a sloppak's metadata. With no lyrics/section data to lean
-    on, the start point comes from loudness detection (lands on the
-    chorus / main riff), falling back to the 25% offset when even that
-    yields no signal.
+    with none of a sloppak's metadata. ``start_hint`` is ``(start, reason)``
+    from the caller, e.g. :func:`loose_chorus_start`. Without it, the start
+    point comes from loudness detection (lands on the chorus / main riff),
+    falling back to the 25% offset when even that yields no signal.
 
     Returns ``(ogg_bytes, reason)``. Raises ``RuntimeError`` on any
     unrecoverable problem (ffmpeg missing, song too short, encode failure).
@@ -861,8 +927,10 @@ def build_preview_from_audio_file(
             f"({duration:.1f}s < {MIN_SONG_DURATION:.1f}s minimum)"
         )
 
-    loud_start = _loudness_detect_start(audio_path, ffmpeg_cmd, duration)
-    if loud_start is not None:
+    if start_hint is not None and 0.0 <= start_hint[0] < duration:
+        start = _clamp_start(start_hint[0], duration)
+        reason = start_hint[1]
+    elif (loud_start := _loudness_detect_start(audio_path, ffmpeg_cmd, duration)) is not None:
         start = _clamp_start(loud_start, duration)
         reason = f"loudness-detected (loudest {int(FALLBACK_PREVIEW_DURATION)}s window)"
     else:

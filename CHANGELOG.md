@@ -230,6 +230,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **"Jump back in" is 40% taller.** Its tiles are larger and show the artist
   under the title. When the tiles do not all fit, the row scrolls sideways,
   with paging buttons and a fade at the edges.
+- **Song Preview starts much sooner on a loose-folder song.** The first hover
+  made the clip from the full song and also encoded the full song to MP3,
+  which the clip never used: 2.5 to 2.7 s before the first sound. The clip
+  now comes from the decoded WAV (`convert_wem(..., keep_wav=True)`), about
+  0.9 s. A background job also makes the clip of every loose song one time
+  after the app starts, one song at a time, and then checks for new songs
+  every 10 minutes. After that job, a hover plays in a few milliseconds.
+  `FEEDBACK_PREVIEW_WARMUP=0` turns the job off. The clip cache cap is now
+  1 GiB (was 256 MB), so a whole library fits.
+- **Song Preview of a loose-folder song starts at the chorus.** The clip
+  starts 1 s before the earliest `chorus` section of the song's charts
+  (`chorus2` counts, `prechorus` does not), else a `hook` section, else the
+  loudest 30 s as before. In a library of 1737 songs, 1256 (72 %) name a
+  chorus and 20 a hook. Most of the other songs are riff songs with no
+  chorus. The plugin makes the clips from before this change again.
+- **Song Preview keeps the clip of a loose-folder song in the song folder.**
+  The clip goes into the folder as `preview.ogg`, the name of the clip in a
+  feedpak. Thus the clips move with the library, to another PC or to Linux.
+  Before, they were in the settings folder, under keys made from the Windows
+  path. When the app cannot write to the folder, the clip goes into the
+  settings folder as before. When a `.wem` of the folder is newer than the
+  clip, the plugin makes the clip again.
 - **`GET /api/song/{f}?stems=1`** (new, opt-in) — returns the pack's playable stem
   list (`[{id, url, default}]` + `full_mix_url`), the same list the highway's WS
   `ready` sends. The stems plugin could only learn it from that WS message, which
