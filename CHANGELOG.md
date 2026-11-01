@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   VST plugins of the desktop app's plugin catalog as pictures, in a row as
   tall as "Jump back in". A click loads the plugin into the signal chain and
   opens its window. A plugin in the chain already only opens its window.
+  The panel shows only the Neural DSP Archetype plugins, and their tiles
+  drop the word "Archetype" from the name. A catalog with no Archetype
+  plugin shows all plugins.
   A VST3 plugin with a snapshot in its bundle shows that picture. Other
   plugins show a pedal photo of the Plugins page with their initials. The
   plugins loaded last from the panel come first. The new

@@ -38,9 +38,10 @@ function extractConst(src, name) {
 
 function loadHelpers() {
     const src = fs.readFileSync(DASHBOARD_JS, 'utf8');
-    const consts = ['HERO_FILL_W', 'HERO_FILL_H', 'HERO_ZOOM_MIN', 'HERO_ZOOM_MAX']
+    const consts = ['HERO_FILL_W', 'HERO_FILL_H', 'HERO_ZOOM_MIN', 'HERO_ZOOM_MAX', 'VST_ONLY']
         .map((n) => extractConst(src, n)).join('\n');
-    const names = ['heroZoom', 'vstKey', 'vstPathKey', 'vstPlugins', 'vstInitials', 'vstHash', 'vstSkin'];
+    const names = ['heroZoom', 'vstKey', 'vstPathKey', 'vstPlugins', 'vstShown', 'vstShortName',
+        'vstInitials', 'vstHash', 'vstSkin'];
     const body = names.map((n) => extractBlock(src, 'function ' + n + '(')).join('\n');
     const sandbox = { exports: {} };
     vm.createContext(sandbox);
@@ -103,6 +104,29 @@ test('vstPlugins: recent plugins first, then effects A-Z, then instruments A-Z',
         ['Zebra', 'Delay', 'Chorus', 'reverb', 'Analog Lab']);
 });
 
+test('vstShown: only the Archetype plugins, in list order, or all when there are none', () => {
+    const list = [
+        plugin('Archetype Tim Henson X', 'Neural DSP', 'C:/x/Archetype Tim Henson X.vst3'),
+        plugin('Parallax X', 'Neural DSP', 'C:/x/Parallax X.vst3'),
+        plugin('archetype Gojira', 'Neural DSP', 'C:/x/Archetype Gojira.vst3'),
+        plugin('ArchetypeLike', 'Other', 'C:/x/ArchetypeLike.vst3'),
+        plugin('Serum', 'Xfer Records', 'C:/x/Serum.vst3', true),
+    ];
+    assert.deepEqual(names(h.vstShown(list)), ['Archetype Tim Henson X', 'archetype Gojira']);
+    const none = [list[1], list[3], list[4]];
+    assert.deepEqual(names(h.vstShown(none)), ['Parallax X', 'ArchetypeLike', 'Serum']);
+});
+
+test('vstShortName: drops the Archetype word that every tile repeats', () => {
+    assert.equal(h.vstShortName('Archetype Cory Wong X'), 'Cory Wong X');
+    assert.equal(h.vstShortName('Archetype  Gojira'), 'Gojira');
+    assert.equal(h.vstShortName('Archetype'), 'Archetype');
+    assert.equal(h.vstShortName('Serum'), 'Serum');
+    assert.equal(h.vstShortName(undefined), '');
+    assert.equal(h.vstInitials(h.vstShortName('Archetype Tim Henson X')), 'TH');
+    assert.equal(h.vstInitials(h.vstShortName('Archetype Plini')), 'Pl');
+});
+
 test('vstPathKey: the bundle folder, with one slash style and one case', () => {
     const bundle = 'c:\\program files\\common files\\vst3\\serum.vst3';
     assert.equal(h.vstPathKey('C:\\Program Files\\Common Files\\VST3\\Serum.vst3'), bundle);
@@ -115,6 +139,12 @@ test('vstInitials: two words give two capitals, one word gives its start', () =>
     assert.equal(h.vstInitials('Valhalla Room'), 'VR');
     assert.equal(h.vstInitials('ValhallaRoom'), 'VR');
     assert.equal(h.vstInitials('Pro-Q 3'), 'PQ');
+    // A last version tag does not count.
+    assert.equal(h.vstInitials('Nolly X'), 'No');
+    assert.equal(h.vstInitials('Cory Wong X'), 'CW');
+    assert.equal(h.vstInitials('Kontakt 7'), 'Ko');
+    assert.equal(h.vstInitials('X'), 'X');
+    assert.equal(h.vstInitials('3'), '3');
     assert.equal(h.vstInitials('Serum'), 'Se');
     assert.equal(h.vstInitials('SERUM'), 'Se');
     assert.equal(h.vstInitials('OTT'), 'OTT');

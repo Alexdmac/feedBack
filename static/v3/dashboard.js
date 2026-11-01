@@ -389,6 +389,9 @@
     // no audio engine, so it shows a note.
     const VST_RECENT_KEY = 'v3.home.vstRecent';
     const VST_RECENT_MAX = 12;
+    // The player uses only the Neural DSP Archetype amp plugins, so the panel
+    // lists only those. A catalog with no Archetype plugin shows all plugins.
+    const VST_ONLY = /^Archetype\s+/i;
     const _vstPictureUrls = Object.create(null);   // plugin path -> picture URL
     const _vstPictureAsked = new Set();             // paths sent to the server
     let _vstToken = 0;
@@ -430,12 +433,26 @@
             String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }) ||
             vstKey(a).localeCompare(vstKey(b)));
     }
+    // The tiles the panel shows: the VST_ONLY plugins, or all when there are
+    // none. The order of the list stays.
+    function vstShown(plugins) {
+        const only = plugins.filter((p) => VST_ONLY.test(String(p.name)));
+        return only.length ? only : plugins;
+    }
+    // The tile name without the VST_ONLY word, which every tile repeats
+    // ("Archetype Cory Wong X" gives "Cory Wong X").
+    function vstShortName(name) {
+        const s = String(name || '');
+        return s.replace(VST_ONLY, '') || s;
+    }
     // The letters on the pedal face: the first letters of the first two
     // words ("Valhalla Room" and "ValhallaRoom" give "VR"), or the start of a
-    // one-word name ("Serum" gives "Se", "OTT" stays "OTT").
+    // one-word name ("Serum" gives "Se", "OTT" stays "OTT"). A last word that
+    // is a version tag ("X", "3") does not count, so "Nolly X" gives "No".
     function vstInitials(name) {
         const words = String(name || '').replace(/([a-z])([A-Z])/g, '$1 $2')
             .split(/[^A-Za-z0-9\u00C0-\uFFFF]+/).filter(Boolean);
+        while (words.length > 1 && /^(X|\d+)$/i.test(words[words.length - 1])) words.pop();
         if (!words.length) return '?';
         if (words.length === 1) {
             const w = words[0];
@@ -501,18 +518,20 @@
         const skin = skins && typeof skins.url === 'function' ? vstSkin(p, skins.list) : null;
         const skinUrl = skin ? skins.url(skin) : '';
         const kind = p.isInstrument ? 'Instrument' : 'Effect';
+        const name = vstShortName(p.name);
+        const sub = VST_ONLY.test(String(p.name)) ? 'Archetype' : (p.manufacturer || kind);
         // The pedal is always drawn. A snapshot covers it, and a snapshot that
         // does not load removes itself, so the pedal shows again.
         return '<button type="button" class="v3-shelf-tile v3-vst-tile' + (inChain ? ' is-in-chain' : '') + '" data-vst-path="' + esc(p.path) + '" ' +
             'title="' + esc(p.name + (p.manufacturer ? ' — ' + p.manufacturer : '') + ' · ' + kind) + '">' +
             '<span class="v3-shelf-art v3-vst-art">' +
             '<span class="v3-vst-pedal"' + (skinUrl ? ' style="--skin:url(\'' + esc(skinUrl) + '\')"' : '') + '>' +
-            '<span class="v3-vst-mono" aria-hidden="true">' + esc(vstInitials(p.name)) + '</span>' +
+            '<span class="v3-vst-mono" aria-hidden="true">' + esc(vstInitials(name)) + '</span>' +
             '<span class="v3-vst-glow" aria-hidden="true"></span></span>' +
             (picture ? '<img src="' + esc(picture) + '" alt="" class="v3-vst-shot" loading="lazy" onerror="this.remove()">' : '') +
             '</span>' +
-            '<span class="v3-shelf-title">' + esc(p.name) + '</span>' +
-            '<span class="v3-shelf-sub">' + esc(p.manufacturer || kind) + '</span></button>';
+            '<span class="v3-shelf-title">' + esc(name) + '</span>' +
+            '<span class="v3-shelf-sub">' + esc(sub) + '</span></button>';
     }
     async function renderVst(root) {
         const section = root.querySelector('#v3-vst');
@@ -543,13 +562,15 @@
             try { await api.loadPluginList(); list = await api.getKnownPlugins(); } catch (e) { list = []; }
         }
         if (stale()) return;
-        const plugins = vstPlugins(list, vstRecent());
-        if (!plugins.length) { note('No VST plugins yet. Scan for plugins on the Audio page.'); return; }
+        const all = vstPlugins(list, vstRecent());
+        if (!all.length) { note('No VST plugins yet. Scan for plugins on the Audio page.'); return; }
+        const plugins = vstShown(all);
+        const label = (plugins.length < all.length ? ' Archetype plugin' : ' plugin') + (plugins.length === 1 ? '' : 's');
         const [pictures, chain] = await Promise.all([vstPictures(plugins.map((p) => p.path)), vstChain(api)]);
         if (stale()) return;
         const inChain = new Set(chain.map((s) => vstPathKey(s.path)));
         row.innerHTML = plugins.map((p) => vstTile(p, pictures[p.path] || null, inChain.has(vstPathKey(p.path)))).join('');
-        if (status) status.textContent = plugins.length + ' plugin' + (plugins.length === 1 ? '' : 's');
+        if (status) status.textContent = plugins.length + label;
         const byPath = new Map(plugins.map((p) => [p.path, p]));
         row.querySelectorAll('[data-vst-path]').forEach((b) =>
             b.addEventListener('click', () => loadVst(api, b, byPath.get(b.getAttribute('data-vst-path')), status)));
