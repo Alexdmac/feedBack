@@ -351,7 +351,9 @@ function createHighway() {
         const v = parseFloat(localStorage.getItem('highwayMinRenderScale'));
         return Number.isFinite(v) ? Math.max(_AUTO_SCALE_MIN, Math.min(1, v)) : _AUTO_SCALE_MIN;
     })();
-    hwState._inverted = localStorage.getItem('invertHighway') === 'true';
+    // RockStar default: inverted (low E, the red string, at the bottom).
+    // Only an explicit 'false' from the Settings toggle puts it on top.
+    hwState._inverted = localStorage.getItem('invertHighway') !== 'false';
     hwState._lefty = localStorage.getItem('lefty') === '1';
     hwState._lastChordOnFretLine = null;  // chord object currently shown on fret line
     hwState._chordFretLineNotes = [];  // notes to render on fret line
@@ -1820,7 +1822,10 @@ function createHighway() {
         },
 
         getInverted() { return hwState._inverted; },
-        setInverted(v) { hwState._inverted = v; localStorage.setItem('invertHighway', v); },
+        setInverted(v) {
+            hwState._inverted = !!v;
+            localStorage.setItem('invertHighway', hwState._inverted ? 'true' : 'false');
+        },
         setLefty(on) {
             hwState._lefty = !!on;
             localStorage.setItem('lefty', hwState._lefty ? '1' : '0');

@@ -29,11 +29,13 @@
         gameplay: {
             server: ['master_difficulty', 'av_offset_ms', 'miss_penalty',
                 'fail_behavior', 'countdown_before_song', 'default_arrangement', 'pathway'],
-            local: ['lefty', 'autoplayExit', 'showUpNext', 'confirmExitSong', 'arrangementNamingMode', 'countdownBeforeSong'],
+            local: ['lefty', 'invertHighway', 'autoplayExit', 'showUpNext', 'confirmExitSong', 'arrangementNamingMode', 'countdownBeforeSong'],
             after: function () {
-                // Left-handed is held on the highway object, not re-derived
-                // from localStorage on load — flip it back to the default.
+                // Left-handed and invert are held on the highway object, not
+                // re-derived from localStorage on load — flip them back to the
+                // defaults (invert is on by default: low E at the bottom).
                 try { if (window.highway && window.highway.setLefty) window.highway.setLefty(false); } catch (_) { /* noop */ }
+                try { if (window.highway && window.highway.setInverted) window.highway.setInverted(true); } catch (_) { /* noop */ }
             },
         },
     };

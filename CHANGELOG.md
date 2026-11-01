@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top bar is gone; RockStar no longer shows any support or donation links.
 
 ### Added
+- **Invert strings toggle.** Settings > Gameplay has a new "Invert strings"
+  switch. It is on by default, so the low E string (red) is at the bottom of
+  the 2D and 3D note highways. Turn it off to put the red string at the top.
+  The switch uses the existing `invertHighway` highway setting, which had no
+  control before. Reset Gameplay Settings turns it back on.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
   the first twelve songs in your saved Song Library sort, using the same cards
   as the Song Library page (play, favorite, save, menu, arrangement chips,
