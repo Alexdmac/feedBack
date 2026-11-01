@@ -14,9 +14,17 @@ Each source goes through Convert-Psarc.ps1 first. A pack that holds several
 songs (songs.psarc, rs1compatibilitydlc_p.psarc) fails there, and is then
 converted with Convert-SongPack.ps1. Songs land in <DLC_DIR>/Rocksmith as
 loose folders, and the library is rescanned when the job ends.
+
+Automatic import: every AUTO_INTERVAL_S seconds, the plugin looks for .psarc
+files in the library folder (DLC_DIR, all subfolders). It converts each file
+that has no song folder yet, one job per file, after the file stopped changing
+for one interval (a big file can still be in copy). The .psarc stays where it
+is. A file that fails is not tried again until its size or time changes, or
+the server starts again. Set FEEDBACK_PSARC_AUTO_IMPORT=0 to turn this off.
 """
 
 import csv
+import json
 import os
 import shutil
 import subprocess
@@ -33,6 +41,23 @@ SCRIPTS = REPO / "tools" / "psarc_import"
 DEFAULT_DLC_BUILDER = Path(r"C:\Program Files\Rocksmith 2014 DLC Builder")
 MAX_LOG_LINES = 400
 MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024  # songs.psarc is ~1.5 GB
+AUTO_INTERVAL_S = 30
+MARKER = ".psarc-import.json"
+
+
+def default_libs_root():
+    """Where the converter scripts keep the libraries they unpack from DLCBuilder.exe."""
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "FeedBack" / "dlcbuilder-libs"
+
+
+def has_unpacked_libs(libs_root=None):
+    """True when an earlier run unpacked the DLC Builder libraries. The scripts
+    use them when DLC Builder itself is not installed."""
+    root = Path(libs_root) if libs_root is not None else default_libs_root()
+    try:
+        return any((d / "Rocksmith2014.DLCProject.dll").is_file() for d in root.iterdir() if d.is_dir())
+    except OSError:
+        return False
 
 
 def find_powershell():
@@ -43,7 +68,7 @@ def find_powershell():
     return None
 
 
-def check_available(platform=None, powershell=None, dlc_builder=None, venv_python=None):
+def check_available(platform=None, powershell=None, dlc_builder=None, venv_python=None, libs_root=None):
     """Return (ok, reason). Arguments override the real checks for tests."""
     platform = platform or sys.platform
     if not platform.startswith("win"):
@@ -51,8 +76,9 @@ def check_available(platform=None, powershell=None, dlc_builder=None, venv_pytho
     if not (powershell if powershell is not None else find_powershell()):
         return False, "PowerShell was not found on this PC."
     builder = Path(dlc_builder or os.environ.get("DLC_BUILDER_DIR") or DEFAULT_DLC_BUILDER)
-    if not (builder / "DLCBuilder.exe").exists():
-        return False, f"Rocksmith 2014 DLC Builder was not found at {builder}."
+    if not (builder / "DLCBuilder.exe").exists() and not has_unpacked_libs(libs_root):
+        return False, (f"Rocksmith 2014 DLC Builder was not found at {builder}, and no earlier "
+                       "import unpacked its libraries. Install DLC Builder one time.")
     py = Path(venv_python or REPO / ".venv" / "Scripts" / "python.exe")
     if not py.exists():
         return False, f"The converter needs the app's Python environment at {py} (see scripts/run-local.ps1)."
@@ -207,14 +233,111 @@ class Importer:
         if builder:
             cmd += ["-DlcBuilder", builder]
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        # NO_COLOR: pwsh writes errors with ANSI color codes, which the job log shows as text.
         proc = subprocess.Popen(cmd, cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, encoding="utf-8", errors="replace", creationflags=flags)
+                                text=True, encoding="utf-8", errors="replace", creationflags=flags,
+                                env={**os.environ, "NO_COLOR": "1"})
         for line in proc.stdout:
             line = line.rstrip()
             if line:
                 job.say(line)
         if proc.wait() != 0:
             raise RuntimeError(f"{script} stopped with exit code {proc.returncode}.")
+
+
+def auto_import_enabled():
+    return os.environ.get("FEEDBACK_PSARC_AUTO_IMPORT", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def converted_sources(library: Path):
+    """Source file names (lower case) that already have a song folder in ``library``."""
+    done = set()
+    try:
+        folders = [d for d in library.iterdir() if d.is_dir()]
+    except OSError:
+        return done
+    for d in folders:
+        try:
+            source = json.loads((d / MARKER).read_text(encoding="utf-8-sig")).get("source")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(source, str) and source:
+            done.add(source.lower())
+    return done
+
+
+class AutoImporter:
+    """Converts each new .psarc in the library folder without a click."""
+
+    def __init__(self, importer, get_library_dir, log, available=None, interval=AUTO_INTERVAL_S):
+        self.importer = importer
+        self.get_library_dir = get_library_dir
+        self.log = log
+        self.available = available or check_available
+        self.interval = interval
+        self.seen = {}    # relpath -> [size, mtime_ns] at the last check
+        self.failed = {}  # relpath -> [size, mtime_ns] of a failed try
+        self.stop = threading.Event()
+        self.thread = None
+
+    def ready_files(self):
+        """The .psarc files to convert now: no song folder, no failed try with
+        the same size and time, and no change since the last check."""
+        dlc = Path(self.get_library_dir())
+        if not dlc.is_dir():
+            return []
+        done = converted_sources(dlc / "Rocksmith")
+        seen, ready = {}, []
+        for p in sorted(dlc.rglob("*.psarc")):
+            try:
+                if not p.is_file() or p.name.lower() in done:
+                    continue
+                st = p.stat()
+            except OSError:
+                continue
+            rel = p.relative_to(dlc).as_posix()
+            sig = [st.st_size, st.st_mtime_ns]
+            seen[rel] = sig
+            if self.failed.get(rel) == sig:
+                continue
+            if self.seen.get(rel) == sig:
+                ready.append(p)
+        self.seen = seen
+        return ready
+
+    def check_once(self):
+        """One check. Returns the number of song folders made."""
+        ok, _reason = self.available()
+        if not ok:
+            return 0
+        made = 0
+        dlc = Path(self.get_library_dir())
+        for p in self.ready_files():
+            if self.stop.is_set():
+                break
+            rel = p.relative_to(dlc).as_posix()
+            self.log.info("pack import: converting %s, found in the library", rel)
+            job = self.importer.start(p.parent, [p.name], f"{p.name} (found in the library)",
+                                      only_named=True, wait=True)
+            made += job.converted
+            if job.converted:
+                self.failed.pop(rel, None)
+            else:
+                self.failed[rel] = self.seen.get(rel)
+                self.log.warning("pack import: %s gave no song (%s)", rel, job.lines[-1] if job.lines else job.state)
+        return made
+
+    def _loop(self):
+        while not self.stop.wait(self.interval):
+            try:
+                self.check_once()
+            except Exception:  # noqa: BLE001 — the loop must live on
+                self.log.exception("automatic pack import failed")
+
+    def start(self):
+        if self.thread is None:
+            self.thread = threading.Thread(target=self._loop, name="pack-import-auto", daemon=True)
+            self.thread.start()
 
 
 def setup(app, context):
@@ -226,6 +349,7 @@ def setup(app, context):
         scan.kick_scan(force=True)
 
     importer = Importer(context["get_dlc_dir"], log, rescan=rescan)
+    auto = AutoImporter(importer, context["get_dlc_dir"], log, available=lambda: check_available())
 
     def require_available():
         ok, reason = check_available()
@@ -235,7 +359,8 @@ def setup(app, context):
     @app.get("/api/plugins/pack_import/status")
     def status():
         ok, reason = check_available()
-        return {"available": ok, "reason": reason, "job": importer.latest()}
+        return {"available": ok, "reason": reason, "job": importer.latest(),
+                "auto": ok and auto.thread is not None, "auto_interval": auto.interval}
 
     @app.get("/api/plugins/pack_import/jobs/{job_id}")
     def job(job_id: str):
@@ -286,3 +411,8 @@ def setup(app, context):
 
     ok, reason = check_available()
     log.info("pack import ready (%s)", "available" if ok else reason)
+    # Only where the converter can run: elsewhere the checks would find
+    # nothing to do every interval.
+    if ok and auto_import_enabled():
+        auto.start()
+        log.info("pack import: new .psarc files in the library are converted automatically")
