@@ -186,10 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the app starts, one song at a time, and then checks for new songs
   every 10 minutes. After that job, a hover plays in a few milliseconds.
   `FEEDBACK_PREVIEW_WARMUP=0` turns the job off. The clip cache cap is now
-  1 GiB (was 256 MB), so a whole library fits. When a song folder holds the
-  pack's own preview (`audio_preview.wem`), the plugin plays that clip.
-  `tools/psarc_import/Extract-Previews.ps1` copies it from each `.psarc` into
-  its song folder.
+  1 GiB (was 256 MB), so a whole library fits.
 - **Song Preview of a loose-folder song starts at the chorus.** The clip
   starts 1 s before the earliest `chorus` section of the song's charts
   (`chorus2` counts, `prechorus` does not), else a `hook` section, else the

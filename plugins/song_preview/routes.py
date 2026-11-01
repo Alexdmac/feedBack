@@ -54,11 +54,6 @@ _warmup_state: dict = {
     "total": 0, "done": 0, "made": 0, "failed": 0, "stopped": "",
 }
 
-# The official preview clip of a Rocksmith pack, extracted next to audio.wem
-# by tools/psarc_import/Extract-Previews.ps1. Any other *.wem with "preview"
-# in its name also counts (the library scan already skips those as main audio).
-_PREVIEW_WEM_NAMES = ("audio_preview.wem",)
-
 # The clip of a loose song goes into its own folder, with the name that a
 # feedpak uses for its clip. The clips then move with the library, to another
 # PC or to a Linux install. The cache dir is the fallback for a library that
@@ -279,31 +274,13 @@ def _contained_file(path: Path, root: Path) -> Path | None:
     return resolved if resolved.is_file() else None
 
 
-def _find_preview_wem(song_dir: Path) -> Path | None:
-    """Return the pack's own preview clip in a loose folder, or None."""
-    root = song_dir.resolve()
-    candidates = [song_dir / n for n in _PREVIEW_WEM_NAMES]
-    try:
-        candidates += sorted(
-            p for p in song_dir.glob("*.wem") if "preview" in p.stem.lower()
-        )
-    except OSError:
-        pass
-    for cand in candidates:
-        found = _contained_file(cand, root)
-        if found is not None:
-            return found
-    return None
-
-
-def _loose_preview_source(song_dir: Path) -> tuple[Path, str, bool]:
+def _loose_preview_source(song_dir: Path) -> tuple[Path, str]:
     """Pick the source WEM of a loose-folder preview and its cache key.
 
-    Returns ``(wem_path, cache_key, official)``. ``official`` is True when the
-    source is the pack's own preview clip. The key includes the source's
-    mtime+size, so a re-encoded or newly extracted WEM invalidates the clip
-    (mirrors how the host's own loose-folder audio cache is keyed). Raises
-    ``HTTPException`` (400/404) when the folder has no usable audio.
+    Returns ``(wem_path, cache_key)``. The key includes the WEM's mtime+size,
+    so a re-encoded WEM invalidates the clip (mirrors how the host's own
+    loose-folder audio cache is keyed). Raises ``HTTPException`` (400/404)
+    when the folder has no usable audio.
     """
     # Host libs (lib/ is on sys.path via the plugin loader / the _LIB shim
     # above). Imported lazily so module import doesn't hard-depend on the
@@ -315,29 +292,24 @@ def _loose_preview_source(song_dir: Path) -> tuple[Path, str, bool]:
         print(f"[song_preview] loose-folder preview unavailable (host libs): {e}")
         raise HTTPException(status_code=404, detail="loose-folder preview unavailable")
 
-    official = True
-    wem_resolved = _find_preview_wem(song_dir)
+    wem = loosefolder_mod.find_audio(song_dir)
+    if wem is None:
+        raise HTTPException(status_code=404, detail="loose folder has no audio")
+    # Re-resolve and re-confirm containment. Mirrors the host's own guard.
+    wem_resolved = _contained_file(wem, song_dir.resolve())
     if wem_resolved is None:
-        official = False
-        wem = loosefolder_mod.find_audio(song_dir)
-        if wem is None:
-            raise HTTPException(status_code=404, detail="loose folder has no audio")
-        # Re-resolve and re-confirm containment. Mirrors the host's own guard.
-        wem_resolved = _contained_file(wem, song_dir.resolve())
-        if wem_resolved is None:
-            raise HTTPException(status_code=400, detail="audio escapes the loose folder")
+        raise HTTPException(status_code=400, detail="audio escapes the loose folder")
 
     try:
         wem_stat = wem_resolved.stat()
     except OSError:
         raise HTTPException(status_code=404, detail="loose folder has no audio")
 
-    # v2-loose: a clip cut from audio.wem starts at the chorus. The v1-loose
-    # clips (loudest 30 s) are made again, and LRU eviction removes them.
-    kind = "v1-loose-preview" if official else "v2-loose"
-    key_input = f"{kind}:{song_dir}:{wem_stat.st_mtime}:{wem_stat.st_size}"
+    # v2-loose: the clip starts at the chorus. The v1-loose clips (loudest
+    # 30 s) are made again, and LRU eviction removes them.
+    key_input = f"v2-loose:{song_dir}:{wem_stat.st_mtime}:{wem_stat.st_size}"
     cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:20]
-    return wem_resolved, cache_key, official
+    return wem_resolved, cache_key
 
 
 def _is_cached(cache_key: str) -> bool:
@@ -351,8 +323,7 @@ def _is_cached(cache_key: str) -> bool:
 def _library_clip(song_dir: Path) -> Path | None:
     """The clip in the song folder, or None when it is missing or stale.
 
-    Stale means older than a .wem of the folder: new audio, or a pack preview
-    that is newer than the clip.
+    Stale means older than a .wem of the folder, for example after new audio.
     """
     clip = _contained_file(song_dir / _LIBRARY_CLIP_NAME, song_dir.resolve())
     if clip is None:
@@ -397,10 +368,6 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
     in place also invalidates a cached clip (mirrors how the host's own
     loose-folder audio cache is keyed).
 
-    When the folder holds the pack's own preview clip (``audio_preview.wem``),
-    that clip is the source: the charter picked it, and it is only 30 s to
-    decode. Otherwise the clip comes from ``audio.wem``.
-
     Any failure to produce a preview (missing decoder, song too short, no
     audio) raises ``HTTPException(404)`` so the client memoises it and the
     hover loop stops retrying — there's no per-card Fix affordance for loose
@@ -412,7 +379,7 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
         print(f"[song_preview] loose-folder preview unavailable (host libs): {e}")
         raise HTTPException(status_code=404, detail="loose-folder preview unavailable")
 
-    wem_resolved, cache_key, official = _loose_preview_source(song_dir)
+    wem_resolved, cache_key = _loose_preview_source(song_dir)
     out = _get_cache_dir() / f"{cache_key}.ogg"
     lock = _transcode_lock(cache_key)
     with lock:
@@ -431,16 +398,10 @@ def _loose_preview_ogg(song_dir: Path) -> Path:
                 converted = convert_wem(
                     str(wem_resolved), str(tmp_dir / "full"), keep_wav=True
                 )
-                if official:
-                    # The pack's preview is already the clip: no start search.
-                    data = _backfill._render_preview_clip(
-                        Path(converted), 0.0, _ffmpeg_cmd(), tmp_dir
-                    )
-                else:
-                    data, _reason = _backfill.build_preview_from_audio_file(
-                        Path(converted), _ffmpeg_cmd(), tmp_dir,
-                        start_hint=_backfill.loose_chorus_start(song_dir),
-                    )
+                data, _reason = _backfill.build_preview_from_audio_file(
+                    Path(converted), _ffmpeg_cmd(), tmp_dir,
+                    start_hint=_backfill.loose_chorus_start(song_dir),
+                )
         except HTTPException:
             raise
         except Exception as e:
@@ -524,7 +485,7 @@ def _warmup_pass(dlc_root: Path) -> None:
         full = d.resolve()
         key = None
         try:
-            _wem, key, _official = _loose_preview_source(full)
+            _wem, key = _loose_preview_source(full)
             if key in _warmup_failed_keys:
                 failed += 1
             elif _library_clip(full) is None and not _is_cached(key):

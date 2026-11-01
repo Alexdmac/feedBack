@@ -1,5 +1,5 @@
-"""Loose-folder previews: source pick (pack preview vs audio.wem), the clip in
-the song folder, and the background warm-up. Decoding is stubbed: no
+"""Loose-folder previews: the source WEM, the clip in the song folder, and
+the background warm-up. Decoding is stubbed: no
 vgmstream or ffmpeg needed."""
 
 import os
@@ -18,7 +18,7 @@ def _song(root, name, preview=False):
     d.mkdir(parents=True)
     (d / "audio.wem").write_bytes(b"full" * 100)
     (d / "arr_lead_RS2.xml").write_text("<song/>", encoding="utf-8")
-    if preview:
+    if preview:  # a preview WEM is never the main audio
         (d / "audio_preview.wem").write_bytes(b"prev" * 10)
     return d
 
@@ -32,27 +32,11 @@ def cache(tmp_path, monkeypatch):
     return c
 
 
-def test_source_prefers_the_pack_preview(tmp_path):
-    d = _song(tmp_path, "With Preview", preview=True)
-    wem, key, official = routes._loose_preview_source(d)
-    assert official is True
-    assert wem == (d / "audio_preview.wem").resolve()
-    assert key
-
-
-def test_source_falls_back_to_audio_wem(tmp_path):
-    d = _song(tmp_path, "No Preview")
-    wem, _key, official = routes._loose_preview_source(d)
-    assert official is False
+def test_source_is_audio_wem_not_a_preview_wem(tmp_path):
+    d = _song(tmp_path, "Song", preview=True)
+    wem, key = routes._loose_preview_source(d)
     assert wem == (d / "audio.wem").resolve()
-
-
-def test_pack_preview_gets_its_own_cache_key(tmp_path):
-    d = _song(tmp_path, "Song")
-    _wem, key_full, _ = routes._loose_preview_source(d)
-    (d / "audio_preview.wem").write_bytes(b"prev" * 10)
-    _wem, key_preview, _ = routes._loose_preview_source(d)
-    assert key_full != key_preview
+    assert key
 
 
 def test_source_404s_without_audio(tmp_path):
@@ -74,7 +58,7 @@ def test_loose_song_dirs_skips_non_songs(tmp_path):
 
 def _fake_make(cache_dir, made):
     def fake(song_dir):
-        _wem, key, _ = routes._loose_preview_source(song_dir)
+        _wem, key = routes._loose_preview_source(song_dir)
         out = cache_dir / f"{key}.ogg"
         out.write_bytes(b"o" * 2000)
         made.append(song_dir.name)
@@ -162,16 +146,6 @@ def test_library_clip_too_small_is_ignored(tmp_path):
     assert routes._library_clip(d) is None
 
 
-def test_library_clip_is_stale_after_a_new_pack_preview(tmp_path):
-    d = _song(tmp_path, "Song")
-    _clip(d, 10)
-    prev = d / "audio_preview.wem"
-    prev.write_bytes(b"prev" * 10)
-    t = (d / "audio.wem").stat().st_mtime + 60
-    os.utime(prev, (t, t))
-    assert routes._library_clip(d) is None
-
-
 @pytest.fixture
 def fake_decode(monkeypatch):
     """Stub the decode and the clip cut. Returns the start hints passed in."""
@@ -191,7 +165,6 @@ def fake_decode(monkeypatch):
     monkeypatch.setattr(routes, "_backfill", types.SimpleNamespace(
         build_preview_from_audio_file=build,
         loose_chorus_start=lambda _d: (9.0, "chorus"),
-        _render_preview_clip=lambda *_a: b"p" * 3000,
     ))
     return hints
 
