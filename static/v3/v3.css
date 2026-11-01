@@ -1363,23 +1363,253 @@ html.fb-immersive #v3-main > .screen.active {
    real card's vertical structure so it occupies an identical row height. */
 .v3-card-skel { pointer-events: none; }
 
-/* ── Home: Continue card + compact "Jump back in" strip ─────────────────────
-   The right column of the hero row is a flex column; the Continue card fills
-   whatever the strip leaves, so both columns end on the same baseline. */
-.v3-continue-fill { flex: 1 1 auto; min-height: 16rem; }
-.v3-jump-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-.v3-jump-title { font-size: 0.6875rem; line-height: 1rem; }
+/* ── Home: feature grid ─────────────────────────────────────────────────────
+   Two rows on a 3-column grid, with one 1.5rem gutter on both axes (the
+   gutter of the stats row below):
+     row 1: the hero (2 columns) and the Continue card, the same height
+            (the old height of the Continue card);
+     row 2: the VST panel (2 columns) and "Jump back in", the same shelf
+            panel, so the two are the same height and their tiles align.
+   One column below 1024px, in reading order. */
+.v3-home-feature {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "hero" "cont" "vst" "jump";
+    gap: 1.5rem;
+}
+.v3-home-feature > * { min-width: 0; }
+@media (min-width: 1024px) {
+    .v3-home-feature {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-rows: 22.75rem auto;
+        grid-template-areas: "hero hero cont" "vst vst jump";
+    }
+}
+.v3-continue-fill { grid-area: cont; min-height: 16rem; }
+#v3-vst { grid-area: vst; }
+#v3-jump { grid-area: jump; }
 .v3-jump-acc { font-size: 0.5625rem; line-height: 1; padding: 0.125rem 0.25rem; }
 
+/* ── Home: shelf panel ("Jump back in", VST plugins) ────────────────────────
+   A heading row and one row of square tiles that scrolls sideways. All sizes
+   come from --shelf-art, so both shelves have one height:
+   2px border + 1.5rem padding + 2rem heading + 9.375rem tiles = 12.875rem
+   + 2px, 1.4 times the old "Jump back in" strip. Three tiles fit across
+   the Continue column. */
+.v3-shelf {
+    --shelf-art: 7.125rem;
+    display: flex;
+    flex-direction: column;
+    padding: 0.75rem;
+}
+.v3-shelf-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    height: 1.5rem;
+    margin-bottom: 0.5rem;
+}
+.v3-shelf-head h3 { flex: none; }
+.v3-shelf-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 0.6875rem;
+    color: #94a3b8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.v3-shelf-nav {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 9999px;
+    border: 1px solid rgba(51, 65, 85, 0.8);
+    background-color: rgba(15, 23, 42, 0.6);
+    color: #f8fafc;
+    font-size: 1rem;
+    line-height: 1;
+    transition: background-color 150ms ease, border-color 150ms ease, opacity 150ms ease;
+}
+.v3-shelf-nav[hidden] { display: none; }
+.v3-shelf-nav:hover:not(:disabled) {
+    background-color: rgba(14, 165, 233, 0.25);
+    border-color: rgba(56, 189, 248, 0.6);
+}
+.v3-shelf-nav:disabled { opacity: 0.35; cursor: default; }
+/* The fade widths are typed properties, so they can animate. */
+@property --shelf-fade-l { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@property --shelf-fade-r { syntax: '<length>'; inherits: false; initial-value: 0px; }
+.v3-shelf-row {
+    display: flex;
+    gap: 0.5rem;
+    /* Tile height: art + 0.375rem gap + 1rem title + 0.875rem artist/maker. */
+    min-height: calc(var(--shelf-art) + 2.25rem);
+    /* 4px of room for the focus ring, which the scroll box clips. */
+    padding: 4px;
+    margin: -4px;
+    scroll-padding-inline: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--shelf-fade-l), #000 calc(100% - var(--shelf-fade-r)), transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0, #000 var(--shelf-fade-l), #000 calc(100% - var(--shelf-fade-r)), transparent 100%);
+    transition: --shelf-fade-l 200ms ease, --shelf-fade-r 200ms ease;
+}
+.v3-shelf-row::-webkit-scrollbar { display: none; }
+.v3-shelf-fade-l { --shelf-fade-l: 1.5rem; }
+.v3-shelf-fade-r { --shelf-fade-r: 1.5rem; }
+.v3-shelf-empty {
+    align-self: center;
+    font-size: 0.875rem;
+    color: #94a3b8;
+}
+.v3-shelf-tile {
+    flex: none;
+    display: block;
+    width: var(--shelf-art);
+    text-align: left;
+    scroll-snap-align: start;
+    border-radius: 0.5rem;
+}
+.v3-shelf-art {
+    position: relative;
+    display: block;
+    width: var(--shelf-art);
+    height: var(--shelf-art);
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background-color: #1e293b;
+}
+.v3-shelf-title,
+.v3-shelf-sub {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.v3-shelf-title {
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+    color: #f8fafc;
+}
+.v3-shelf-sub {
+    font-size: 0.6875rem;
+    line-height: 0.875rem;
+    color: #94a3b8;
+}
+.v3-shelf-nav:focus-visible,
+.v3-shelf-tile:focus-visible {
+    outline: 2px solid #38bdf8;
+    outline-offset: 2px;
+}
+
+/* VST tiles: the plugin's own snapshot, or a pedal photo (the skins of the
+   Plugins page) on a dark board, with the plugin's initials on the label
+   band. A plugin in the signal chain gets a green rim and, on a pedal, the
+   green footswitch glow of the Plugins page. */
+.v3-vst-art {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(120% 90% at 50% 0%, #26334a 0%, #0b1220 72%);
+}
+.v3-vst-pedal {
+    position: relative;
+    height: 92%;
+    aspect-ratio: 5 / 7;   /* the skin photos are 500 x 700 */
+    background-image: var(--skin, url('/static/v3/pedal-frame.svg'));
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.55));
+    transition: transform 200ms ease;
+}
+.v3-vst-tile:hover .v3-vst-pedal { transform: translateY(-2px) scale(1.04); }
+/* The band where each photo has its printed name (see .v3-pedal-label). */
+.v3-vst-mono {
+    position: absolute;
+    left: 9%;
+    right: 9%;
+    top: 31%;
+    bottom: calc(28% + 1px);
+    transform: translateY(-2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.25rem;
+    /* Opaque enough to hide the printed name of the photo. */
+    background-color: rgba(7, 10, 16, 0.92);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    color: #f8fafc;
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+.v3-vst-glow {
+    position: absolute;
+    inset: 0;
+    background: url('/static/v3/overlay-active.png') center / 100% 100% no-repeat;
+    opacity: 0;
+    transition: opacity 250ms ease;
+}
+.v3-vst-tile.is-in-chain .v3-vst-glow { opacity: 1; }
+.v3-vst-shot {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center top;
+    transition: transform 300ms ease;
+}
+.v3-vst-tile:hover .v3-vst-shot { transform: scale(1.05); }
+.v3-vst-art::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0);
+    pointer-events: none;
+    transition: box-shadow 250ms ease;
+}
+.v3-vst-tile.is-in-chain .v3-vst-art::after { box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.9); }
+.v3-vst-tile.is-busy { cursor: progress; }
+.v3-vst-tile.is-busy .v3-vst-art { animation: v3-vst-busy 0.8s ease-in-out infinite alternate; }
+@keyframes v3-vst-busy { from { opacity: 1; } to { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) {
+    .v3-shelf-row,
+    .v3-shelf-nav,
+    .v3-vst-pedal,
+    .v3-vst-shot,
+    .v3-vst-glow,
+    .v3-vst-art::after { transition: none; }
+    .v3-vst-tile:hover .v3-vst-pedal,
+    .v3-vst-tile:hover .v3-vst-shot { transform: none; }
+    .v3-vst-tile.is-busy .v3-vst-art { animation: none; opacity: 0.6; }
+}
+
 /* ── Home: hero panel ───────────────────────────────────────────────────────
-   The hero holds no text. The artwork fills the panel. The topbar's tuner,
-   profile and tuning cards (dashboard.js moves them in) and the two actions
-   sit in one centered dock of frosted-glass cards.
+   The hero holds no text and no buttons of its own. The artwork fills the
+   panel. The topbar's tuner, profile and tuning cards (dashboard.js moves
+   them in) sit in one centered dock of frosted-glass cards.
    Layout rules: one vertical axis of symmetry (two equal square cards on the
-   two sides of the wider profile card, two equal buttons below), an 8 px
-   spacing grid, and an actions row that spans the full width of the card
-   row, so the dock reads as one block. */
-.v3-hero { z-index: 10; }   /* the tuning menu opens over the row below */
+   two sides of the wider profile card) and one scale for the dock:
+   dashboard.js (fitHero) sets --hero-zoom so the dock fills the panel, and
+   the cards and the gaps between them scale together. */
+.v3-hero {
+    grid-area: hero;
+    height: 22.75rem;
+    z-index: 10;   /* the tuning menu opens over the row below */
+}
 .v3-hero-art {
     position: absolute;
     inset: 0;
@@ -1399,32 +1629,25 @@ html.fb-immersive #v3-main > .screen.active {
         linear-gradient(0deg, rgba(15, 23, 42, 0.6) 0%, rgba(15, 23, 42, 0) 40%);
 }
 .v3-hero-dock {
+    --hero-zoom: 1;
     position: relative;
-    display: grid;
-    gap: 1rem;
     width: max-content;
-    max-width: calc(100% - 2rem);
     /* Optical center: a block at the exact center looks low, so lift it. */
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;
 }
 .v3-hero-badges {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;   /* fitHero measures one row */
     justify-content: center;
     align-items: stretch;
-    gap: 1rem;
-}
-.v3-hero-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(9rem, 1fr));
-    gap: 1rem;
+    gap: calc(1rem * var(--hero-zoom));
 }
 /* Glass: a see-through fill, a blur of the art behind it, a 1 px light rim
    on the top edge (light from above) and a soft shadow for depth. */
 .v3-hero-badges [data-open-tuner],
 .v3-hero-badges [data-inst-toggle],
-.v3-hero-badges [data-v3-open-profile],
-.v3-glass-btn {
+.v3-hero-badges [data-v3-open-profile] {
+    zoom: var(--hero-zoom);
     background-color: rgba(30, 41, 59, 0.38);
     border: 1px solid rgba(255, 255, 255, 0.12);
     -webkit-backdrop-filter: blur(14px) saturate(150%);
@@ -1434,8 +1657,7 @@ html.fb-immersive #v3-main > .screen.active {
 }
 .v3-hero-badges [data-open-tuner]:hover,
 .v3-hero-badges [data-inst-toggle]:hover,
-.v3-hero-badges [data-v3-open-profile]:hover,
-.v3-glass-btn:hover {
+.v3-hero-badges [data-v3-open-profile]:hover {
     background-color: rgba(30, 41, 59, 0.56);
     border-color: rgba(255, 255, 255, 0.22);
     transform: translateY(-2px);
@@ -1453,42 +1675,17 @@ html.fb-immersive #v3-main > .screen.active {
 }
 /* The tuning name drives the Song Library below, so make it readable. */
 .v3-hero-badges [data-inst-toggle] span { font-size: 0.6875rem; }
-.v3-glass-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 2.75rem;
-    padding: 0 1.25rem;
-    border-radius: 0.875rem;
-    color: #f8fafc;
-    font-weight: 600;
-    font-size: 0.9375rem;
-}
-.v3-glass-btn--primary {
-    background-color: rgba(14, 165, 233, 0.55);
-    border-color: rgba(125, 211, 252, 0.45);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 10px 30px -8px rgba(14, 165, 233, 0.6);
-}
-.v3-glass-btn--primary:hover {
-    background-color: rgba(14, 165, 233, 0.72);
-    border-color: rgba(186, 230, 253, 0.6);
-}
-.v3-glass-btn:focus-visible,
 .v3-hero-badges button:focus-visible {
     outline: 2px solid #38bdf8;
     outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
-    .v3-hero-badges button,
-    .v3-glass-btn { transition: none; }
-    .v3-hero-badges button:hover,
-    .v3-glass-btn:hover { transform: none; }
+    .v3-hero-badges button { transition: none; }
+    .v3-hero-badges button:hover { transform: none; }
 }
 /* No backdrop blur: a more solid fill keeps the text readable. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
     .v3-hero-badges [data-open-tuner],
     .v3-hero-badges [data-inst-toggle],
-    .v3-hero-badges [data-v3-open-profile],
-    .v3-glass-btn { background-color: rgba(30, 41, 59, 0.85); }
-    .v3-glass-btn--primary { background-color: rgba(14, 165, 233, 0.85); }
+    .v3-hero-badges [data-v3-open-profile] { background-color: rgba(30, 41, 59, 0.85); }
 }

@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top bar is gone; RockStar no longer shows any support or donation links.
 
 ### Added
+- **VST panel on Home (desktop app).** A new panel under the hero shows the
+  VST plugins of the desktop app's plugin catalog as pictures, in a row as
+  tall as "Jump back in". A click loads the plugin into the signal chain and
+  opens its window. A plugin in the chain already only opens its window.
+  A VST3 plugin with a snapshot in its bundle shows that picture. Other
+  plugins show a pedal photo of the Plugins page with their initials. The
+  plugins loaded last from the panel come first. The new
+  `POST /api/vst/pictures` and `GET /api/vst/picture` routes find and serve
+  the snapshots. They serve only `*_snapshot*.png` files in the
+  `Contents/Resources/Snapshots` folder of a `.vst3` bundle.
 - **The tuning card picks the songs on Home.** The Home Song Library now
   shows a random pick of twelve songs in the tuning on the tuning card. A new
   tuning on the card changes the list immediately. "⇄ Shuffle" shows a new
@@ -184,12 +194,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in that mode.
 
 ### Changed
-- **Home hero panel.** The heading, the paragraph and the "Patch Notes" line
-  are gone from the hero. The tuner, profile and tuning cards move from the
-  top bar into the hero. They sit in a centered row of semi-transparent glass
-  cards above equal Start Playing and Lessons buttons. On every other screen
-  the cards go back to the top bar. A tuning pick on the tuning card now also
-  sets the working tuning, so the tuner and the Home songs follow it.
+- **Home hero panel.** The heading, the paragraph, the "Patch Notes" line and
+  the Start Playing and Lessons buttons are gone from the hero. The hero is
+  now as tall as the Continue card. The tuner, profile and tuning cards move
+  from the top bar into the hero, in a centered row of semi-transparent glass
+  cards that scales to fill the panel. On every other screen the cards go
+  back to the top bar. A tuning pick on the tuning card now also sets the
+  working tuning, so the tuner and the Home songs follow it.
+- **"Jump back in" is 40% taller.** Its tiles are larger and show the artist
+  under the title. When the tiles do not all fit, the row scrolls sideways,
+  with paging buttons and a fade at the edges.
 - **`GET /api/song/{f}?stems=1`** (new, opt-in) — returns the pack's playable stem
   list (`[{id, url, default}]` + `full_mix_url`), the same list the highway's WS
   `ready` sends. The stems plugin could only learn it from that WS message, which
