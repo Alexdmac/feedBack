@@ -1370,3 +1370,125 @@ html.fb-immersive #v3-main > .screen.active {
 .v3-jump-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .v3-jump-title { font-size: 0.6875rem; line-height: 1rem; }
 .v3-jump-acc { font-size: 0.5625rem; line-height: 1; padding: 0.125rem 0.25rem; }
+
+/* ── Home: hero panel ───────────────────────────────────────────────────────
+   The hero holds no text. The artwork fills the panel. The topbar's tuner,
+   profile and tuning cards (dashboard.js moves them in) and the two actions
+   sit in one centered dock of frosted-glass cards.
+   Layout rules: one vertical axis of symmetry (two equal square cards on the
+   two sides of the wider profile card, two equal buttons below), an 8 px
+   spacing grid, and an actions row that spans the full width of the card
+   row, so the dock reads as one block. */
+.v3-hero { z-index: 10; }   /* the tuning menu opens over the row below */
+.v3-hero-art {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: right center;
+}
+/* Scrim: darker at the left edge, the bottom edge and behind the dock, so
+   the glowing notes stay bright and the glass keeps its contrast. */
+.v3-hero-scrim {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 55% 50% at 50% 46%, rgba(15, 23, 42, 0.5) 0%, rgba(15, 23, 42, 0) 72%),
+        linear-gradient(90deg, rgba(15, 23, 42, 0.65) 0%, rgba(15, 23, 42, 0) 42%),
+        linear-gradient(0deg, rgba(15, 23, 42, 0.6) 0%, rgba(15, 23, 42, 0) 40%);
+}
+.v3-hero-dock {
+    position: relative;
+    display: grid;
+    gap: 1rem;
+    width: max-content;
+    max-width: calc(100% - 2rem);
+    /* Optical center: a block at the exact center looks low, so lift it. */
+    margin-bottom: 2rem;
+}
+.v3-hero-badges {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: stretch;
+    gap: 1rem;
+}
+.v3-hero-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(9rem, 1fr));
+    gap: 1rem;
+}
+/* Glass: a see-through fill, a blur of the art behind it, a 1 px light rim
+   on the top edge (light from above) and a soft shadow for depth. */
+.v3-hero-badges [data-open-tuner],
+.v3-hero-badges [data-inst-toggle],
+.v3-hero-badges [data-v3-open-profile],
+.v3-glass-btn {
+    background-color: rgba(30, 41, 59, 0.38);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    -webkit-backdrop-filter: blur(14px) saturate(150%);
+    backdrop-filter: blur(14px) saturate(150%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 12px 32px -12px rgba(0, 0, 0, 0.7);
+    transition: transform 150ms ease, background-color 150ms ease, border-color 150ms ease;
+}
+.v3-hero-badges [data-open-tuner]:hover,
+.v3-hero-badges [data-inst-toggle]:hover,
+.v3-hero-badges [data-v3-open-profile]:hover,
+.v3-glass-btn:hover {
+    background-color: rgba(30, 41, 59, 0.56);
+    border-color: rgba(255, 255, 255, 0.22);
+    transform: translateY(-2px);
+}
+/* One row height. The two side cards are equal squares. */
+.v3-hero-badges [data-open-tuner],
+.v3-hero-badges [data-inst-toggle] {
+    width: 6rem;
+    height: 6rem;
+    justify-content: center;
+}
+.v3-hero-badges [data-v3-open-profile] {
+    height: 6rem;
+    padding: 0.75rem 1rem;
+}
+/* The tuning name drives the Song Library below, so make it readable. */
+.v3-hero-badges [data-inst-toggle] span { font-size: 0.6875rem; }
+.v3-glass-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 2.75rem;
+    padding: 0 1.25rem;
+    border-radius: 0.875rem;
+    color: #f8fafc;
+    font-weight: 600;
+    font-size: 0.9375rem;
+}
+.v3-glass-btn--primary {
+    background-color: rgba(14, 165, 233, 0.55);
+    border-color: rgba(125, 211, 252, 0.45);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 10px 30px -8px rgba(14, 165, 233, 0.6);
+}
+.v3-glass-btn--primary:hover {
+    background-color: rgba(14, 165, 233, 0.72);
+    border-color: rgba(186, 230, 253, 0.6);
+}
+.v3-glass-btn:focus-visible,
+.v3-hero-badges button:focus-visible {
+    outline: 2px solid #38bdf8;
+    outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+    .v3-hero-badges button,
+    .v3-glass-btn { transition: none; }
+    .v3-hero-badges button:hover,
+    .v3-glass-btn:hover { transform: none; }
+}
+/* No backdrop blur: a more solid fill keeps the text readable. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .v3-hero-badges [data-open-tuner],
+    .v3-hero-badges [data-inst-toggle],
+    .v3-hero-badges [data-v3-open-profile],
+    .v3-glass-btn { background-color: rgba(30, 41, 59, 0.85); }
+    .v3-glass-btn--primary { background-color: rgba(14, 165, 233, 0.85); }
+}

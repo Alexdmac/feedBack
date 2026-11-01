@@ -84,14 +84,11 @@
         if (!root) return;
 
         // Kick off independent fetches.
-        const [profile, version, cont, libStats, plugins, recent] = await Promise.all([
-            jget('/api/profile'), jget('/api/version'), jget('/api/session/continue'),
+        const [cont, libStats, plugins, recent] = await Promise.all([
+            jget('/api/session/continue'),
             jget('/api/library/stats'), jget('/api/plugins'), jget('/api/stats/recent?limit=' + JUMP_COUNT),
         ]);
 
-        const name = (profile && profile.display_name) || 'there';
-        const ver = (version && version.version) || '';
-        const changelogUrl = ((version && version.source_url) || 'https://github.com/got-feedback/feedBack') + '/blob/main/CHANGELOG.md';
         const songCount = (libStats && (libStats.total_songs ?? libStats.total)) || 0;
         const pluginCount = Array.isArray(plugins)
             ? plugins.filter((p) => (p && (p.status || 'ready') === 'ready')).length : 0;
@@ -168,41 +165,45 @@
                 '<p class="text-fb-textDim text-sm">Play a song to see it here.</p></section>';
         }
 
-        // Song Library: the start of the library, filled in after first paint
-        // by songs.js (same cards as the Song Library page).
+        // Song Library: songs in the player's current tuning, in random order,
+        // filled in after first paint by songs.js (same cards as the Song
+        // Library page).
         const librarySection =
             '<section id="v3-home-library" class="mt-10">' +
             '<div class="flex items-end justify-between gap-4 mb-4">' +
             '<div><h3 class="text-2xl font-bold text-fb-text">Song Library</h3>' +
             '<p id="v3-home-library-sub" class="text-sm text-fb-textDim"></p></div>' +
+            '<div class="flex items-center gap-4">' +
+            '<button id="v3-home-library-shuffle" class="hidden text-sm font-medium text-fb-textDim hover:text-fb-text whitespace-nowrap" title="Show another random pick">⇄ Shuffle</button>' +
             '<button id="v3-home-library-all" class="text-sm font-medium text-fb-primary hover:text-fb-primaryHi whitespace-nowrap">See all songs →</button>' +
-            '</div>' +
+            '</div></div>' +
             '<div id="v3-home-library-grid"><p class="text-fb-textDim text-sm">Loading your library…</p></div>' +
             '</section>';
 
+        // The badge hosts must leave the old hero before innerHTML drops it.
+        undockBadges();
         root.innerHTML =
             '<div class="max-w-7xl mx-auto px-6 md:px-8 pb-8">' +
             // (Title "Welcome back, {name}!" lives in the topbar header row.)
-            (ver ? '<p class="text-sm text-fb-textDim">Have you read the latest changes in the ' +
-                '<a href="' + esc(changelogUrl) + '" target="_blank" rel="noopener" class="text-fb-primary hover:text-fb-primaryHi">Patch Notes for ' + esc(ver) + '</a>?</p>' : '') +
             // Featured grid: hero + continue
-            '<div class="grid lg:grid-cols-3 gap-6 mt-6">' +
-            '<div id="v3-hero" class="lg:col-span-2 relative rounded-xl overflow-hidden min-h-[480px] flex items-center bg-fb-bg">' +
-            // Hero artwork (neon note-highway), right-anchored. Placeholder
-            // cropped from the design mock — swap static/v3/brand/hero.png for
-            // the designer's high-res original (same path) when available.
-            '<img src="/static/v3/brand/hero.png" alt="" aria-hidden="true" ' +
-            'class="absolute inset-y-0 right-0 h-full w-2/3 object-cover object-right" ' +
-            'onerror="this.style.display=\'none\'">' +
-            // 135° gradient overlay: solid navy on the left for text legibility,
-            // fading to transparent so the artwork shows through on the right.
-            '<div class="absolute inset-0" style="background-image:linear-gradient(135deg,#0f172a 0%,#0f172a 40%,rgba(15,23,42,0.55) 65%,rgba(15,23,42,0.15) 100%);"></div>' +
-            '<div class="relative p-8 max-w-md">' +
-            '<h3 class="text-4xl font-bold leading-tight text-fb-text">Turn any song into practice.</h3>' +
-            '<p class="text-fb-textDim mt-2">Play along to your library, track your accuracy, and rank up.</p>' +
-            '<div class="flex gap-3 mt-5">' +
-            '<button id="v3-start" class="bg-fb-primary hover:bg-fb-primaryHi text-white px-6 py-2 rounded-md font-medium shadow-lg shadow-fb-primary/20">Start Playing</button>' +
-            '<button id="v3-lessons-btn" class="bg-transparent border border-fb-textDim hover:border-white text-white px-6 py-2 rounded-md font-medium">Lessons</button>' +
+            '<div class="grid lg:grid-cols-3 gap-6">' +
+            // The hero holds no text: the artwork, the tuner / profile / tuning
+            // cards (moved here from the topbar by dockBadges) and the two
+            // actions, as one centered glass dock. The panel does not clip, so
+            // the tuning menu can open past its bottom edge.
+            '<div id="v3-hero" class="v3-hero lg:col-span-2 relative rounded-xl min-h-[480px] flex items-center justify-center bg-fb-bg">' +
+            // Hero artwork (neon note-highway), full-bleed and right-anchored.
+            // Placeholder cropped from the design mock — swap
+            // static/v3/brand/hero.png for the designer's high-res original
+            // (same path) when available.
+            '<div class="absolute inset-0 rounded-xl overflow-hidden" aria-hidden="true">' +
+            '<img src="/static/v3/brand/hero.png" alt="" class="v3-hero-art" onerror="this.style.display=\'none\'">' +
+            '<div class="v3-hero-scrim"></div></div>' +
+            '<div class="v3-hero-dock">' +
+            '<div id="v3-hero-badges" class="v3-hero-badges"></div>' +
+            '<div class="v3-hero-actions">' +
+            '<button id="v3-start" class="v3-glass-btn v3-glass-btn--primary">Start Playing</button>' +
+            '<button id="v3-lessons-btn" class="v3-glass-btn">Lessons</button>' +
             '</div></div></div>' +
             '<div class="flex flex-col gap-4">' + continueCard + jumpStrip + '</div>' +
             '</div>' +
@@ -231,7 +232,8 @@
         root.querySelector('#v3-pick')?.addEventListener('click', () => window.playSong && window.playSong(enc(pick.filename)));
         root.querySelector('#v3-continue-pick')?.addEventListener('click', () => window.showScreen && window.showScreen('v3-songs'));
         root.querySelector('#v3-lessons-btn')?.addEventListener('click', () => window.showScreen && window.showScreen('v3-lessons'));
-        root.querySelector('#v3-home-library-all')?.addEventListener('click', openLibrary);
+        root.querySelector('#v3-home-library-all')?.addEventListener('click', () => openLibrary(_libraryTuningKey));
+        root.querySelector('#v3-home-library-shuffle')?.addEventListener('click', () => renderLibrary(root));
         root.querySelectorAll('[data-recent]').forEach((b) =>
             b.addEventListener('click', () => {
                 if (!window.playSong) return;
@@ -241,6 +243,7 @@
                 window.playSong(enc(b.getAttribute('data-recent')), arr === '' || arr == null ? undefined : Number(arr));
             }));
 
+        dockBadges();
         renderLibrary(root);
 
         // Let prompt 18 enhance the audio-routing card once it exists.
@@ -253,34 +256,102 @@
         try { document.dispatchEvent(new CustomEvent('v3:dashboard-rendered')); } catch (e) { /* older runtimes */ }
     }
 
-    function openLibrary() {
-        if (window.v3Songs && typeof window.v3Songs.openLibrary === 'function') window.v3Songs.openLibrary();
+    function openLibrary(tuningKey) {
+        if (window.v3Songs && typeof window.v3Songs.openLibrary === 'function') window.v3Songs.openLibrary(tuningKey || undefined);
         else if (window.showScreen) window.showScreen('v3-songs');
     }
 
-    // Fill the Song Library section via songs.js's shared card renderer.
+    // ── Topbar cards in the hero ─────────────────────────────────────────---
+    // On every other screen the tuner, tuning and profile cards sit in the
+    // topbar. On Home they move into the hero: the same nodes, so their
+    // listeners and live updates (tuner frames, profile refresh) keep working.
+    // Hero order puts the wide profile card between the two square cards, so
+    // the row is symmetric.
+    const HERO_BADGES = ['v3-badge-tuner', 'v3-badge-profile', 'v3-badge-instrument'];
+    const TOPBAR_BADGES = ['v3-badge-tuner', 'v3-badge-instrument', 'v3-badge-profile'];
+    function homeIsActive() {
+        const active = document.querySelector('.screen.active');
+        return !active || active.id === 'v3-home';
+    }
+    function dockBadges() {
+        const dock = document.getElementById('v3-hero-badges');
+        if (!dock || !homeIsActive()) return;
+        HERO_BADGES.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) dock.appendChild(el);
+        });
+    }
+    function undockBadges() {
+        const bar = document.getElementById('v3-topbar-badges');
+        if (!bar) return;
+        // Append all three in topbar order, so the order is right even when
+        // only some of them were in the hero.
+        TOPBAR_BADGES.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) bar.appendChild(el);
+        });
+    }
+
+    // Fill the Song Library section via songs.js's shared card renderer: a
+    // random pick of the songs in the tuning the tuning card shows.
+    let _libraryToken = 0;
+    let _libraryTuningKey = null;   // library tuning key of the shown pick, for "See all"
     async function renderLibrary(root) {
         const grid = root.querySelector('#v3-home-library-grid');
         const sub = root.querySelector('#v3-home-library-sub');
         const all = root.querySelector('#v3-home-library-all');
+        const shuffleBtn = root.querySelector('#v3-home-library-shuffle');
         if (!grid) return;
+        const myToken = ++_libraryToken;
         const api = window.v3Songs;
+        const badges = window.v3Badges;
+        let tuning = null;
+        try { tuning = badges && typeof badges.currentTuning === 'function' ? badges.currentTuning() : null; } catch (e) { tuning = null; }
+        const byTuning = !!(tuning && Array.isArray(tuning.offsets) && tuning.offsets.length);
         let info = null;
         if (api && typeof api.renderPreview === 'function') {
-            try { info = await api.renderPreview(grid, { limit: LIBRARY_COUNT }); } catch (e) { info = null; }
+            try {
+                info = await api.renderPreview(grid, { limit: LIBRARY_COUNT, tuning: byTuning ? tuning : null, shuffle: byTuning });
+            } catch (e) { info = null; }
         }
-        if (!grid.isConnected) return;   // a newer render replaced this one
+        if (myToken !== _libraryToken || !grid.isConnected) return;   // a newer render replaced this one
+        const t = info && info.tuning;
+        _libraryTuningKey = t && t.key ? t.key : null;
+        if (shuffleBtn) shuffleBtn.classList.toggle('hidden', !(info && info.shuffled && info.total > info.shown));
         if (!info || !info.shown) {
+            const msg = !info ? 'Couldn\'t load your library.'
+                : t ? 'No songs in ' + t.name + ' yet. Pick another tuning on the tuning card above, or browse the whole library.'
+                    : 'Your library is empty. Import a pack or point RockStar at your songs folder to get started.';
             grid.innerHTML =
                 '<div class="rounded-xl border border-dashed border-fb-border/60 p-8 text-center">' +
-                '<p class="text-fb-textDim text-sm mb-3">' + (info ? 'Your library is empty. Import a pack or point RockStar at your songs folder to get started.' : 'Couldn\'t load your library.') + '</p>' +
+                '<p class="text-fb-textDim text-sm mb-3">' + esc(msg) + '</p>' +
                 '<button data-home-open-library class="bg-fb-card hover:bg-fb-card/70 border border-fb-border/50 text-fb-text text-sm px-4 py-2 rounded-md">Open Song Library</button></div>';
-            grid.querySelector('[data-home-open-library]')?.addEventListener('click', openLibrary);
-            if (sub) sub.textContent = '';
+            grid.querySelector('[data-home-open-library]')?.addEventListener('click', () => openLibrary());
+            if (sub) sub.textContent = t ? '0 songs in ' + t.name : '';
+            if (all) all.textContent = 'Open Song Library →';
+            _libraryTuningKey = null;
             return;
         }
-        if (sub) sub.textContent = info.total + ' song' + (info.total === 1 ? '' : 's') + (info.sortLabel ? ' · ' + info.sortLabel : '');
-        if (all) all.textContent = info.total > info.shown ? 'See all ' + info.total + ' songs →' : 'Open Song Library →';
+        const count = info.total + ' song' + (info.total === 1 ? '' : 's');
+        if (t) {
+            if (sub) sub.textContent = count + ' in ' + t.name + (info.total > info.shown ? ' · random pick' : ' · random order');
+            if (all) all.textContent = info.total > info.shown ? 'See all ' + info.total + ' in ' + t.name + ' →' : 'Open in Song Library →';
+        } else {
+            if (sub) sub.textContent = count + (info.sortLabel ? ' · ' + info.sortLabel : '');
+            if (all) all.textContent = info.total > info.shown ? 'See all ' + info.total + ' songs →' : 'Open Song Library →';
+        }
+    }
+
+    // The tuning card changed (a pick in its menu, a retune, an instrument
+    // switch): show songs in the new tuning. Both events fire for one pick,
+    // so a short delay merges them into one fetch.
+    let _tuningRefreshTimer = 0;
+    function onTuningChanged() {
+        if (!homeIsActive()) return;
+        const root = document.getElementById('v3-home');
+        if (!root || !root.querySelector('#v3-home-library-grid')) return;
+        clearTimeout(_tuningRefreshTimer);
+        _tuningRefreshTimer = setTimeout(() => renderLibrary(root), 150);
     }
 
     // Small accuracy pill for the compact Jump-back-in tiles.
@@ -313,8 +384,13 @@
 
     window.v3Dashboard = { render: render };
     if (sm && typeof sm.on === 'function') {
-        sm.on('screen:changed', (e) => { if (e && e.detail && e.detail.id === 'v3-home') render(); });
+        sm.on('screen:changed', (e) => {
+            if (e && e.detail && e.detail.id === 'v3-home') render();
+            else undockBadges();   // the cards go back to the topbar
+        });
         sm.on('v3:profile-updated', () => render());
+        sm.on('working-tuning-changed', onTuningChanged);
+        sm.on('instrument:changed', onTuningChanged);
     }
     function boot() { render(); }
     // `defer` runs this at readyState 'interactive' — later scripts have not

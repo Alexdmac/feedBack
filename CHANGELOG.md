@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top bar is gone; RockStar no longer shows any support or donation links.
 
 ### Added
+- **The tuning card picks the songs on Home.** The Home Song Library now
+  shows a random pick of twelve songs in the tuning on the tuning card. A new
+  tuning on the card changes the list immediately. "⇄ Shuffle" shows a new
+  pick, and "See all" opens the Song Library with a filter for that tuning.
+  When the library has no songs in the tuning, Home says so and links to the
+  full library.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
   the first twelve songs in your saved Song Library sort, using the same cards
   as the Song Library page (play, favorite, save, menu, arrangement chips,
@@ -178,6 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in that mode.
 
 ### Changed
+- **Home hero panel.** The heading, the paragraph and the "Patch Notes" line
+  are gone from the hero. The tuner, profile and tuning cards move from the
+  top bar into the hero. They sit in a centered row of semi-transparent glass
+  cards above equal Start Playing and Lessons buttons. On every other screen
+  the cards go back to the top bar. A tuning pick on the tuning card now also
+  sets the working tuning, so the tuner and the Home songs follow it.
 - **`GET /api/song/{f}?stems=1`** (new, opt-in) — returns the pack's playable stem
   list (`[{id, url, default}]` + `full_mix_url`), the same list the highway's WS
   `ready` sends. The stems plugin could only learn it from that WS message, which
@@ -347,6 +359,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- **Empty Song Library after a tuning change.** A tuning or instrument change
+  before the first visit to the Song Library left that screen empty. The first
+  visit now builds the library.
 - **Count-in follows the song's meter and its pickup measure.** The count-in
   (loop wrap, section practice, and the "Countdown before song" setting) always
   clicked exactly four beats, so a 3/4 song was counted in 4/4, and a song
