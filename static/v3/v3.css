@@ -1506,15 +1506,28 @@ html.fb-immersive #v3-main > .screen.active {
     color: #94a3b8;
 }
 .v3-shelf-nav:focus-visible,
-.v3-shelf-tile:focus-visible {
+.v3-shelf-tile:focus-visible,
+.v3-vst-tile:focus-visible,
+.v3-vst-edit:focus-visible {
     outline: 2px solid #38bdf8;
     outline-offset: 2px;
 }
 
-/* VST tiles: the plugin's own snapshot, or a pedal photo (the skins of the
-   Plugins page) on a dark board, with the plugin's initials on the label
-   band. A plugin in the signal chain gets a green rim and, on a pedal, the
-   green footswitch glow of the Plugins page. */
+/* VST tiles: the player's own picture or the plugin's snapshot, else a
+   pedal photo (the skins of the Plugins page) on a dark board, with the
+   plugin's initials on the label band. A tile is a footswitch:
+   - on (in the chain, not bypassed): a green rim and, on a pedal, the green
+     footswitch glow of the Plugins page;
+   - off (in the chain, bypassed): a grey rim and a dark, grey picture.
+   A tile in the chain also shows a small button that opens the plugin
+   window. */
+.v3-vst-cell { position: relative; }
+.v3-vst-tile {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border-radius: 0.5rem;
+}
 .v3-vst-art {
     display: flex;
     align-items: center;
@@ -1529,7 +1542,7 @@ html.fb-immersive #v3-main > .screen.active {
     background-size: 100% 100%;
     background-repeat: no-repeat;
     filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.55));
-    transition: transform 200ms ease;
+    transition: transform 200ms ease, filter 250ms ease;
 }
 .v3-vst-tile:hover .v3-vst-pedal { transform: translateY(-2px) scale(1.04); }
 /* The band where each photo has its printed name (see .v3-pedal-label). */
@@ -1561,7 +1574,7 @@ html.fb-immersive #v3-main > .screen.active {
     opacity: 0;
     transition: opacity 250ms ease;
 }
-.v3-vst-tile.is-in-chain .v3-vst-glow { opacity: 1; }
+.v3-vst-cell.is-in-chain:not(.is-off) .v3-vst-glow { opacity: 1; }
 .v3-vst-shot {
     position: absolute;
     inset: 0;
@@ -1569,9 +1582,17 @@ html.fb-immersive #v3-main > .screen.active {
     height: 100%;
     object-fit: cover;
     object-position: center top;
-    transition: transform 300ms ease;
+    transition: transform 300ms ease, filter 250ms ease;
+}
+/* The player's pictures are whole plugin windows: the amp sits a little
+   below the middle, under the top control bar. Zoom in on it. */
+.v3-vst-shot.is-own {
+    object-position: 50% 62%;
+    transform-origin: 50% 62%;
+    transform: scale(1.3);
 }
 .v3-vst-tile:hover .v3-vst-shot { transform: scale(1.05); }
+.v3-vst-tile:hover .v3-vst-shot.is-own { transform: scale(1.37); }
 .v3-vst-art::after {
     content: '';
     position: absolute;
@@ -1581,9 +1602,35 @@ html.fb-immersive #v3-main > .screen.active {
     pointer-events: none;
     transition: box-shadow 250ms ease;
 }
-.v3-vst-tile.is-in-chain .v3-vst-art::after { box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.9); }
-.v3-vst-tile.is-busy { cursor: progress; }
-.v3-vst-tile.is-busy .v3-vst-art { animation: v3-vst-busy 0.8s ease-in-out infinite alternate; }
+.v3-vst-cell.is-in-chain .v3-vst-art::after { box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.9); }
+.v3-vst-cell.is-off .v3-vst-art::after { box-shadow: inset 0 0 0 2px rgba(148, 163, 184, 0.55); }
+.v3-vst-cell.is-off .v3-vst-shot { filter: grayscale(0.85) brightness(0.55); }
+.v3-vst-cell.is-off .v3-vst-pedal { filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.55)) grayscale(0.85) brightness(0.55); }
+.v3-vst-edit {
+    position: absolute;
+    top: 0.3125rem;
+    right: 0.3125rem;
+    z-index: 1;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0.3125rem;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 9999px;
+    background-color: rgba(7, 10, 16, 0.78);
+    color: #e2e8f0;
+    transition: background-color 150ms ease, border-color 150ms ease;
+}
+.v3-vst-edit svg { width: 100%; height: 100%; }
+.v3-vst-edit:hover {
+    background-color: rgba(14, 116, 144, 0.9);
+    border-color: rgba(56, 189, 248, 0.6);
+}
+.v3-vst-cell.is-in-chain .v3-vst-edit { display: flex; }
+.v3-vst-cell.is-busy .v3-vst-tile { cursor: progress; }
+.v3-vst-cell.is-busy .v3-vst-art { animation: v3-vst-busy 0.8s ease-in-out infinite alternate; }
 @keyframes v3-vst-busy { from { opacity: 1; } to { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) {
     .v3-shelf-row,
@@ -1591,10 +1638,12 @@ html.fb-immersive #v3-main > .screen.active {
     .v3-vst-pedal,
     .v3-vst-shot,
     .v3-vst-glow,
+    .v3-vst-edit,
     .v3-vst-art::after { transition: none; }
     .v3-vst-tile:hover .v3-vst-pedal,
     .v3-vst-tile:hover .v3-vst-shot { transform: none; }
-    .v3-vst-tile.is-busy .v3-vst-art { animation: none; opacity: 0.6; }
+    .v3-vst-tile:hover .v3-vst-shot.is-own { transform: scale(1.3); }
+    .v3-vst-cell.is-busy .v3-vst-art { animation: none; opacity: 0.6; }
 }
 
 /* ── Home: hero panel ───────────────────────────────────────────────────────

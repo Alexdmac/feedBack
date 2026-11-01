@@ -380,13 +380,18 @@
 
     // ── VST panel ────────────────────────────────────────────────────────---
     // The desktop app's plugin catalog (feedBackDesktop.audio, the list of the
-    // Audio page) as a shelf of pictures. A click loads the plugin into the
-    // signal chain, as a click in the Audio page list does, and opens its
-    // window. A plugin that is in the chain already only opens its window, so
-    // a second click does not load a second copy. A VST3 bundle with a
-    // snapshot (/api/vst/pictures) shows that picture. The other plugins show
-    // a pedal photo of the Plugins page with their initials. The web app has
-    // no audio engine, so it shows a note.
+    // Audio page) as a shelf of pictures. A click on a tile is a footswitch:
+    // - A plugin that is not in the chain loads, as a click in the Audio page
+    //   list does, and its window opens.
+    // - A plugin that is on turns off (bypass, so its settings stay).
+    // - A plugin that is off turns on again.
+    // Only one Archetype plugin is in the chain at a time: a load or a turn-on
+    // removes the other Archetype plugins first. The small button on a tile in
+    // the chain opens the plugin window.
+    // Pictures: the player's own picture (/api/vst/images, a folder of files
+    // named after the plugins), else a VST3 snapshot (/api/vst/pictures), else
+    // a pedal photo of the Plugins page with the initials. The web app has no
+    // audio engine, so it shows a note.
     const VST_RECENT_KEY = 'v3.home.vstRecent';
     const VST_RECENT_MAX = 12;
     // The player uses only the Neural DSP Archetype amp plugins, so the panel
@@ -513,25 +518,85 @@
         }
         return _vstPictureUrls;
     }
-    function vstTile(p, picture, inChain) {
+    // The player's own pictures: {name key: URL}. The panel asks at each
+    // render, so a new file in the folder shows at the next visit to Home.
+    async function vstImages() {
+        try {
+            const r = await fetch('/api/vst/images', { cache: 'no-store' });
+            const data = r.ok ? await r.json() : null;
+            return data && data.images && typeof data.images === 'object' ? data.images : {};
+        } catch (e) { return {}; }
+    }
+    // The compare key of a name: lower case, letters and digits only. The
+    // server makes the same key from the file name ("CoryWongX.png").
+    function vstNameKey(name) {
+        return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+    // The player's picture of a plugin: a file named after the short name
+    // ("Abasi.png") or the full name ("Archetype Abasi.png"), else null.
+    function vstImageFor(p, images) {
+        if (!p || !images) return null;
+        const keys = [vstNameKey(vstShortName(p.name)), vstNameKey(p.name)];
+        for (const k of keys) {
+            if (k && typeof images[k] === 'string') return images[k];
+        }
+        return null;
+    }
+    // What a click on the tile of plugin p does, from the chain (VST slots)
+    // and the path keys of the one-at-a-time plugins (soloKeys):
+    // - action 'off': the plugin is on, so turn it off (bypass).
+    // - action 'on': the plugin is off, so turn it on.
+    // - action 'load': the plugin is not in the chain, so load it.
+    // `remove` holds the slot ids of the other one-at-a-time plugins, which
+    // leave the chain before an 'on' or a 'load' of a one-at-a-time plugin.
+    function vstClickPlan(p, chain, soloKeys) {
+        const key = vstPathKey(p && p.path);
+        const slots = Array.isArray(chain) ? chain : [];
+        const slot = slots.find((s) => s && vstPathKey(s.path) === key) || null;
+        if (slot && !slot.bypassed) return { action: 'off', slot, remove: [] };
+        const solo = (s) => (soloKeys && soloKeys.has(vstPathKey(s.path))) || VST_ONLY.test(String(s.name || ''));
+        const remove = p && VST_ONLY.test(String(p.name))
+            ? slots.filter((s) => s && s !== slot && Number.isInteger(s.id) && vstPathKey(s.path) !== key && solo(s)).map((s) => s.id)
+            : [];
+        return { action: slot ? 'on' : 'load', slot, remove };
+    }
+    function vstTile(p, picture, own) {
         const skins = window.v3PedalSkins;
         const skin = skins && typeof skins.url === 'function' ? vstSkin(p, skins.list) : null;
         const skinUrl = skin ? skins.url(skin) : '';
         const kind = p.isInstrument ? 'Instrument' : 'Effect';
         const name = vstShortName(p.name);
         const sub = VST_ONLY.test(String(p.name)) ? 'Archetype' : (p.manufacturer || kind);
-        // The pedal is always drawn. A snapshot covers it, and a snapshot that
+        // The pedal is always drawn. A picture covers it, and a picture that
         // does not load removes itself, so the pedal shows again.
-        return '<button type="button" class="v3-shelf-tile v3-vst-tile' + (inChain ? ' is-in-chain' : '') + '" data-vst-path="' + esc(p.path) + '" ' +
+        return '<div class="v3-shelf-tile v3-vst-cell" data-vst-path="' + esc(p.path) + '" data-vst-sub="' + esc(sub) + '">' +
+            '<button type="button" class="v3-vst-tile" data-vst-toggle aria-pressed="false" ' +
             'title="' + esc(p.name + (p.manufacturer ? ' — ' + p.manufacturer : '') + ' · ' + kind) + '">' +
             '<span class="v3-shelf-art v3-vst-art">' +
             '<span class="v3-vst-pedal"' + (skinUrl ? ' style="--skin:url(\'' + esc(skinUrl) + '\')"' : '') + '>' +
             '<span class="v3-vst-mono" aria-hidden="true">' + esc(vstInitials(name)) + '</span>' +
             '<span class="v3-vst-glow" aria-hidden="true"></span></span>' +
-            (picture ? '<img src="' + esc(picture) + '" alt="" class="v3-vst-shot" loading="lazy" onerror="this.remove()">' : '') +
+            (picture ? '<img src="' + esc(picture) + '" alt="" class="v3-vst-shot' + (own ? ' is-own' : '') + '" loading="lazy" decoding="async" onerror="this.remove()">' : '') +
             '</span>' +
             '<span class="v3-shelf-title">' + esc(name) + '</span>' +
-            '<span class="v3-shelf-sub">' + esc(sub) + '</span></button>';
+            '<span class="v3-shelf-sub">' + esc(sub) + '</span></button>' +
+            '<button type="button" class="v3-vst-edit" data-vst-edit title="Open the plugin window" aria-label="Open the ' + esc(name) + ' window">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+            '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg></button></div>';
+    }
+    // Show the chain state on the tiles: in the chain, on or off.
+    function vstSync(row, chain) {
+        const byKey = new Map(chain.map((s) => [vstPathKey(s.path), s]));
+        row.querySelectorAll('[data-vst-path]').forEach((cell) => {
+            const slot = byKey.get(vstPathKey(cell.getAttribute('data-vst-path')));
+            const off = !!(slot && slot.bypassed);
+            cell.classList.toggle('is-in-chain', !!slot);
+            cell.classList.toggle('is-off', off);
+            const btn = cell.querySelector('[data-vst-toggle]');
+            if (btn) btn.setAttribute('aria-pressed', slot && !off ? 'true' : 'false');
+            const sub = cell.querySelector('.v3-shelf-sub');
+            if (sub) sub.textContent = (cell.getAttribute('data-vst-sub') || '') + (off ? ' · off' : '');
+        });
     }
     async function renderVst(root) {
         const section = root.querySelector('#v3-vst');
@@ -566,41 +631,96 @@
         if (!all.length) { note('No VST plugins yet. Scan for plugins on the Audio page.'); return; }
         const plugins = vstShown(all);
         const label = (plugins.length < all.length ? ' Archetype plugin' : ' plugin') + (plugins.length === 1 ? '' : 's');
-        const [pictures, chain] = await Promise.all([vstPictures(plugins.map((p) => p.path)), vstChain(api)]);
+        const [images, pictures, chain] = await Promise.all([
+            vstImages(), vstPictures(plugins.map((p) => p.path)), vstChain(api)]);
         if (stale()) return;
-        const inChain = new Set(chain.map((s) => vstPathKey(s.path)));
-        row.innerHTML = plugins.map((p) => vstTile(p, pictures[p.path] || null, inChain.has(vstPathKey(p.path)))).join('');
+        row.innerHTML = plugins.map((p) => {
+            const own = vstImageFor(p, images);
+            return vstTile(p, own || pictures[p.path] || null, !!own);
+        }).join('');
+        vstSync(row, chain);
         if (status) status.textContent = plugins.length + label;
         const byPath = new Map(plugins.map((p) => [p.path, p]));
-        row.querySelectorAll('[data-vst-path]').forEach((b) =>
-            b.addEventListener('click', () => loadVst(api, b, byPath.get(b.getAttribute('data-vst-path')), status)));
+        const soloKeys = new Set(all.filter((p) => VST_ONLY.test(String(p.name))).map((p) => vstPathKey(p.path)));
+        row.querySelectorAll('[data-vst-path]').forEach((cell) => {
+            const p = byPath.get(cell.getAttribute('data-vst-path'));
+            const toggle = cell.querySelector('[data-vst-toggle]');
+            const edit = cell.querySelector('[data-vst-edit]');
+            if (toggle) toggle.addEventListener('click', () => clickVst(api, row, cell, p, status, soloKeys));
+            if (edit) edit.addEventListener('click', () => editVst(api, p, status));
+        });
         wireShelf(section);
     }
-    async function loadVst(api, btn, p, status) {
-        if (!p || btn.classList.contains('is-busy')) return;
+    async function clickVst(api, row, cell, p, status, soloKeys) {
+        if (!p || row.querySelector('.v3-vst-cell.is-busy')) return;
         const say = (msg) => { if (status && status.isConnected) status.textContent = msg; };
-        btn.classList.add('is-busy');
-        btn.setAttribute('aria-busy', 'true');
-        say('Loading ' + p.name + '…');
-        let slotId = -1;
-        let had = false;
-        try {
-            const key = vstPathKey(p.path);
-            const slot = (await vstChain(api)).find((s) => vstPathKey(s.path) === key);
-            if (slot && Number.isInteger(slot.id)) { slotId = slot.id; had = true; }
-            else slotId = await api.loadVST(p.path);
-        } catch (e) { slotId = -1; }
+        const name = vstShortName(p.name);
+        cell.classList.add('is-busy');
+        cell.setAttribute('aria-busy', 'true');
+        const chain = await vstChain(api);
+        const plan = vstClickPlan(p, chain, soloKeys);
+        const gone = chain.filter((s) => plan.remove.includes(s.id)).map((s) => vstShortName(s.name));
+        say((plan.action === 'off' ? 'Turning off ' : plan.action === 'on' ? 'Turning on ' : 'Loading ') + name + '…');
+        let ok = false;
         let opened = false;
-        if (slotId >= 0 && typeof api.openPluginEditor === 'function') {
-            try { opened = (await api.openPluginEditor(slotId)) !== false; } catch (e) { opened = false; }
+        try {
+            if (plan.action === 'off') {
+                ok = await vstSetBypass(api, plan.slot.id, true);
+            } else {
+                for (const id of plan.remove) await vstRemove(api, id);
+                if (plan.action === 'on') {
+                    ok = await vstSetBypass(api, plan.slot.id, false);
+                } else {
+                    const slotId = await api.loadVST(p.path);
+                    ok = slotId >= 0;
+                    if (ok) {
+                        refreshAudioPage(slotId);
+                        if (typeof api.openPluginEditor === 'function') {
+                            try { opened = (await api.openPluginEditor(slotId)) !== false; } catch (e) { opened = false; }
+                        }
+                    }
+                }
+            }
+        } catch (e) { ok = false; }
+        cell.classList.remove('is-busy');
+        cell.removeAttribute('aria-busy');
+        if (row.isConnected) vstSync(row, await vstChain(api));
+        if (!ok) {
+            say('Could not ' + (plan.action === 'load' ? 'load ' : 'turn ' + plan.action + ' ') + name + '. The Audio page has details.');
+            return;
         }
-        btn.classList.remove('is-busy');
-        btn.removeAttribute('aria-busy');
-        if (!(slotId >= 0)) { say('Could not load ' + p.name + '. The Audio page has details.'); return; }
-        btn.classList.add('is-in-chain');
-        rememberVst(p);
-        if (!had) refreshAudioPage(slotId);
-        say((had ? p.name + ' is in the chain' : 'Loaded ' + p.name) + (opened ? '. Its window is open.' : '.'));
+        if (plan.action !== 'off') rememberVst(p);
+        const out = gone.length ? ' Removed ' + gone.join(', ') + '.' : '';
+        if (plan.action === 'off') say(name + ' is off. Click it again to turn it on.');
+        else if (plan.action === 'on') say(name + ' is on.' + out);
+        else say('Loaded ' + name + (opened ? '. Its window is open.' : '.') + out);
+    }
+    async function editVst(api, p, status) {
+        if (!p) return;
+        const key = vstPathKey(p.path);
+        const slot = (await vstChain(api)).find((s) => vstPathKey(s.path) === key);
+        if (!slot) return;
+        let opened = false;
+        try {
+            if (typeof window._aeOpenEditor === 'function') { await window._aeOpenEditor(slot.id); opened = true; }
+            else if (typeof api.openPluginEditor === 'function') opened = (await api.openPluginEditor(slot.id)) !== false;
+        } catch (e) { opened = false; }
+        if (status && status.isConnected) {
+            const name = vstShortName(p.name);
+            status.textContent = opened ? 'The ' + name + ' window is open.' : 'Could not open the ' + name + ' window.';
+        }
+    }
+    // Bypass through the Audio page when it is loaded, so its chain list
+    // shows the change. Else call the engine.
+    async function vstSetBypass(api, slotId, bypassed) {
+        if (typeof window._aeToggleBypass === 'function') { await window._aeToggleBypass(slotId, bypassed); return true; }
+        if (typeof api.setBypass !== 'function') return false;
+        return (await api.setBypass(slotId, bypassed)) !== false;
+    }
+    async function vstRemove(api, slotId) {
+        if (typeof window._aeRemoveSlot === 'function') { await window._aeRemoveSlot(slotId); return; }
+        if (typeof api.closePluginEditor === 'function') { try { await api.closePluginEditor(slotId); } catch (e) { /* */ } }
+        if (typeof api.removeProcessor === 'function') await api.removeProcessor(slotId);
     }
     // The Audio page draws its chain list again only after its own changes.
     // _aeToggleBypass sets the bypass and then draws the list. A new slot is

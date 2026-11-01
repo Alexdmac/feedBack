@@ -90,6 +90,21 @@ def save_settings(data: dict):
                 # validating the rest so the other settings still save.
                 dlc_warnings.append(f"DLC directory not found: {dlc_path}")
 
+    if "vst_images_dir" in data:
+        # The folder with the player's own pictures for the Home VST panel
+        # (routers/vst_pictures.py). Same rules as dlc_dir: null is no-op,
+        # an empty string clears (back to <config_dir>/vst_images), and a
+        # folder that does not exist is a warning, not an error.
+        raw = data["vst_images_dir"]
+        if raw is None:
+            pass
+        elif not isinstance(raw, str) or len(raw) > 1024:
+            return {"error": "vst_images_dir must be a string path or empty"}
+        elif raw == "" or Path(raw).is_dir():
+            updates["vst_images_dir"] = raw
+        else:
+            dlc_warnings.append(f"VST picture folder not found: {raw}")
+
     # Both of these are consumed downstream as strings (e.g.
     # demucs_server_url.rstrip('/')), so reject non-string shapes
     # here. Matches the dlc_dir pattern above:
@@ -429,6 +444,10 @@ def _validate_server_config_types(cfg: dict) -> str | None:
         v = cfg["dlc_dir"]
         if v is not None and not isinstance(v, str):
             return "server_config.dlc_dir must be a string"
+    if "vst_images_dir" in cfg:
+        v = cfg["vst_images_dir"]
+        if v is not None and not isinstance(v, str):
+            return "server_config.vst_images_dir must be a string"
     for key in ("default_arrangement", "demucs_server_url"):
         if key in cfg:
             v = cfg[key]

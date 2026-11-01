@@ -14,17 +14,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **VST panel on Home (desktop app).** A new panel under the hero shows the
   VST plugins of the desktop app's plugin catalog as pictures, in a row as
-  tall as "Jump back in". A click loads the plugin into the signal chain and
-  opens its window. A plugin in the chain already only opens its window.
-  The panel shows only the Neural DSP Archetype plugins, and their tiles
-  drop the word "Archetype" from the name. A catalog with no Archetype
-  plugin shows all plugins.
-  A VST3 plugin with a snapshot in its bundle shows that picture. Other
-  plugins show a pedal photo of the Plugins page with their initials. The
-  plugins loaded last from the panel come first. The new
-  `POST /api/vst/pictures` and `GET /api/vst/picture` routes find and serve
-  the snapshots. They serve only `*_snapshot*.png` files in the
-  `Contents/Resources/Snapshots` folder of a `.vst3` bundle.
+  tall as "Jump back in". The panel shows only the Neural DSP Archetype
+  plugins, and their tiles drop the word "Archetype" from the name. A
+  catalog with no Archetype plugin shows all plugins. The plugins loaded
+  last from the panel come first.
+  - A tile is a footswitch. A click on a plugin that is not in the signal
+    chain loads it and opens its window. A click on a plugin that is on
+    turns it off (bypass, so its settings stay). A click on a plugin that
+    is off turns it on again. A green rim shows "on", and a grey rim and a
+    dark picture show "off".
+  - Only one Archetype plugin is in the chain at a time. A load or a
+    turn-on removes the other Archetype plugins first.
+  - A tile in the chain has a small button that opens the plugin window.
+  - Pictures: the player's own picture comes first. Put image files (PNG,
+    JPEG or WebP) named after the plugins in one folder, for example
+    `Abasi.png` or `CoryWongX.png`. The folder is the new `vst_images_dir`
+    setting, or `vst_images` in the config folder. The new
+    `GET /api/vst/images` and `GET /api/vst/image/<file>` routes list and
+    serve these files, and only image files directly in that folder.
+  - Else a VST3 plugin with a snapshot in its bundle shows that picture.
+    The new `POST /api/vst/pictures` and `GET /api/vst/picture` routes find
+    and serve the snapshots. They serve only `*_snapshot*.png` files in the
+    `Contents/Resources/Snapshots` folder of a `.vst3` bundle.
+  - Else the tile shows a pedal photo of the Plugins page with the
+    plugin's initials.
 - **The tuning card picks the songs on Home.** The Home Song Library now
   shows a random pick of twelve songs in the tuning on the tuning card. A new
   tuning on the card changes the list immediately. "⇄ Shuffle" shows a new

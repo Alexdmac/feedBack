@@ -41,7 +41,7 @@ function loadHelpers() {
     const consts = ['HERO_FILL_W', 'HERO_FILL_H', 'HERO_ZOOM_MIN', 'HERO_ZOOM_MAX', 'VST_ONLY']
         .map((n) => extractConst(src, n)).join('\n');
     const names = ['heroZoom', 'vstKey', 'vstPathKey', 'vstPlugins', 'vstShown', 'vstShortName',
-        'vstInitials', 'vstHash', 'vstSkin'];
+        'vstInitials', 'vstHash', 'vstSkin', 'vstNameKey', 'vstImageFor', 'vstClickPlan'];
     const body = names.map((n) => extractBlock(src, 'function ' + n + '(')).join('\n');
     const sandbox = { exports: {} };
     vm.createContext(sandbox);
@@ -125,6 +125,56 @@ test('vstShortName: drops the Archetype word that every tile repeats', () => {
     assert.equal(h.vstShortName(undefined), '');
     assert.equal(h.vstInitials(h.vstShortName('Archetype Tim Henson X')), 'TH');
     assert.equal(h.vstInitials(h.vstShortName('Archetype Plini')), 'Pl');
+});
+
+test('vstNameKey and vstImageFor: the picture file named after the plugin', () => {
+    assert.equal(h.vstNameKey('Cory Wong X'), 'corywongx');
+    assert.equal(h.vstNameKey('CoryWongX'), 'corywongx');
+    assert.equal(h.vstNameKey('Archetype: Tim-Henson X'), 'archetypetimhensonx');
+    assert.equal(h.vstNameKey(null), '');
+    const images = { abasi: '/a.png', corywongx: '/c.png', archetypeplini: '/p.png' };
+    const p = (name) => plugin(name, 'Neural DSP', 'C:/x/' + name + '.vst3');
+    assert.equal(h.vstImageFor(p('Archetype Abasi'), images), '/a.png');
+    assert.equal(h.vstImageFor(p('Archetype Cory Wong X'), images), '/c.png');
+    // A file with the full name also matches.
+    assert.equal(h.vstImageFor(p('Archetype Plini'), images), '/p.png');
+    assert.equal(h.vstImageFor(p('Archetype Gojira'), images), null);
+    assert.equal(h.vstImageFor(p('Archetype Abasi'), null), null);
+    assert.equal(h.vstImageFor(null, images), null);
+});
+
+test('vstClickPlan: a click is a footswitch, and only one Archetype plugin stays in the chain', () => {
+    const abasi = plugin('Archetype Abasi', 'Neural DSP', 'C:/VST3/Archetype Abasi.vst3');
+    const cory = plugin('Archetype Cory Wong X', 'Neural DSP', 'C:/VST3/Archetype Cory Wong X.vst3');
+    const room = plugin('Room', 'Valhalla', 'C:/VST3/ValhallaRoom.vst3');
+    const slot = (id, p, bypassed) => ({ id, type: 0, name: p.name, path: p.path.replace(/\//g, '\\'), bypassed: !!bypassed });
+    const solo = new Set([h.vstPathKey(abasi.path), h.vstPathKey(cory.path)]);
+    // Not in the chain: load it, and remove the other Archetype plugins (on or off).
+    let plan = h.vstClickPlan(abasi, [slot(3, cory), slot(5, room)], solo);
+    assert.equal(plan.action, 'load');
+    assert.equal(plan.slot, null);
+    assert.deepEqual(Array.from(plan.remove), [3]);
+    plan = h.vstClickPlan(abasi, [slot(3, cory, true)], solo);
+    assert.deepEqual(Array.from(plan.remove), [3]);
+    // On: turn it off, and remove nothing.
+    plan = h.vstClickPlan(abasi, [slot(2, abasi), slot(3, cory)], solo);
+    assert.equal(plan.action, 'off');
+    assert.equal(plan.slot.id, 2);
+    assert.equal(plan.remove.length, 0);
+    // Off: turn it on, and remove the other Archetype plugins.
+    plan = h.vstClickPlan(abasi, [slot(2, abasi, true), slot(3, cory)], solo);
+    assert.equal(plan.action, 'on');
+    assert.equal(plan.slot.id, 2);
+    assert.deepEqual(Array.from(plan.remove), [3]);
+    // The slot name also marks an Archetype plugin (a path the catalog does not list).
+    plan = h.vstClickPlan(abasi, [{ id: 7, name: 'Archetype Nolly X', path: 'D:\\Other\\Nolly.vst3' }], solo);
+    assert.deepEqual(Array.from(plan.remove), [7]);
+    // A plugin that is not an Archetype plugin removes nothing.
+    plan = h.vstClickPlan(room, [slot(3, cory)], solo);
+    assert.equal(plan.action, 'load');
+    assert.equal(plan.remove.length, 0);
+    // No chain information: load.
+    assert.equal(h.vstClickPlan(abasi, null, solo).action, 'load');
 });
 
 test('vstPathKey: the bundle folder, with one slash style and one case', () => {
