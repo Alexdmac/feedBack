@@ -2405,7 +2405,7 @@
     // _bgCoerce must reject a stored h3d_bg_style='venue' — otherwise venue could
     // mount outside that flow and settings.html (which can't represent 'venue')
     // would be unable to switch back. BG_STYLES still has a 'venue' renderer entry.
-    const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video'];
+    const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'road', 'butterchurn', 'image', 'video'];
     // Scene color themes — TWO INDEPENDENT AXES sharing one palette family.
     // The combined `BG_THEMES` table below is the single source of truth; each
     // entry carries the colors for BOTH axes, but the two axes are selected and
@@ -3162,6 +3162,91 @@
         tex.needsUpdate = true;
     }
 
+    // Night road background (style id 'road'). A straight freeway under and
+    // beside the fretboard; a street-light post passes the hit line on every
+    // beat and a taller, brighter one on every bar line. Posts are placed from
+    // CHART time (the fifth `chart` argument to update()), so pause freezes
+    // them, seeking jumps them and practice speed slows them.
+    //
+    // --- road placement (sliced by tests/road.test.js) ---
+    // Max posts per side drawn at once. A beat window of AHEAD + 1 + BEHIND
+    // (4.5 s) holds 64 beats only above ~850 BPM, so the cap never bites in
+    // practice; it just bounds the preallocated pools.
+    const ROAD_POST_POOL = 64;
+    // Preallocate the placement slots once per mounted road (build time).
+    function _roadMakeSlots(cap) {
+        const out = new Array(cap);
+        for (let i = 0; i < cap; i++) out[i] = { z: 0, isBar: false };
+        return out;
+    }
+    // Fill out[0..n) with one { z, isBar } per beat whose time lies in
+    // [now - behind, now + ahead], at the same z a note at that time would
+    // sit (z = -(time - now) * ts). Bar lines are beats with measure >= 0
+    // (the same rule static/highway.js uses). Returns n. Writes only into
+    // the preallocated slots — no allocation on this per-frame path.
+    function _roadPlacePosts(beats, now, ts, behind, ahead, lowerBoundTime, out, cap) {
+        if (!beats || beats.length === 0 || !out) return 0;
+        const t0 = now - behind;
+        const t1 = now + ahead;
+        const max = cap < out.length ? cap : out.length;
+        let i = typeof lowerBoundTime === 'function' ? lowerBoundTime(beats, t0) : 0;
+        if (!(i >= 0)) i = 0;
+        let n = 0;
+        for (; i < beats.length && n < max; i++) {
+            const b = beats[i];
+            if (b.time < t0) continue;   // linear-scan fallback
+            if (b.time > t1) break;
+            const slot = out[n++];
+            slot.z = -(b.time - now) * ts;
+            slot.isBar = b.measure >= 0;
+        }
+        return n;
+    }
+    // --- end road placement ---
+
+    // Road geometry, all relative to the board's width so the road keeps its
+    // proportions if the fret layout changes. bw = board width (world units).
+    const ROAD_LANES_EACH_SIDE = 2;
+    const ROAD_LANE_FRAC = 1 / 3;           // lane width = bw / 3
+    const ROAD_SHOULDER_W = 6 * K;          // barrier strip width
+    const ROAD_SHOULDER_H = 3 * K;          // barrier strip height
+    const ROAD_POST_GAP = 6 * K;            // post sits this far outside the barrier
+    const ROAD_POST_W = 2.5 * K;
+    const ROAD_POST_H = 60 * K;             // beat post; bar posts are 1.6x
+    const ROAD_BAR_H_MUL = 1.6;
+    const ROAD_HEAD_R = 4 * K;
+    const ROAD_BAR_HEAD_MUL = 1.3;          // bar heads are a little larger too
+    const ROAD_GROUND_MUL = 4;              // ground reaches 4x the carriageway half width
+    // Head brightness: base * (0.5 + intensity) + 0.6 * bass, clamped so a
+    // head never outshines the string colours (max channel 0.85).
+    const ROAD_HEAD_BEAT_BASE = 0.42;
+    const ROAD_HEAD_BAR_BASE = 0.62;
+    const ROAD_HEAD_BASS = 0.6;
+    const ROAD_HEAD_MAX = 0.85;
+    const ROAD_HEAD_WARM_R = 1.0, ROAD_HEAD_WARM_G = 0.86, ROAD_HEAD_WARM_B = 0.62;
+    const ROAD_DASH_LEN = 30 * K;
+    const ROAD_DASH_PERIOD = 60 * K;
+    const ROAD_DASH_W = 1.2 * K;
+
+    // Mix two 0xRRGGBB colours (t = 0 -> a, 1 -> b), no allocation.
+    function _roadMixHex(a, b, t) {
+        const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+        const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+        const r = Math.round(ar + (br - ar) * t);
+        const g = Math.round(ag + (bg - ag) * t);
+        const bl = Math.round(ab + (bb - ab) * t);
+        return (r << 16) | (g << 8) | bl;
+    }
+    // Asphalt = theme clear lifted slightly toward grey; ground = clear
+    // pushed toward black so the carriageway reads as the lighter surface.
+    // Called at build and from _applyBgTheme on a live background-theme switch.
+    function _bgRoadApplyTheme(s, clearHex) {
+        if (!s || !s.asphaltMat) return;
+        const clear = typeof clearHex === 'number' ? clearHex : BG_THEMES.default.clear;
+        s.asphaltMat.color.setHex(_roadMixHex(clear, 0x34343a, 0.25));
+        s.groundMat.color.setHex(_roadMixHex(clear, 0x000000, 0.35));
+    }
+
     // Background-style registry. Each entry returns a per-panel state
     // object from build() and reads from it in update() / teardown().
     // T (THREE) is set by the time these are invoked (initScene runs
@@ -3409,6 +3494,180 @@
                     m.geometry.dispose();
                     m.material.dispose();
                 }
+            },
+        },
+        // Night road — see the ROAD_* constants and _roadPlacePosts above.
+        // Everything lives under one root group centred on the board, so
+        // the style is symmetric about the board (lefty needs no mirroring).
+        // State is per mount (= per renderer instance under splitscreen).
+        road: {
+            build(scene, settings) {
+                const bw = (settings && settings.boardWidth > 0) ? settings.boardWidth : 256 * K;
+                const cx = (settings && Number.isFinite(settings.boardCenter)) ? settings.boardCenter : 0;
+                const lane = bw * ROAD_LANE_FRAC;
+                const halfW = bw / 2 + ROAD_LANES_EACH_SIDE * lane;
+                const boardY = S_BASE - NH / 2 - 2 * K;
+                const roadY = boardY - 0.5 * K;      // just under the board plane
+                const groundY = boardY - 1.0 * K;
+                const zNear = 2 * TS;                // behind the hit line
+                const zFar = -(AHEAD + 1) * TS;
+                const len = zNear - zFar;
+                const zMid = (zNear + zFar) / 2;
+
+                const root = new T.Group();
+                root.position.x = cx;
+                scene.add(root);
+                const s = {
+                    root, boardCenter: settings ? settings.boardCenter : undefined,
+                    boardWidth: settings ? settings.boardWidth : undefined,
+                    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.5,
+                    geos: [], mats: [],
+                    asphaltMat: null, groundMat: null,
+                    posts: null, beatHeads: null, barHeads: null, dashes: null,
+                    beatHeadMat: null, barHeadMat: null,
+                    dummy: new T.Object3D(),
+                    slots: _roadMakeSlots(ROAD_POST_POOL),
+                    postX: halfW + ROAD_SHOULDER_W + ROAD_POST_GAP,
+                    baseY: roadY,
+                    shown: -1,
+                };
+                const geo = (g) => { s.geos.push(g); return g; };
+                const mat = (m) => { s.mats.push(m); return m; };
+
+                // Carriageway: opaque dark asphalt, fogged so the far end fades.
+                s.asphaltMat = mat(new T.MeshBasicMaterial({ color: 0x18202a, depthWrite: false }));
+                const asphalt = new T.Mesh(geo(new T.PlaneGeometry(halfW * 2, len)), s.asphaltMat);
+                asphalt.rotation.x = -Math.PI / 2;
+                asphalt.position.set(0, roadY, zMid);
+                root.add(asphalt);
+
+                // Ground either side so the barriers don't float.
+                s.groundMat = mat(new T.MeshBasicMaterial({ color: 0x0a0f14, depthWrite: false }));
+                const groundW = halfW * (ROAD_GROUND_MUL - 1);
+                const groundGeo = geo(new T.PlaneGeometry(groundW, len));
+                for (const side of [-1, 1]) {
+                    const g = new T.Mesh(groundGeo, s.groundMat);
+                    g.rotation.x = -Math.PI / 2;
+                    g.position.set(side * (halfW + groundW / 2), groundY, zMid);
+                    root.add(g);
+                }
+                _bgRoadApplyTheme(s, settings ? settings.clearHex : undefined);
+
+                // Barriers at the carriageway edges.
+                const barrierMat = mat(new T.MeshBasicMaterial({ color: 0x6a6e76 }));
+                const barrierGeo = geo(new T.BoxGeometry(ROAD_SHOULDER_W, ROAD_SHOULDER_H, len));
+                for (const side of [-1, 1]) {
+                    const b = new T.Mesh(barrierGeo, barrierMat);
+                    b.position.set(side * (halfW + ROAD_SHOULDER_W / 2), roadY + ROAD_SHOULDER_H / 2, zMid);
+                    root.add(b);
+                }
+
+                // Dashed lane line between the two outer lanes on each side —
+                // never under the board/strings. Static in this version.
+                const dashCount = Math.max(1, Math.floor(len / ROAD_DASH_PERIOD));
+                const dashMat = mat(new T.MeshBasicMaterial({
+                    color: 0xffffff, transparent: true, opacity: 0.25, depthWrite: false,
+                }));
+                const dashGeo = geo(new T.PlaneGeometry(ROAD_DASH_W, ROAD_DASH_LEN));
+                dashGeo.rotateX(-Math.PI / 2);
+                const dashes = new T.InstancedMesh(dashGeo, dashMat, dashCount * 2);
+                const dashX = bw / 2 + lane;
+                let di = 0;
+                for (const side of [-1, 1]) {
+                    for (let k = 0; k < dashCount; k++) {
+                        s.dummy.position.set(side * dashX, roadY + 0.1 * K, zNear - (k + 0.5) * ROAD_DASH_PERIOD);
+                        s.dummy.updateMatrix();
+                        dashes.setMatrixAt(di++, s.dummy.matrix);
+                    }
+                }
+                dashes.instanceMatrix.needsUpdate = true;
+                dashes.frustumCulled = false;
+                root.add(dashes);
+                s.dashes = dashes;
+
+                // Street-light pools: one post mesh (both sides) and separate
+                // beat / bar head meshes so bar heads get their own brighter
+                // material colour without per-instance colour writes.
+                const cap = ROAD_POST_POOL * 2;
+                const postGeo = geo(new T.BoxGeometry(ROAD_POST_W, 1, ROAD_POST_W));
+                postGeo.translate(0, 0.5, 0);    // base at y=0; scale.y = height
+                const postMat = mat(new T.MeshBasicMaterial({ color: 0x2a2e36 }));
+                s.posts = new T.InstancedMesh(postGeo, postMat, cap);
+                const headGeo = geo(new T.SphereGeometry(ROAD_HEAD_R, 10, 8));
+                s.beatHeadMat = mat(new T.MeshBasicMaterial({ color: 0xffffff }));
+                s.barHeadMat = mat(new T.MeshBasicMaterial({ color: 0xffffff }));
+                s.beatHeads = new T.InstancedMesh(headGeo, s.beatHeadMat, cap);
+                s.barHeads = new T.InstancedMesh(headGeo, s.barHeadMat, cap);
+                for (const m of [s.posts, s.beatHeads, s.barHeads]) {
+                    m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                    m.count = 0;
+                    // Instances move every frame; the cached bounding sphere
+                    // would go stale and cull visible posts.
+                    m.frustumCulled = false;
+                    root.add(m);
+                }
+                return s;
+            },
+            update(s, bands, dt, t, chart) {
+                if (!s || !s.posts) return;
+                let n = 0;
+                if (chart && chart.isReady && chart.beats && chart.beats.length > 0) {
+                    n = _roadPlacePosts(chart.beats, chart.time, TS, BEHIND, AHEAD + 1,
+                        chart.lowerBoundTime, s.slots, ROAD_POST_POOL);
+                }
+                if (n === 0) {
+                    if (s.shown !== 0) {
+                        s.posts.count = 0; s.beatHeads.count = 0; s.barHeads.count = 0;
+                        s.shown = 0;
+                    }
+                    return;
+                }
+                const d = s.dummy;
+                const x = s.postX, y0 = s.baseY;
+                let np = 0, nBeat = 0, nBar = 0;
+                for (let i = 0; i < n; i++) {
+                    const slot = s.slots[i];
+                    const h = slot.isBar ? ROAD_POST_H * ROAD_BAR_H_MUL : ROAD_POST_H;
+                    const hs = slot.isBar ? ROAD_BAR_HEAD_MUL : 1;
+                    const heads = slot.isBar ? s.barHeads : s.beatHeads;
+                    for (let side = -1; side <= 1; side += 2) {
+                        d.position.set(side * x, y0, slot.z);
+                        d.scale.set(1, h, 1);
+                        d.updateMatrix();
+                        s.posts.setMatrixAt(np++, d.matrix);
+                        d.position.y = y0 + h;
+                        d.scale.set(hs, hs, hs);
+                        d.updateMatrix();
+                        heads.setMatrixAt(slot.isBar ? nBar++ : nBeat++, d.matrix);
+                    }
+                }
+                s.posts.count = np; s.beatHeads.count = nBeat; s.barHeads.count = nBar;
+                s.posts.instanceMatrix.needsUpdate = true;
+                if (nBeat) s.beatHeads.instanceMatrix.needsUpdate = true;
+                if (nBar) s.barHeads.instanceMatrix.needsUpdate = true;
+                s.shown = np;
+
+                // bands is BG_ZERO_BANDS when Reactive is off, so the bass
+                // term drops out without a separate flag.
+                const bass = (bands && bands.bass) || 0;
+                const lift = 0.5 + s.intensity;
+                let b = ROAD_HEAD_BEAT_BASE * lift + ROAD_HEAD_BASS * bass;
+                b = b < 0 ? 0 : (b > ROAD_HEAD_MAX ? ROAD_HEAD_MAX : b);
+                s.beatHeadMat.color.setRGB(ROAD_HEAD_WARM_R * b, ROAD_HEAD_WARM_G * b, ROAD_HEAD_WARM_B * b);
+                b = ROAD_HEAD_BAR_BASE * lift + ROAD_HEAD_BASS * bass;
+                b = b < 0 ? 0 : (b > ROAD_HEAD_MAX ? ROAD_HEAD_MAX : b);
+                s.barHeadMat.color.setRGB(ROAD_HEAD_WARM_R * b, ROAD_HEAD_WARM_G * b, ROAD_HEAD_WARM_B * b);
+            },
+            teardown(s) {
+                if (!s) return;
+                s.root.parent?.remove(s.root);
+                for (const m of [s.posts, s.beatHeads, s.barHeads, s.dashes]) m?.dispose?.();
+                for (const g of s.geos) g.dispose();
+                for (const m of s.mats) m.dispose();
+                s.geos.length = 0;
+                s.mats.length = 0;
+                s.posts = s.beatHeads = s.barHeads = s.dashes = null;
+                s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
             },
         },
         // Venue visualization — generated small-club raster bg plate
@@ -4056,6 +4315,7 @@
         off: 'Off', particles: 'Particles (drifting)',
         silhouettes: 'Silhouettes (parallax)', lights: 'Lights (stage glows)',
         geometric: 'Geometric (rotating shapes)',
+        road: 'Night road (procedural)',
         butterchurn: 'Butterchurn (visualizer)',
         image: 'Custom image', video: 'Custom video',
     };
@@ -4080,6 +4340,9 @@
         silhouettes: { intensity: true,  reactive: true },
         lights:      { intensity: true,  reactive: true },
         geometric:   { intensity: true,  reactive: true },
+        // build() stores settings.intensity for the street-light heads;
+        // update() adds bands.bass to their brightness.
+        road:        { intensity: true,  reactive: true },
         image:       { intensity: true,  reactive: false, why: 'This background does not react to audio' },
         video:       { intensity: false, reactive: false, why: 'The video plays as-is - nothing to adjust here' },
         butterchurn: { intensity: false, reactive: false, why: 'Butterchurn reacts to audio itself - tune it in Settings > 3D Highway, or its Visualizer panel' },
@@ -4914,6 +5177,10 @@
         let bgCustomVideoName = '';
         let _bgListener = null;
         let _bgLastT = 0;  // ms timestamp for dt
+        // Fifth argument to style.update(): chart timing, refilled every frame
+        // in the render loop (no per-frame allocation). Styles that animate by
+        // wall clock ignore it.
+        const _bgChart = { time: 0, beats: null, sections: null, isReady: false, lowerBoundTime: null };
 
         // Notedetect feedback (issue #9). Per-panel mark queues populated
         // by two event sources: (a) legacy `notedetect:hit` /
@@ -9081,8 +9348,14 @@
             // in it are disposed and bgState stays null.
             const stage = new T.Group();
             let result = null;
+            // Board extent + theme clear for styles laid out around the
+            // highway (the 'road' style). Others ignore these fields.
+            const _mountBoard = boardSpanX();
             try {
                 result = style.build(stage, {
+                    boardCenter: _mountBoard.center,
+                    boardWidth: _mountBoard.width,
+                    clearHex: _bgBackgroundColors(bgThemeId).clear,
                     intensity: bgIntensity,
                     palette: activePalette,
                     customImageDataUrl: bgCustomImageDataUrl,
@@ -9208,6 +9481,8 @@
                 if (scene && scene.fog) scene.fog.color.setHex(bg.fog);
                 if (ren) ren.setClearColor(bg.clear, _bcActive() ? 0 : 1);
             }
+            // The road's asphalt/ground are derived from the clear colour.
+            if (bgMountedStyleId === 'road' && bgState) _bgRoadApplyTheme(bgState, bg.clear);
             // --- Highway axis: board plane + lane ---
             const hw = _bgHighwayColors(hwThemeId);
             if (_boardPlaneMat) _boardPlaneMat.color.setHex(hw.board);
@@ -9340,6 +9615,13 @@
 
             const board = boardSpanX();
             const bw = board.width + 4 * K;
+            // The road style is laid out around the board; a lefty flip or a
+            // fret-spacing change moves/resizes the board, so remount it.
+            if (bgMountedStyleId === 'road' && bgState &&
+                    (bgState.boardCenter !== board.center || bgState.boardWidth !== board.width)) {
+                _bgUnmountStyle();
+                _bgMountStyle();
+            }
 
             // Fretboard plane — spans exactly from hit line (Z=0) to the note
             // spawn horizon (-AHEAD * TS), so the far edge aligns with AHEAD.
@@ -16334,7 +16616,14 @@
                     const bands = bgReactive ? _bgReadBands() : BG_ZERO_BANDS;
                     const style = BG_STYLES[_bgEffectiveStyleId()];
                     if (style && bgState) {
-                        try { style.update(bgState, bands, dt, nowMs / 1000); }
+                        // Chart timing for styles that move by SONG time
+                        // (road). One object per instance, refilled in place.
+                        _bgChart.time = bundle.currentTime;
+                        _bgChart.beats = bundle.beats;
+                        _bgChart.sections = bundle.sections;
+                        _bgChart.isReady = bundle.isReady;
+                        _bgChart.lowerBoundTime = bundle.lowerBoundTime;
+                        try { style.update(bgState, bands, dt, nowMs / 1000, _bgChart); }
                         catch (e) { console.error('[3D-Hwy] bg update threw', _bgEffectiveStyleId(), e); }
                     }
                 }

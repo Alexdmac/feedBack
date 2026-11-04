@@ -46,12 +46,13 @@ const EXPECTED_USES = {
     silhouettes: { intensity: true, reactive: true },
     lights: { intensity: true, reactive: true },
     geometric: { intensity: true, reactive: true },
+    road: { intensity: true, reactive: true },
     image: { intensity: true, reactive: false },
     video: { intensity: false, reactive: false },
     butterchurn: { intensity: false, reactive: false },
 };
 
-const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video'];
+const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'road', 'butterchurn', 'image', 'video'];
 
 // Minimal DOM: only what the control touches.
 function makeDom() {
