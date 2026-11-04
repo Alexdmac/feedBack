@@ -3202,12 +3202,90 @@
         }
         return n;
     }
+    // Dash phase for the lane-edge dashes: song time mapped to z at note
+    // speed, wrapped to [0, period). Adding it to a dash's base z moves the
+    // dash toward +z (the player) exactly as fast as the notes, so pause
+    // freezes the road, seeking jumps it and practice speed slows it.
+    function _roadDashPhase(time, ts, period) {
+        if (!(period > 0) || !Number.isFinite(time)) return 0;
+        const p = ((time * ts) % period + period) % period;
+        return p < period ? p : 0;   // guard the float edge where p rounds to period
+    }
+    // Preallocated buffers for _roadBuildLanes: parallel arrays of distinct
+    // lanes (dMin, dMax, isCur) and lane changes (z, from, to). Made once per
+    // mounted road; the per-frame path only overwrites entries.
+    function _roadMakeLaneBuf(cap) {
+        const nums = () => { const a = new Array(cap); for (let i = 0; i < cap; i++) a[i] = 0; return a; };
+        const isCur = new Array(cap);
+        for (let i = 0; i < cap; i++) isCur[i] = false;
+        return {
+            cap,
+            dMin: nums(), dMax: nums(), isCur,
+            nJumps: 0,
+            jz: nums(), jFromMin: nums(), jFromMax: nums(), jToMin: nums(), jToMax: nums(),
+        };
+    }
+    // Every fret position is a highway lane. Collect the distinct anchor
+    // spans (dMin, dMax) active anywhere in [now - behind, now + ahead]
+    // (the anchor in force at the window start included), flag the one in
+    // force at `now`, and record a lane change at every anchor inside the
+    // window whose span differs from the previous one, at the z a note at
+    // that time would sit (z = -(time - now) * ts). Anchors are sorted by
+    // .time. getAnchorAt / boundsOf are getChartAnchorAt /
+    // laneBoundsFromAnchor (passed in so this block stays self-contained).
+    // Returns the lane count; out.nJumps holds the lane-change count.
+    function _roadBuildLanes(anchors, now, ts, behind, ahead, getAnchorAt, boundsOf, out, cap) {
+        if (!out) return 0;
+        out.nJumps = 0;
+        if (!anchors || anchors.length === 0) return 0;
+        const max = cap < out.cap ? cap : out.cap;
+        const t0 = now - behind;
+        const t1 = now + ahead;
+        // Index of the anchor in force at t0 (same rule as getAnchorAt:
+        // the last anchor at or before t0, else the first anchor).
+        let lo = 0, hi = anchors.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (anchors[mid].time <= t0) lo = mid + 1;
+            else hi = mid;
+        }
+        const i0 = lo === 0 ? 0 : lo - 1;
+        const cur = boundsOf(getAnchorAt(anchors, now));
+        let n = 0, nj = 0;
+        let havePrev = false, pMin = 0, pMax = 0;
+        for (let i = i0; i < anchors.length; i++) {
+            const a = anchors[i];
+            if (i > i0 && a.time > t1) break;
+            const b = boundsOf(a);
+            if (!b) continue;
+            const bMin = b.dMin, bMax = b.dMax;
+            if (havePrev && (bMin !== pMin || bMax !== pMax) && nj < max) {
+                out.jz[nj] = -(a.time - now) * ts;
+                out.jFromMin[nj] = pMin; out.jFromMax[nj] = pMax;
+                out.jToMin[nj] = bMin; out.jToMax[nj] = bMax;
+                nj++;
+            }
+            let seen = false;
+            for (let k = 0; k < n; k++) {
+                if (out.dMin[k] === bMin && out.dMax[k] === bMax) { seen = true; break; }
+            }
+            if (!seen && n < max) {
+                out.dMin[n] = bMin; out.dMax[n] = bMax;
+                out.isCur[n] = !!cur && cur.dMin === bMin && cur.dMax === bMax;
+                n++;
+            }
+            havePrev = true; pMin = bMin; pMax = bMax;
+        }
+        out.nJumps = nj;
+        return n;
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
     // proportions if the fret layout changes. bw = board width (world units).
-    const ROAD_LANES_EACH_SIDE = 2;
-    const ROAD_LANE_FRAC = 1 / 3;           // lane width = bw / 3
+    // The carriageway runs under the note track: board width plus this
+    // margin each side, so the barriers and posts hug the board edges.
+    const ROAD_EDGE_W = 4 * K;
     const ROAD_SHOULDER_W = 6 * K;          // barrier strip width
     const ROAD_SHOULDER_H = 3 * K;          // barrier strip height
     const ROAD_POST_GAP = 6 * K;            // post sits this far outside the barrier
@@ -3216,7 +3294,7 @@
     const ROAD_BAR_H_MUL = 1.6;
     const ROAD_HEAD_R = 4 * K;
     const ROAD_BAR_HEAD_MUL = 1.3;          // bar heads are a little larger too
-    const ROAD_GROUND_MUL = 4;              // ground reaches 4x the carriageway half width
+    const ROAD_GROUND_MUL = 9;              // ground reaches 9x the carriageway half width
     // Head brightness: base * (0.5 + intensity) + 0.6 * bass, clamped so a
     // head never outshines the string colours (max channel 0.85).
     const ROAD_HEAD_BEAT_BASE = 0.42;
@@ -3227,6 +3305,20 @@
     const ROAD_DASH_LEN = 30 * K;
     const ROAD_DASH_PERIOD = 60 * K;
     const ROAD_DASH_W = 1.2 * K;
+    // Fret-position lanes (see _roadBuildLanes). Distinct lanes / lane
+    // changes tracked per frame; one dash pool per brightness; two
+    // connectors (one per lane edge) per lane change.
+    const ROAD_LANE_CAP = 32;
+    const ROAD_LANE_DASH_POOL = 768;
+    const ROAD_CONNECTOR_POOL = ROAD_LANE_CAP * 2;
+    const ROAD_LANE_DIM_OPACITY = 0.18;     // lane edges away from the current position
+    const ROAD_LANE_BRIGHT_OPACITY = 0.45;  // current lane edges + lane-change diagonals
+    // Beat seams: a thin dark line across the carriageway on every beat,
+    // a little deeper on bar lines, at the same z as the posts.
+    const ROAD_SEAM_D = 1.5 * K;
+    const ROAD_BAR_SEAM_MUL = 1.8;
+    const ROAD_SEAM_COLOR = 0x0e141b;
+    const ROAD_SEAM_OPACITY = 0.6;
 
     // Mix two 0xRRGGBB colours (t = 0 -> a, 1 -> b), no allocation.
     function _roadMixHex(a, b, t) {
@@ -3245,6 +3337,85 @@
         const clear = typeof clearHex === 'number' ? clearHex : BG_THEMES.default.clear;
         s.asphaltMat.color.setHex(_roadMixHex(clear, 0x34343a, 0.25));
         s.groundMat.color.setHex(_roadMixHex(clear, 0x000000, 0.35));
+    }
+
+    // Per-frame lane drawing for the road style: every distinct fret
+    // position in the visible window is a full-length lane with dashed
+    // edges (bright for the lane in force now), each anchor change is a
+    // pair of diagonals joining the old lane's edges to the new lane's, and
+    // the dashes scroll toward the player by song time. Writes only into
+    // the preallocated buffers / instance pools on `s`.
+    function _bgRoadUpdateLanes(s, chart) {
+        const buf = s.laneBuf;
+        let nl = 0;
+        if (chart && chart.isReady && chart.anchors && typeof chart.xFret === 'function') {
+            nl = _roadBuildLanes(chart.anchors, chart.time, TS, BEHIND, AHEAD + 1,
+                getChartAnchorAt, laneBoundsFromAnchor, buf, ROAD_LANE_CAP);
+        }
+        if (nl === 0) {
+            if (s.laneShown !== 0) {
+                s.laneDim.count = 0; s.laneBright.count = 0; s.connectors.count = 0;
+                s.laneShown = 0;
+            }
+            return;
+        }
+        // Distinct edges; an edge shared with the current lane draws bright.
+        const edgeD = s.edgeD, edgeCur = s.edgeCur;
+        let ne = 0;
+        for (let i = 0; i < nl; i++) {
+            for (let e = 0; e < 2; e++) {
+                const dv = e === 0 ? buf.dMin[i] : buf.dMax[i];
+                let k = 0;
+                for (; k < ne; k++) if (edgeD[k] === dv) break;
+                if (k === ne) { edgeD[ne] = dv; edgeCur[ne] = false; ne++; }
+                if (buf.isCur[i]) edgeCur[k] = true;
+            }
+        }
+        const d = s.dummy;
+        const xFret = chart.xFret, cx = s.cx;
+        const y = s.markY, zNear = s.zNear, zFar = s.zFar;
+        const per = s.dashesPerEdge;
+        const phase = _roadDashPhase(chart.time, TS, ROAD_DASH_PERIOD);
+        let nDim = 0, nBright = 0;
+        for (let k = 0; k < ne; k++) {
+            const x = xFret(edgeD[k]) - cx;
+            const bright = edgeCur[k];
+            const mesh = bright ? s.laneBright : s.laneDim;
+            for (let j = 0; j < per; j++) {
+                const z = zNear - (j + 0.5) * ROAD_DASH_PERIOD + phase;
+                if (z < zFar) break;
+                if (bright ? nBright >= ROAD_LANE_DASH_POOL : nDim >= ROAD_LANE_DASH_POOL) break;
+                d.position.set(x, y, z);
+                d.updateMatrix();
+                mesh.setMatrixAt(bright ? nBright++ : nDim++, d.matrix);
+            }
+        }
+        // Lane changes: one diagonal per edge, from the old lane's edge at
+        // the near end of a dash length to the new lane's edge at the far end.
+        let nc = 0;
+        const half = ROAD_DASH_LEN / 2;
+        for (let i = 0; i < buf.nJumps; i++) {
+            const zj = buf.jz[i];
+            for (let e = 0; e < 2; e++) {
+                if (nc >= ROAD_CONNECTOR_POOL) break;
+                const xa = xFret(e === 0 ? buf.jFromMin[i] : buf.jFromMax[i]) - cx;
+                const xb = xFret(e === 0 ? buf.jToMin[i] : buf.jToMax[i]) - cx;
+                if (xa === xb) continue;   // edge unchanged; the lane dashes already cover it
+                const dx = xb - xa, dz = -2 * half;
+                d.position.set((xa + xb) / 2, y, zj);
+                d.rotation.set(0, Math.atan2(dx, dz), 0);
+                d.scale.set(1, 1, Math.sqrt(dx * dx + dz * dz));
+                d.updateMatrix();
+                s.connectors.setMatrixAt(nc++, d.matrix);
+            }
+        }
+        d.rotation.set(0, 0, 0);
+        d.scale.set(1, 1, 1);
+        s.laneDim.count = nDim; s.laneBright.count = nBright; s.connectors.count = nc;
+        if (nDim) s.laneDim.instanceMatrix.needsUpdate = true;
+        if (nBright) s.laneBright.instanceMatrix.needsUpdate = true;
+        if (nc) s.connectors.instanceMatrix.needsUpdate = true;
+        s.laneShown = nDim + nBright + nc;
     }
 
     // Background-style registry. Each entry returns a per-panel state
@@ -3498,14 +3669,15 @@
         },
         // Night road — see the ROAD_* constants and _roadPlacePosts above.
         // Everything lives under one root group centred on the board, so
-        // the style is symmetric about the board (lefty needs no mirroring).
+        // the carriageway, barriers and posts are symmetric about the board.
+        // Lane edges come from the per-instance chart.xFret (lefty-aware),
+        // shifted into the root's frame by the board centre.
         // State is per mount (= per renderer instance under splitscreen).
         road: {
             build(scene, settings) {
                 const bw = (settings && settings.boardWidth > 0) ? settings.boardWidth : 256 * K;
                 const cx = (settings && Number.isFinite(settings.boardCenter)) ? settings.boardCenter : 0;
-                const lane = bw * ROAD_LANE_FRAC;
-                const halfW = bw / 2 + ROAD_LANES_EACH_SIDE * lane;
+                const halfW = bw / 2 + ROAD_EDGE_W;
                 const boardY = S_BASE - NH / 2 - 2 * K;
                 const roadY = boardY - 0.5 * K;      // just under the board plane
                 const groundY = boardY - 1.0 * K;
@@ -3523,13 +3695,25 @@
                     intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.5,
                     geos: [], mats: [],
                     asphaltMat: null, groundMat: null,
-                    posts: null, beatHeads: null, barHeads: null, dashes: null,
+                    posts: null, beatHeads: null, barHeads: null,
+                    laneDim: null, laneBright: null, connectors: null, seams: null,
                     beatHeadMat: null, barHeadMat: null,
                     dummy: new T.Object3D(),
                     slots: _roadMakeSlots(ROAD_POST_POOL),
+                    laneBuf: _roadMakeLaneBuf(ROAD_LANE_CAP),
+                    // Distinct lane-edge fret indices this frame (adjacent
+                    // lanes share an edge; draw it once).
+                    edgeD: new Array(ROAD_LANE_CAP * 2).fill(0),
+                    edgeCur: new Array(ROAD_LANE_CAP * 2).fill(false),
+                    cx,
                     postX: halfW + ROAD_SHOULDER_W + ROAD_POST_GAP,
                     baseY: roadY,
+                    markY: roadY + 0.1 * K,
+                    seamY: roadY + 0.05 * K,
+                    zNear, zFar,
+                    dashesPerEdge: Math.ceil(len / ROAD_DASH_PERIOD) + 1,
                     shown: -1,
+                    laneShown: -1,
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -3562,28 +3746,36 @@
                     root.add(b);
                 }
 
-                // Dashed lane line between the two outer lanes on each side —
-                // never under the board/strings. Static in this version.
-                const dashCount = Math.max(1, Math.floor(len / ROAD_DASH_PERIOD));
-                const dashMat = mat(new T.MeshBasicMaterial({
-                    color: 0xffffff, transparent: true, opacity: 0.25, depthWrite: false,
+                // Fret-position lanes: dashed edge lines (dim, and bright
+                // for the lane in force now), lane-change diagonals and beat
+                // seams. All placed per frame from song time in update().
+                const dimMat = mat(new T.MeshBasicMaterial({
+                    color: 0xffffff, transparent: true, opacity: ROAD_LANE_DIM_OPACITY, depthWrite: false,
+                }));
+                const brightMat = mat(new T.MeshBasicMaterial({
+                    color: 0xffffff, transparent: true, opacity: ROAD_LANE_BRIGHT_OPACITY, depthWrite: false,
                 }));
                 const dashGeo = geo(new T.PlaneGeometry(ROAD_DASH_W, ROAD_DASH_LEN));
                 dashGeo.rotateX(-Math.PI / 2);
-                const dashes = new T.InstancedMesh(dashGeo, dashMat, dashCount * 2);
-                const dashX = bw / 2 + lane;
-                let di = 0;
-                for (const side of [-1, 1]) {
-                    for (let k = 0; k < dashCount; k++) {
-                        s.dummy.position.set(side * dashX, roadY + 0.1 * K, zNear - (k + 0.5) * ROAD_DASH_PERIOD);
-                        s.dummy.updateMatrix();
-                        dashes.setMatrixAt(di++, s.dummy.matrix);
-                    }
+                s.laneDim = new T.InstancedMesh(dashGeo, dimMat, ROAD_LANE_DASH_POOL);
+                s.laneBright = new T.InstancedMesh(dashGeo, brightMat, ROAD_LANE_DASH_POOL);
+                // Unit length along z; scale.z = segment length, rotation.y aims it.
+                const connGeo = geo(new T.PlaneGeometry(ROAD_DASH_W, 1));
+                connGeo.rotateX(-Math.PI / 2);
+                s.connectors = new T.InstancedMesh(connGeo, brightMat, ROAD_CONNECTOR_POOL);
+                const seamMat = mat(new T.MeshBasicMaterial({
+                    color: ROAD_SEAM_COLOR, transparent: true, opacity: ROAD_SEAM_OPACITY, depthWrite: false,
+                }));
+                // Unit depth along z; scale.z = seam depth.
+                const seamGeo = geo(new T.PlaneGeometry(halfW * 2, 1));
+                seamGeo.rotateX(-Math.PI / 2);
+                s.seams = new T.InstancedMesh(seamGeo, seamMat, ROAD_POST_POOL);
+                for (const m of [s.seams, s.laneDim, s.laneBright, s.connectors]) {
+                    m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                    m.count = 0;
+                    m.frustumCulled = false;
+                    root.add(m);
                 }
-                dashes.instanceMatrix.needsUpdate = true;
-                dashes.frustumCulled = false;
-                root.add(dashes);
-                s.dashes = dashes;
 
                 // Street-light pools: one post mesh (both sides) and separate
                 // beat / bar head meshes so bar heads get their own brighter
@@ -3615,9 +3807,11 @@
                     n = _roadPlacePosts(chart.beats, chart.time, TS, BEHIND, AHEAD + 1,
                         chart.lowerBoundTime, s.slots, ROAD_POST_POOL);
                 }
+                _bgRoadUpdateLanes(s, chart);
                 if (n === 0) {
                     if (s.shown !== 0) {
                         s.posts.count = 0; s.beatHeads.count = 0; s.barHeads.count = 0;
+                        s.seams.count = 0;
                         s.shown = 0;
                     }
                     return;
@@ -3647,6 +3841,20 @@
                 if (nBar) s.barHeads.instanceMatrix.needsUpdate = true;
                 s.shown = np;
 
+                // Beat seams across the carriageway, same z as the posts, so
+                // the asphalt itself reads as moving.
+                const ys = s.seamY;
+                for (let i = 0; i < n; i++) {
+                    const slot = s.slots[i];
+                    d.position.set(0, ys, slot.z);
+                    d.scale.set(1, 1, slot.isBar ? ROAD_SEAM_D * ROAD_BAR_SEAM_MUL : ROAD_SEAM_D);
+                    d.updateMatrix();
+                    s.seams.setMatrixAt(i, d.matrix);
+                }
+                d.scale.set(1, 1, 1);
+                s.seams.count = n;
+                s.seams.instanceMatrix.needsUpdate = true;
+
                 // bands is BG_ZERO_BANDS when Reactive is off, so the bass
                 // term drops out without a separate flag.
                 const bass = (bands && bands.bass) || 0;
@@ -3661,12 +3869,14 @@
             teardown(s) {
                 if (!s) return;
                 s.root.parent?.remove(s.root);
-                for (const m of [s.posts, s.beatHeads, s.barHeads, s.dashes]) m?.dispose?.();
+                for (const m of [s.posts, s.beatHeads, s.barHeads,
+                    s.laneDim, s.laneBright, s.connectors, s.seams]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
                 s.geos.length = 0;
                 s.mats.length = 0;
-                s.posts = s.beatHeads = s.barHeads = s.dashes = null;
+                s.posts = s.beatHeads = s.barHeads = null;
+                s.laneDim = s.laneBright = s.connectors = s.seams = null;
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
             },
         },
@@ -5180,7 +5390,10 @@
         // Fifth argument to style.update(): chart timing, refilled every frame
         // in the render loop (no per-frame allocation). Styles that animate by
         // wall clock ignore it.
-        const _bgChart = { time: 0, beats: null, sections: null, isReady: false, lowerBoundTime: null };
+        const _bgChart = {
+            time: 0, beats: null, sections: null, isReady: false, lowerBoundTime: null,
+            anchors: null, xFret: null,   // road lanes: chart anchors + this instance's lefty-aware fret x
+        };
 
         // Notedetect feedback (issue #9). Per-panel mark queues populated
         // by two event sources: (a) legacy `notedetect:hit` /
@@ -16623,6 +16836,8 @@
                         _bgChart.sections = bundle.sections;
                         _bgChart.isReady = bundle.isReady;
                         _bgChart.lowerBoundTime = bundle.lowerBoundTime;
+                        _bgChart.anchors = bundle.anchors;
+                        _bgChart.xFret = xFret;
                         try { style.update(bgState, bands, dt, nowMs / 1000, _bgChart); }
                         catch (e) { console.error('[3D-Hwy] bg update threw', _bgEffectiveStyleId(), e); }
                     }

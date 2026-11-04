@@ -15,8 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Night road background (3D Highway).** A new "Night road (procedural)"
   background style draws a dark freeway under and beside the fretboard, with
   a street light passing the hit line on every beat and a taller, brighter one
-  on every bar line. The lights move with the song, so pausing, seeking and
-  practice speed carry them too.
+  on every bar line. The carriageway runs under the note track, with the
+  barriers and lights at the board edges. Every fret position is drawn as a
+  road lane with dashed edges (the current one brighter), and each change of
+  fret position is a lane change, drawn as a short diagonal between the old
+  and new lanes. The lights, lane dashes and a thin seam across the road on
+  every beat move with the song, so pausing, seeking and practice speed carry
+  them too.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
   the first twelve songs in your saved Song Library sort, using the same cards
   as the Song Library page (play, favorite, save, menu, arrangement chips,
