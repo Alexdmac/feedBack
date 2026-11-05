@@ -31,8 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   white to amber and grows the light pools they throw on the sidewalk, and a
   string of misses rolls fog banks in over the hills and the skyline, then
   rain beside the road and a wet sheen on the asphalt, which clear as you
-  recover. Weather never covers the board or the notes, and free play stays a
-  clear night. A new "Night road quality" setting (Auto, Full, Lite) adds a
+  recover. The city follows too: a bad streak switches its windows and neon
+  off, and good playing lights every window and flashes the neon on the beat.
+  Weather never covers the board or the notes, and free play stays a clear
+  night. A new "Night road quality" setting (Auto, Full, Lite) adds a
   Lite level for weaker graphics; Auto switches to it if the frame rate stays
   under 50 fps.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows

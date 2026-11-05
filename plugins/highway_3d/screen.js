@@ -3461,13 +3461,31 @@
     // How many windows are lit at song progress p (0..1): 0 at the start,
     // all of them at the end, easing out so most are lit by the last third.
     // Monotonic, so a window once lit stays lit.
-    function _roadWindowCount(progress, total) {
-        if (!(total > 0)) return 0;
+    function _roadWindowFrac(progress) {
         let p = Number.isFinite(progress) ? progress : 0;
         p = p < 0 ? 0 : (p > 1 ? 1 : p);
-        const f = 1 - Math.pow(1 - p, 2.2);
-        const n = Math.floor(total * f + 1e-9);
+        return 1 - Math.pow(1 - p, 2.2);
+    }
+    function _roadWindowCount(progress, total) {
+        if (!(total > 0)) return 0;
+        const n = Math.floor(total * _roadWindowFrac(progress) + 1e-9);
         return n > total ? total : n;
+    }
+    // City lights follow the playing too: the share of windows lit (0..1).
+    // Song progress sets the resting level (free play, or calm play, is the
+    // progress curve alone); heat lights the rest of the city; gloom past
+    // ROAD_CITY_DARK_START switches it off, all dark at ROAD_CITY_DARK_FULL
+    // (after the fog has rolled in, around when the rain starts).
+    const ROAD_CITY_DARK_START = 0.3, ROAD_CITY_DARK_FULL = 0.85;
+    function _roadCityDark(gloom) {
+        return _roadSmooth(ROAD_CITY_DARK_START, ROAD_CITY_DARK_FULL, Number.isFinite(gloom) ? gloom : 0);
+    }
+    function _roadCityLit(progress, heat, gloom) {
+        const base = _roadWindowFrac(progress);
+        let h = Number.isFinite(heat) ? heat : 0;
+        h = h < 0 ? 0 : (h > 1 ? 1 : h);
+        const f = (base + (1 - base) * h) * (1 - _roadCityDark(gloom));
+        return f < 0 ? 0 : (f > 1 ? 1 : f);
     }
     // Playing mood (step 3). m = { heat, gloom, run, quiet }. Per frame of
     // moving song time: hit / miss = a lit / missed gem of THIS panel was on
@@ -3682,6 +3700,14 @@
     const ROAD_FOG_SINK = 220 * K;            // side banks sink into the hills over this distance near the camera
     const ROAD_SKY_GLOOM_CUT = 0.35;          // sky glow dims this much in full fog
     const ROAD_WIN_GLOOM_CUT = 0.6;           // windows and neon dim this much in full fog
+    // City alive / dark (_roadCityLit): heat brightens the windows and makes
+    // the neon flash on every beat; as the city goes dark the neon and the
+    // sky's city glow go with it.
+    const ROAD_WIN_HEAT_LIFT = 0.25;          // window brightness x (1 + this) at full heat
+    const ROAD_NEON_HEAT_PULSE = 0.9;         // neon flash on the beat at full heat
+    const ROAD_NEON_PULSE_S = 0.22;           // flash decay after each beat (s)
+    const ROAD_SKY_DARK_CUT = 0.35;           // sky glow dims this much when the city is dark
+    const ROAD_SKY_HEAT_LIFT = 0.12;          // ...and warms up this much at full heat
     // Rain: thin streaks beside the road (outside the carriageway, so never
     // over the board on screen) and beyond its far end. They fall by wall
     // clock (rain keeps falling when you pause) and drift toward you with
@@ -4107,19 +4133,35 @@
         const dur = chart && chart.duration > 0 ? chart.duration : 0;
         let prog = dur > 0 && Number.isFinite(chart.time) ? chart.time / dur : 0;
         prog = prog < 0 ? 0 : (prog > 1 ? 1 : prog);
-        const lit = s.quality.lite ? 0 : _roadWindowCount(prog, s.nWindows);
+        // Windows lit: progress, then the playing mood on top (bad streak
+        // switches the city off, good playing lights it all).
+        const heat = s.mood.heat, dark = _roadCityDark(s.mood.gloom);
+        const lit = s.quality.lite ? 0
+            : Math.min(s.nWindows, Math.floor(s.nWindows * _roadCityLit(prog, heat, s.mood.gloom) + 1e-9));
         if (s.windows.count !== lit) s.windows.count = lit;
         const lift = 0.5 + s.intensity;
         const mid = (bands && bands.mid) || 0;
         const treble = (bands && bands.treble) || 0;
         const dim = 1 - ROAD_WIN_GLOOM_CUT * s.fogAmt;   // fog greys the city out
         let b = ROAD_WIN_BASE * lift + ROAD_WIN_MID * mid;
-        b = (b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b)) * dim;
+        b = (b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b)) * dim * (1 + ROAD_WIN_HEAT_LIFT * heat);
         s.windowMat.color.setRGB(ROAD_WIN_WARM_R * b, ROAD_WIN_WARM_G * b, ROAD_WIN_WARM_B * b);
+        // Neon: off as the city goes dark; when hot it flashes on the beat.
+        let pulse = 0;
+        if (heat > 0.01 && chart && chart.beats && chart.beats.length > 0
+                && typeof chart.lowerBoundTime === 'function' && Number.isFinite(chart.time)) {
+            const i = chart.lowerBoundTime(chart.beats, chart.time + 1e-6) - 1;   // last beat at or before now
+            if (i >= 0 && i < chart.beats.length) {
+                const since = chart.time - chart.beats[i].time;
+                if (since >= 0 && since < ROAD_NEON_PULSE_S) pulse = 1 - since / ROAD_NEON_PULSE_S;
+            }
+        }
         b = ROAD_NEON_BASE * lift + ROAD_NEON_TREBLE * treble;
-        b = (b < 0 ? 0 : (b > ROAD_NEON_MAX ? ROAD_NEON_MAX : b)) * dim;
+        b = (b < 0 ? 0 : (b > ROAD_NEON_MAX ? ROAD_NEON_MAX : b)) * dim * (1 - dark)
+            * (1 + ROAD_NEON_HEAT_PULSE * heat * pulse);
         s.neonMat.color.setScalar(b);
-        s.skyMat.color.setScalar((0.8 + 0.2 * prog) * (1 - ROAD_SKY_GLOOM_CUT * s.fogAmt));
+        s.skyMat.color.setScalar((0.8 + 0.2 * prog) * (1 - ROAD_SKY_GLOOM_CUT * s.fogAmt)
+            * (1 - ROAD_SKY_DARK_CUT * dark) * (1 + ROAD_SKY_HEAT_LIFT * heat));
     }
 
     // Per-frame lane drawing for the road style: every distinct fret

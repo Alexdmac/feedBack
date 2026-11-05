@@ -53,7 +53,10 @@ function load() {
         '\nthis._roadMoodStep = _roadMoodStep;' +
         '\nthis._roadSmooth = _roadSmooth;' +
         '\nthis._roadMakeQuality = _roadMakeQuality;' +
-        '\nthis._roadQualityStep = _roadQualityStep;', sandbox);
+        '\nthis._roadQualityStep = _roadQualityStep;' +
+        '\nthis._roadWindowFrac = _roadWindowFrac;' +
+        '\nthis._roadCityLit = _roadCityLit;' +
+        '\nthis._roadCityDark = _roadCityDark;', sandbox);
     return sandbox;
 }
 
@@ -708,4 +711,42 @@ test('drawNote records the road mood before the linger / body gates', () => {
     assert.equal(/\breturn\b/.test(body.slice(probe, write)), false, 'no early return between probe and write');
     // The chart object hands the flags to the style each frame, then clears them.
     assert.match(src, /_bgChart\.hit = _bgHitSeen;\n\s*_bgChart\.miss = _bgMissSeen;\n\s*_bgChart\.mult = _bgMult;\n\s*_bgHitSeen = false;\n\s*_bgMissSeen = false;/);
+});
+
+// --- city lights follow the playing ------------------------------------------
+
+test('_roadCityLit: calm play is the progress curve; heat lights the city, gloom darkens it', () => {
+    const r = load();
+    for (const p of [0, 0.1, 0.4, 0.8, 1]) {
+        assert.equal(r._roadCityLit(p, 0, 0), r._roadWindowFrac(p), `calm at ${p}`);
+        assert.equal(Math.floor(800 * r._roadCityLit(p, 0, 0) + 1e-9), r._roadWindowCount(p, 800),
+            'calm count matches the old progress-only count');
+        assert.equal(r._roadCityLit(p, 1, 0), 1, `full heat lights every window at ${p}`);
+        assert.equal(r._roadCityLit(p, 1, 1), 0, `deep gloom switches the city off at ${p}`);
+        assert.equal(r._roadCityLit(p, 0, 1), 0);
+    }
+    // A little gloom (the fog's first stage) leaves the lights alone.
+    assert.equal(r._roadCityLit(0.5, 0, 0.25), r._roadWindowFrac(0.5));
+    assert.equal(r._roadCityDark(0.2), 0);
+    assert.equal(r._roadCityDark(0.9), 1);
+});
+
+test('_roadCityLit: monotonic in heat (up) and gloom (down), bad inputs are safe', () => {
+    const r = load();
+    let prev = -1;
+    for (let h = 0; h <= 1.0001; h += 0.05) {
+        const v = r._roadCityLit(0.3, h, 0);
+        assert.ok(v >= prev, `heat ${h}`);
+        prev = v;
+    }
+    prev = 2;
+    for (let g = 0; g <= 1.0001; g += 0.05) {
+        const v = r._roadCityLit(0.6, 0.5, g);
+        assert.ok(v <= prev, `gloom ${g}`);
+        prev = v;
+    }
+    for (const bad of [NaN, undefined, null, -5, 7]) {
+        const v = r._roadCityLit(bad, bad, bad);
+        assert.ok(v >= 0 && v <= 1, `bad input ${bad} -> ${v}`);
+    }
 });
