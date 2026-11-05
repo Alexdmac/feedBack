@@ -3483,6 +3483,17 @@
     const ROAD_SIGN_GREEN = 0x1f6b3a;
     const ROAD_GANTRY_W = 2.5 * K;          // post / crossbar thickness
     const ROAD_GANTRY_COLOR = 0x3a3f48;
+    // Gantries leave the background's group order (-1) for the gameplay one
+    // (0) and draw at this renderOrder: after the board plane (0), lane
+    // strips (1), lane dividers (2) and fret inlays (3), before sustains,
+    // strings and notes. So a sign reads in front of the board, and every
+    // note still paints over it.
+    const ROAD_GANTRY_ORDER = 3.5;
+    // Sign fade near the hit line: full opacity until ROAD_SIGN_FADE_FAR
+    // seconds ahead, easing to ROAD_SIGN_NEAR_OPACITY at the hit line, so the
+    // panel never sits solid behind the notes being read. 1 disables it.
+    const ROAD_SIGN_FADE_FAR = 2.0;
+    const ROAD_SIGN_NEAR_OPACITY = 0.35;
     // Hills and verges either side of the road: value noise with lattice
     // cell ROAD_HILL_SCALE, positive half only, scaled to ROAD_HILL_H and
     // ramped in over ROAD_HILL_RAMP from just beyond the lamp posts, so the
@@ -3586,18 +3597,18 @@
         tex.magFilter = T.LinearFilter;
         return tex;
     }
-    // Motorway sign face: the section name, uppercase bold sans, white on
-    // green with a thin white border, shrunk to fit. Built once per name.
-    function _roadSignTexture(label) {
-        const W = ROAD_SIGN_TEX_W, H = ROAD_SIGN_TEX_H;
-        const c = document.createElement('canvas');
-        c.width = W; c.height = H;
+    // Motorway sign face drawn into an existing canvas: the section name,
+    // uppercase bold sans, white on green with a thin white border, shrunk to
+    // fit. An empty label leaves a blank panel.
+    function _roadDrawSign(c, label) {
+        const W = c.width, H = c.height;
         const x = c.getContext('2d');
         x.fillStyle = _roadCss(ROAD_SIGN_GREEN);
         x.fillRect(0, 0, W, H);
         x.strokeStyle = '#ffffff';
         x.lineWidth = 5;
         x.strokeRect(10, 10, W - 20, H - 20);
+        if (!label) return;
         const maxW = W - 64;
         let size = 70;
         x.font = 'bold ' + size + 'px sans-serif';
@@ -3610,6 +3621,15 @@
         x.textAlign = 'center';
         x.textBaseline = 'middle';
         x.fillText(label, W / 2, H / 2 + size * 0.05, maxW);
+    }
+    // One canvas + texture per gantry for the gantry's whole life. The panel
+    // material therefore always has a map, so the program compiled at
+    // prewarm is the one used when the first sign appears (no mid-song
+    // shader compile), and sign memory is bounded by the pool, not the song.
+    function _roadSignSlotTexture() {
+        const c = document.createElement('canvas');
+        c.width = ROAD_SIGN_TEX_W; c.height = ROAD_SIGN_TEX_H;
+        _roadDrawSign(c, '');
         const tex = new T.CanvasTexture(c);
         tex.colorSpace = T.SRGBColorSpace;
         return tex;
@@ -3617,63 +3637,54 @@
     function _roadSignLabel(sec) {
         return sec && sec.name != null ? String(sec.name).trim().toUpperCase() : '';
     }
-    // (Re)build the per-name sign texture cache when chart.sections changes
-    // identity (a new chart). Textures for names still in use are kept; the
-    // rest are disposed. signTexByIndex maps section index -> texture so the
-    // per-frame path never builds strings.
-    function _bgRoadSyncSignTextures(s, sections) {
-        s.signSections = sections;
-        const old = s.signTex;
-        const next = new Map();
-        const byIndex = [];
-        if (sections) {
-            for (let i = 0; i < sections.length; i++) {
-                const label = _roadSignLabel(sections[i]);
-                if (!label) { byIndex.push(null); continue; }
-                let tex = next.get(label);
-                if (!tex) {
-                    tex = old.get(label);
-                    if (tex) old.delete(label);
-                    else tex = _roadSignTexture(label);
-                    next.set(label, tex);
-                }
-                byIndex.push(tex);
-            }
-        }
-        // Panels still pointing at a texture about to be disposed: drop it
-        // (the slot is reassigned before it is drawn again).
-        for (const tex of old.values()) {
-            for (let i = 0; i < s.signMats.length; i++) {
-                if (s.signMats[i].map === tex) { s.signMats[i].map = null; s.signMats[i].needsUpdate = true; s.signs[i].visible = false; }
-            }
-            tex.dispose();
-        }
-        s.signTex = next;
-        s.signTexByIndex = byIndex;
-    }
-    // Per-frame gantries: pool groups moved to each visible section start.
+    // Per-frame gantries. Section `index` always uses gantry
+    // index % ROAD_SIGN_POOL: at most ROAD_SIGN_POOL consecutive sections
+    // are in view, so they never share one. A gantry's canvas is redrawn
+    // only when a new section takes it (a 512x128 upload while the sign is
+    // still far off in the fog), never per frame. Opacity eases down near
+    // the hit line (ROAD_SIGN_FADE_FAR / ROAD_SIGN_NEAR_OPACITY).
     function _bgRoadUpdateSigns(s, chart) {
         const secs = chart ? chart.sections : null;
-        if (secs !== s.signSections) _bgRoadSyncSignTextures(s, secs);
+        if (secs !== s.signSections) {
+            // New chart: section indices mean something else now.
+            s.signSections = secs;
+            for (let i = 0; i < ROAD_SIGN_POOL; i++) s.signDrawn[i] = -1;
+        }
         let n = 0;
         if (chart && chart.isReady && secs && secs.length > 0) {
             n = _roadPlaceSigns(secs, chart.time, TS, BEHIND, AHEAD + 1,
                 chart.lowerBoundTime, s.signSlots, ROAD_SIGN_POOL);
         }
-        for (let i = 0; i < ROAD_SIGN_POOL; i++) {
-            const g = s.signs[i];
-            const tex = i < n ? s.signTexByIndex[s.signSlots[i].index] : null;
-            if (!tex) {
-                if (g.visible) g.visible = false;
-                continue;
+        const used = s.signUsed;
+        for (let i = 0; i < ROAD_SIGN_POOL; i++) used[i] = false;
+        const fadeLen = ROAD_SIGN_FADE_FAR * TS;
+        for (let j = 0; j < n; j++) {
+            const index = s.signSlots[j].index;
+            const k = index % ROAD_SIGN_POOL;
+            if (s.signDrawn[k] !== index) {
+                const label = _roadSignLabel(secs[index]);
+                s.signDrawn[k] = index;
+                s.signLabelOk[k] = label.length > 0;
+                if (label) {
+                    _roadDrawSign(s.signTex[k].image, label);
+                    s.signTex[k].needsUpdate = true;
+                }
             }
-            const m = s.signMats[i];
-            if (m.map !== tex) {
-                if (!m.map) m.needsUpdate = true;   // null -> texture changes the shader
-                m.map = tex;
-            }
-            g.position.z = s.signSlots[i].z;
+            if (!s.signLabelOk[k]) continue;   // unnamed section: no sign
+            used[k] = true;
+            const z = s.signSlots[j].z;
+            const g = s.signs[k];
+            g.position.z = z;
+            let f = fadeLen > 0 ? -z / fadeLen : 1;
+            f = f < 0 ? 0 : (f > 1 ? 1 : f);
+            f = f * f * (3 - 2 * f);
+            const op = ROAD_SIGN_NEAR_OPACITY + (1 - ROAD_SIGN_NEAR_OPACITY) * f;
+            s.signMats[k].opacity = op;
+            s.gantryMats[k].opacity = op;
             if (!g.visible) g.visible = true;
+        }
+        for (let i = 0; i < ROAD_SIGN_POOL; i++) {
+            if (!used[i] && s.signs[i].visible) s.signs[i].visible = false;
         }
     }
     // Per-frame hills: heights and colours written into the existing
@@ -3776,6 +3787,18 @@
             // asphalt so the nearer road paints over them.
             s.sky.renderOrder = -3;
             s.towers.renderOrder = -2;
+            // Windows and neon are InstancedMeshes at the root origin, so
+            // the painter sort would treat them as near; put them ahead of
+            // every other background transparent instead.
+            s.windows.renderOrder = -2;
+            s.neon.renderOrder = -2;
+            // Gantries join the gameplay group order (see ROAD_GANTRY_ORDER):
+            // a Group's renderOrder is the group order of its children.
+            for (let i = 0; i < s.signs.length; i++) {
+                const g = s.signs[i];
+                g.renderOrder = 0;
+                for (let c = 0; c < g.children.length; c++) g.children[c].renderOrder = ROAD_GANTRY_ORDER;
+            }
             s.orderStamped = true;
         }
         const dur = chart && chart.duration > 0 ? chart.duration : 0;
@@ -4182,7 +4205,10 @@
                     // Section gantries and the per-name sign texture cache.
                     signs: [], signMats: [],
                     signSlots: _roadMakeSignSlots(ROAD_SIGN_POOL),
-                    signTex: new Map(), signTexByIndex: [], signSections: undefined,
+                    signTex: [], gantryMats: [], signSections: undefined,
+                    signDrawn: new Array(ROAD_SIGN_POOL).fill(-1),
+                    signLabelOk: new Array(ROAD_SIGN_POOL).fill(false),
+                    signUsed: new Array(ROAD_SIGN_POOL).fill(false),
                     // Skyline layout buffers (K units) and meshes.
                     towerBuf: _roadMakeTowerBuf(ROAD_TOWER_POOL),
                     winBuf: {
@@ -4302,22 +4328,27 @@
 
                 // Section gantries: two posts on the barriers, a crossbar and
                 // a green name panel centred over the carriageway, above the
-                // bar-post tops. Pooled; update() moves each to a section
-                // start and swaps the panel's map. depthWrite: false so the
-                // notes always paint over a gantry passing overhead.
+                // bar-post tops. Pooled; each gantry owns its material and
+                // sign texture, and update() moves it to a section start,
+                // redraws the sign when the section changes and fades it near
+                // the hit line. Transparent, depthWrite: false and drawn
+                // before the notes (ROAD_GANTRY_ORDER), so notes always paint
+                // over a gantry passing overhead.
                 const gantryX = halfW + ROAD_SHOULDER_W / 2;
                 const panelW = halfW * 2 * ROAD_SIGN_W_FRAC;
                 const panelH = panelW / ROAD_SIGN_ASPECT;
                 const panelY = roadY + ROAD_POST_H * ROAD_BAR_H_MUL + ROAD_SIGN_CLEAR + panelH / 2;
                 const barY = panelY + panelH * 0.25;
                 const gPostH = barY - roadY + ROAD_GANTRY_W / 2;
-                const gantryMat = mat(new T.MeshBasicMaterial({ color: ROAD_GANTRY_COLOR, depthWrite: false }));
                 const gPostGeo = geo(new T.BoxGeometry(ROAD_GANTRY_W, gPostH, ROAD_GANTRY_W));
                 gPostGeo.translate(0, gPostH / 2, 0);
                 const gBarGeo = geo(new T.BoxGeometry(gantryX * 2 + ROAD_GANTRY_W, ROAD_GANTRY_W, ROAD_GANTRY_W));
                 const panelGeo = geo(new T.PlaneGeometry(panelW, panelH));
                 for (let i = 0; i < ROAD_SIGN_POOL; i++) {
                     const g = new T.Group();
+                    const gantryMat = mat(new T.MeshBasicMaterial({
+                        color: ROAD_GANTRY_COLOR, transparent: true, depthWrite: false,
+                    }));
                     for (const side of [-1, 1]) {
                         const p = new T.Mesh(gPostGeo, gantryMat);
                         p.position.set(side * gantryX, roadY, 0);
@@ -4326,7 +4357,8 @@
                     const bar = new T.Mesh(gBarGeo, gantryMat);
                     bar.position.set(0, barY, -ROAD_GANTRY_W);
                     g.add(bar);
-                    const pm = mat(new T.MeshBasicMaterial({ map: null, transparent: true, depthWrite: false }));
+                    const tex = _roadSignSlotTexture();
+                    const pm = mat(new T.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
                     const panel = new T.Mesh(panelGeo, pm);
                     panel.position.set(0, panelY, 0);
                     g.add(panel);
@@ -4334,6 +4366,8 @@
                     root.add(g);
                     s.signs.push(g);
                     s.signMats.push(pm);
+                    s.gantryMats.push(gantryMat);
+                    s.signTex.push(tex);
                 }
 
                 // City skyline beyond the road's far end: towers, lit windows
@@ -4449,12 +4483,10 @@
                     s.towers, s.windows, s.neon]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
-                // Textures this style owns: the sign cache and the sky.
-                if (s.signTex) {
-                    for (const tex of s.signTex.values()) tex.dispose();
-                    s.signTex.clear();
-                }
-                s.signTexByIndex = [];
+                // Textures this style owns: one per gantry, and the sky.
+                for (let i = 0; i < s.signTex.length; i++) s.signTex[i].dispose();
+                s.signTex.length = 0;
+                s.gantryMats.length = 0;
                 s.signSections = undefined;
                 if (s.skyTex) s.skyTex.dispose();
                 s.geos.length = 0;
@@ -5979,6 +6011,8 @@
         // Fifth argument to style.update(): chart timing, refilled every frame
         // in the render loop (no per-frame allocation). Styles that animate by
         // wall clock ignore it.
+        // Road seed key, rebuilt only when this instance's songInfo changes.
+        let _bgSongInfoRef = null, _bgSongKey = '';
         const _bgChart = {
             time: 0, beats: null, sections: null, isReady: false, lowerBoundTime: null,
             anchors: null, xFret: null,   // road lanes: chart anchors + this instance's lefty-aware fret x
@@ -17428,7 +17462,17 @@
                         _bgChart.lowerBoundTime = bundle.lowerBoundTime;
                         _bgChart.anchors = bundle.anchors;
                         _bgChart.xFret = xFret;
-                        _bgChart.songKey = _songKey;
+                        // Per-instance song identity for the road's seed. The
+                        // global currentSong (behind _songKey) is shared by every
+                        // splitscreen panel, so key on this instance's songInfo,
+                        // rebuilt only when that object changes (new song_info).
+                        if (bundle.songInfo !== _bgSongInfoRef) {
+                            const bsi = bundle.songInfo;
+                            _bgSongInfoRef = bsi;
+                            _bgSongKey = bsi ? String(bsi.artist || '') + '\0' + String(bsi.title || '')
+                                + '\0' + String(bsi.arrangement_index ?? '') : '';
+                        }
+                        _bgChart.songKey = _bgSongKey;
                         _bgChart.duration = bundle.songInfo ? bundle.songInfo.duration : 0;
                         try { style.update(bgState, bands, dt, nowMs / 1000, _bgChart); }
                         catch (e) { console.error('[3D-Hwy] bg update threw', _bgEffectiveStyleId(), e); }

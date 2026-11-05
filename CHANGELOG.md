@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and new lanes. The lights, lane dashes and a thin seam across the road on
   every beat move with the song, so pausing, seeking and practice speed carry
   them too. A green overhead sign with the section name passes over the road
-  as each section begins, low hills seeded from the song roll past either
+  as each section begins, fading as it nears the hit line so it never sits
+  solid behind the notes, low hills seeded from the song roll past either
   side, and a city skyline sits at the end of the road, its windows lighting
   up as the song progresses.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
