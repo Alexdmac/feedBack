@@ -59,7 +59,15 @@ function load() {
         '\nthis.ROAD_AUTO_WAKE_FAILS = ROAD_AUTO_WAKE_FAILS;' +
         '\nthis._roadWindowFrac = _roadWindowFrac;' +
         '\nthis._roadCityLit = _roadCityLit;' +
-        '\nthis._roadCityDark = _roadCityDark;', sandbox);
+        '\nthis._roadCityDark = _roadCityDark;' +
+        '\nthis.ROAD_FW_RISE = ROAD_FW_RISE;' +
+        '\nthis.ROAD_FW_KIND_SPARKLE = ROAD_FW_KIND_SPARKLE;' +
+        '\nthis._fwShellFor = _fwShellFor;' +
+        '\nthis._fwMakeBuf = _fwMakeBuf;' +
+        '\nthis._fwLaunch = _fwLaunch;' +
+        '\nthis._fwStep = _fwStep;' +
+        '\nthis._fwClear = _fwClear;' +
+        '\nthis._fwPathY = _fwPathY;', sandbox);
     return sandbox;
 }
 
@@ -1146,4 +1154,147 @@ test('_roadCityLit: monotonic in heat (up) and gloom (down), bad inputs are safe
         const v = r._roadCityLit(bad, bad, bad);
         assert.ok(v >= 0 && v <= 1, `bad input ${bad} -> ${v}`);
     }
+});
+
+// --- fireworks (streak rockets) ---------------------------------------------
+
+// One rocket from beside the road to a burst at y = 400, unit scale.
+function launch(r, b, streak, mult, lite, seed = 7) {
+    return r._fwLaunch(b, 200, 0, -400, 300, 400, -1200, 1, r._fwShellFor(streak, mult, lite),
+        1, 0.2, 0.6, 0.1, 0.9, 1, seed);
+}
+function fwRun(r, b, secs, fps, floorY = 100) {
+    let bursts = 0;
+    const dt = 1 / fps;
+    for (let t = 0; t < secs - 1e-9; t += dt) bursts += r._fwStep(b, dt, floorY);
+    return bursts;
+}
+function liveCount(b) {
+    let n = 0;
+    for (let i = 0; i < b.n; i++) if (b.kind[i] !== 0) n++;
+    return n;
+}
+
+test('_fwShellFor: milestones grow the shell; Lite trims it; bad input is safe', () => {
+    const r = load();
+    const s25 = r._fwShellFor(25, 3, false), s50 = r._fwShellFor(50, 4, false);
+    const s100 = r._fwShellFor(100, 4, false), s200 = r._fwShellFor(200, 4, false);
+    assert.deepEqual([s25.n, s50.n, s100.n, s200.n], [48, 72, 96, 96]);
+    assert.equal(s25.colors, 0, '25: one colour');
+    assert.equal(s50.colors, 1, '50: two colours');
+    assert.ok(s100.willow && s100.core && !s100.inner, '100: willow with a white core');
+    assert.ok(s200.inner, '200: a second shell inside');
+    assert.ok(s50.bright > s25.bright, 'a higher multiplier is brighter');
+    const lite = r._fwShellFor(200, 4, true);
+    assert.equal(lite.n, 24);
+    assert.ok(!lite.willow && !lite.core && !lite.inner && !lite.trail);
+    for (const bad of [NaN, undefined, null, -3, 'x']) {
+        const sh = r._fwShellFor(bad, bad, false);
+        assert.equal(sh.n, 48);
+        assert.ok(Number.isFinite(sh.bright));
+    }
+});
+
+test('_fwStep: a rocket climbs for ROAD_FW_RISE s, bursts once, and the shell dies out', () => {
+    const r = load();
+    const b = r._fwMakeBuf(512, 6);
+    assert.equal(launch(r, b, 50, 4, false), 0);
+    assert.equal(fwRun(r, b, r.ROAD_FW_RISE - 0.05, 60), 0, 'no burst during the climb');
+    // The head is on its path: out and up, the climb slowing.
+    const head = b.rk[0].head;
+    assert.ok(b.pos[head * 3 + 1] > 300 && b.pos[head * 3 + 1] < 400);
+    assert.ok(b.pos[head * 3] > 200 && b.pos[head * 3 + 2] < -400);
+    assert.equal(fwRun(r, b, 0.1, 60), 1, 'one burst');
+    assert.equal(b.rk[0].on, false);
+    let sparks = 0;
+    for (let i = 0; i < b.n; i++) if (b.kind[i] === 2) sparks++;
+    assert.equal(sparks, 72, 'the whole shell');
+    assert.equal(fwRun(r, b, 4, 60), 0, 'and no second burst');
+    assert.equal(b.live, 0, 'everything has died out');
+    assert.equal(liveCount(b), 0);
+    assert.equal(b.top, 0, 'the draw range shrinks back to nothing');
+    assert.equal(r._fwPathY(0, 400, 0), 0);
+    assert.equal(r._fwPathY(0, 400, 1), 400);
+    assert.ok(r._fwPathY(0, 400, 0.5) > 200, 'the climb slows toward the top');
+});
+
+test('_fwStep: the floor kills falling sparks but spares the rocket trail near the ground', () => {
+    const r = load();
+    const b = r._fwMakeBuf(512, 6);
+    launch(r, b, 100, 4, false);
+    fwRun(r, b, 0.2, 60, 100);
+    let sparkles = 0;
+    for (let i = 0; i < b.n; i++) if (b.kind[i] === r.ROAD_FW_KIND_SPARKLE) sparkles++;
+    assert.ok(sparkles >= 4, `rocket trail below the floor survives (${sparkles})`);
+    fwRun(r, b, 3, 60, 100);
+    for (let i = 0; i < b.n; i++) {
+        if (b.kind[i] === 0 || b.kind[i] === r.ROAD_FW_KIND_SPARKLE) continue;
+        assert.ok(b.pos[i * 3 + 1] >= 100, `point ${i} below the floor`);
+    }
+    // Dead slots are not drawn.
+    for (let i = 0; i < b.n; i++) if (b.kind[i] === 0) assert.equal(b.size[i], 0);
+});
+
+test('_fwStep: paused (dt 0) freezes everything; the same seed gives the same burst', () => {
+    const r = load();
+    const a = r._fwMakeBuf(512, 6), c = r._fwMakeBuf(512, 6);
+    launch(r, a, 100, 4, false, 11);
+    launch(r, c, 100, 4, false, 11);
+    fwRun(r, a, 1.2, 60);
+    fwRun(r, c, 1.2, 60);
+    assert.deepEqual(Array.from(a.pos), Array.from(c.pos));
+    const before = Array.from(a.pos);
+    assert.equal(r._fwStep(a, 0, 100), 0);
+    assert.equal(r._fwStep(a, NaN, 100), 0);
+    assert.deepEqual(Array.from(a.pos), before, 'nothing moves while paused');
+    const d = r._fwMakeBuf(512, 6);
+    launch(r, d, 100, 4, false, 12);
+    fwRun(r, d, 1.2, 60);
+    assert.notDeepEqual(Array.from(d.pos), before, 'another seed, another burst');
+});
+
+test('_fwLaunch / _fwStep: a full pool degrades gracefully; _fwClear empties it', () => {
+    const r = load();
+    const b = r._fwMakeBuf(64, 2);
+    assert.equal(launch(r, b, 200, 4, false), 0);
+    assert.equal(launch(r, b, 200, 4, false), 1);
+    assert.equal(launch(r, b, 200, 4, false), -1, 'every rocket busy');
+    fwRun(r, b, 2, 60);
+    assert.ok(b.live <= b.n && b.live === liveCount(b), `live ${b.live}`);
+    r._fwClear(b);
+    assert.equal(b.live, 0);
+    assert.equal(b.top, 0);
+    assert.equal(liveCount(b), 0);
+    assert.ok(b.rk.every((x) => !x.on));
+    assert.equal(launch(r, b, 25, 3, true), 0, 'usable again');
+    fwRun(r, b, 1, 60);
+    let sparks = 0;
+    for (let i = 0; i < b.n; i++) if (b.kind[i] === 2) sparks++;
+    assert.equal(sparks, 24, 'Lite shell');
+});
+
+test('road wiring: milestones become rockets on the night road, which fly on after the song ends', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    // A rocket replaces the 2D burst on the road with Streak feedback on.
+    assert.match(src, /if \(d\.fxType === 'milestone'\) \{[\s\S]{0,300}?if \(bgMountedStyleId === 'road' && bgState && _streakFx\) _bgQueueRocket\(d\.streak, d\.mult\);\n\s*else _fxSpawnBurst\(nowMs\);/);
+    // The handoff: kill on a backward seek, the ended latch, the queue, and
+    // the queue cleared after the style ran (outside the pinned mood block).
+    assert.match(src, /_bgChart\.back = _bgBack;\n\s*_bgChart\.ended = _bgEnded;\n\s*_bgChart\.fwN = _bgFwN;\n\s*_bgChart\.fwQ = _bgFwQ;\n\s*_bgChart\.hits = _bgHits;/);
+    assert.match(src, /catch \(e\) \{ console\.error\('\[3D-Hwy\] bg update threw', _bgEffectiveStyleId\(\), e\); \}\n\s*_bgFwN = 0;/);
+    assert.match(src, /if \(_bgBack \|\| \(_bgPlay && !_bgWasPlaying\)\) _bgEnded = false;/);
+    assert.match(src, /_bgOnEnded = \(\) => \{ _bgEnded = true; \};\n\s*window\.feedBack\.on\('song:ended', _bgOnEnded\);/);
+    assert.match(src, /window\.feedBack\.off\('song:ended', _bgOnEnded\)/);
+    // The road runs the fireworks before the skyline (burst flash) and
+    // before the no-beats early return.
+    const upd = src.indexOf('_bgRoadUpdateFireworks(s, chart, playing, lite, dt);');
+    assert.ok(upd > 0 && upd < src.indexOf('_bgRoadUpdateSkyline(s, bands, chart);   // first'));
+    assert.ok(upd < src.indexOf("if (n === 0) {\n                    if (s.shown !== 0) {"));
+    // Built in build() (so the stage stamp gives it the background order),
+    // drawn with an empty range when idle so the shader compiles at mount.
+    const build = src.slice(src.indexOf('        road: {\n            build('), src.indexOf('            update(s, bands, dt, t, chart) {'));
+    assert.match(build, /s\.fw = new T\.Points\(g, m\);/);
+    assert.match(build, /g\.setDrawRange\(0, 0\);/);
+    assert.doesNotMatch(build, /s\.fw\.visible = false/);
+    // Frames keep coming while rockets fly after the song ends.
+    assert.match(src, /needsContinuousFrames\(\) \{[\s\S]{0,900}?bgMountedStyleId === 'road' && bgState && bgState\.fwMoving\) return true;/);
 });

@@ -3747,6 +3747,248 @@
         }
         return '';
     }
+    // Fireworks: a rocket for each streak milestone (and, later, the
+    // arrival finale's volley). One pool of points per road holds rocket
+    // heads, their sparkle trails, shell sparks and willow trails. Pure
+    // typed-array code: the road copies nothing, the arrays ARE the point
+    // cloud's attributes. Particles move by wall-clock dt (frozen on pause,
+    // see _bgRoadUpdateFireworks), positions are road-root coordinates.
+    // Speeds and sizes are in K units: each rocket carries its own `scale`
+    // (world units per K unit, sized for its distance from the camera).
+    const ROAD_FW_POOL = 512;
+    const ROAD_FW_ROCKETS = 6;
+    const ROAD_FW_RISE = 0.9;              // s from the ground to the burst
+    const ROAD_FW_AHEAD = 2.0;             // s ahead of the hit line the rocket leaves the ground
+    const ROAD_FW_SPEED = 300;             // shell speed, K/s (radius ~ speed / drag)
+    const ROAD_FW_REF_DIST = 1300;         // burst distance (K) the speeds and sizes are tuned at
+    const ROAD_FW_GRAVITY = 70;            // K/s^2
+    const ROAD_FW_DRAG = 1.4;              // 1/s
+    const ROAD_FW_WILLOW_DRAG = 2.2;       // willow sparks hang longer
+    const ROAD_FW_SPARK_SIZE = 15, ROAD_FW_HEAD_SIZE = 22, ROAD_FW_TRAIL_SIZE = 9;   // K
+    const ROAD_FW_GAIN = 1.6;              // burst colours run hot (additive glow)
+    const ROAD_FW_TRAIL_DT = 0.03;         // s between a rocket's trail sparkles
+    const ROAD_FW_WILLOW_DT = 0.1;         // s between a willow spark's trail points
+    const ROAD_FW_TRAIL_LIFE = 0.4;
+    const ROAD_FW_KIND_HEAD = 1, ROAD_FW_KIND_SPARK = 2, ROAD_FW_KIND_TRAIL = 3, ROAD_FW_KIND_WILLOW = 4;
+    const ROAD_FW_KIND_SPARKLE = 5;        // a rocket's own trail: starts near the ground, so the floor spares it
+    const ROAD_FW_GOLD_R = 1.0, ROAD_FW_GOLD_G = 0.62, ROAD_FW_GOLD_B = 0.22;   // willow sparks age toward gold (linear)
+
+    // Milestone -> shell. Streak 25 (x3): a small single-colour shell; 50
+    // (x4): larger and two-colour; 100+: a big willow (lingering trails)
+    // with a white core; 200+: a second, smaller shell inside. Lite keeps
+    // the rocket but throws 24 points, no trails, core or inner shell. A
+    // higher multiplier is brighter (x4 = full).
+    function _fwShellFor(streak, mult, lite) {
+        const st = Number.isFinite(streak) ? streak : 0;
+        const m = Number.isFinite(mult) && mult > 1 ? Math.min(4, mult) : 1;
+        const sh = { n: 48, speed: 1, life: 1.7, colors: 0, willow: false, core: false, inner: false,
+            trail: !lite, bright: 0.7 + 0.075 * m };
+        if (st >= 50 || m >= 4) { sh.n = 72; sh.speed = 1.15; sh.life = 2.0; sh.colors = 1; }
+        if (st >= 100) { sh.n = 96; sh.speed = 1.25; sh.life = 2.6; sh.willow = true; sh.core = true; }
+        if (st >= 200) sh.inner = true;
+        if (lite) { sh.n = 24; sh.willow = false; sh.core = false; sh.inner = false; }
+        return sh;
+    }
+
+    function _fwMakeBuf(n, rockets) {
+        const rk = [];
+        for (let i = 0; i < rockets; i++) {
+            rk.push({ on: false, head: -1, age: 0, rise: ROAD_FW_RISE, emit: 0, scale: 1, seed: 0,
+                x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, shell: null,
+                r1: 1, g1: 1, b1: 1, r2: 1, g2: 1, b2: 1 });
+        }
+        return {
+            n, cursor: 0, live: 0, top: 0,
+            kind: new Uint8Array(n),
+            age: new Float32Array(n), life: new Float32Array(n),
+            drag: new Float32Array(n), grav: new Float32Array(n),
+            vel: new Float32Array(n * 3),
+            pos: new Float32Array(n * 3),     // point positions (the cloud's position attribute)
+            col: new Float32Array(n * 3),     // drawn colour = base x fade (attribute)
+            base: new Float32Array(n * 3),
+            size: new Float32Array(n),        // drawn size, 0 = not drawn (attribute)
+            size0: new Float32Array(n),
+            emit: new Float32Array(n),        // s until a willow spark's next trail point
+            rk,
+        };
+    }
+    // Next free slot (linear scan from a rolling cursor), -1 when full.
+    function _fwAlloc(b) {
+        for (let k = 0; k < b.n; k++) {
+            const i = (b.cursor + k) % b.n;
+            if (b.kind[i] === 0) { b.cursor = (i + 1) % b.n; return i; }
+        }
+        return -1;
+    }
+    function _fwPut(b, kind, x, y, z, vx, vy, vz, r, g, bl, size, life, drag, grav) {
+        const i = _fwAlloc(b);
+        if (i < 0) return -1;
+        const j = i * 3;
+        b.kind[i] = kind; b.age[i] = 0; b.life[i] = life; b.drag[i] = drag; b.grav[i] = grav; b.emit[i] = 0;
+        b.pos[j] = x; b.pos[j + 1] = y; b.pos[j + 2] = z;
+        b.vel[j] = vx; b.vel[j + 1] = vy; b.vel[j + 2] = vz;
+        b.base[j] = r; b.base[j + 1] = g; b.base[j + 2] = bl;
+        b.col[j] = r; b.col[j + 1] = g; b.col[j + 2] = bl;
+        b.size0[i] = size; b.size[i] = size;
+        b.live++;
+        if (i + 1 > b.top) b.top = i + 1;
+        return i;
+    }
+    function _fwKill(b, i) {
+        const j = i * 3;
+        b.kind[i] = 0; b.size[i] = 0;
+        b.col[j] = 0; b.col[j + 1] = 0; b.col[j + 2] = 0;
+        b.live--;
+    }
+    // Everything off at once (a backward seek, a new song).
+    function _fwClear(b) {
+        b.kind.fill(0); b.size.fill(0); b.col.fill(0);
+        b.live = 0; b.top = 0; b.cursor = 0;
+        for (let i = 0; i < b.rk.length; i++) { b.rk[i].on = false; b.rk[i].head = -1; }
+    }
+    // A rocket from (x0, y0, z0) to its burst at (x1, y1, z1) (world
+    // units). scale = world units per K unit for this rocket's speeds and
+    // sizes (K at ROAD_FW_REF_DIST, more for a farther burst); colours are
+    // linear RGB. Returns the rocket index, or -1 when every rocket is busy.
+    function _fwLaunch(b, x0, y0, z0, x1, y1, z1, scale, shell, r1, g1, b1, r2, g2, b2, seed) {
+        let k = -1;
+        for (let i = 0; i < b.rk.length; i++) if (!b.rk[i].on) { k = i; break; }
+        if (k < 0) return -1;
+        const head = _fwPut(b, ROAD_FW_KIND_HEAD, x0, y0, z0, 0, 0, 0,
+            1, 0.92, 0.78, ROAD_FW_HEAD_SIZE * scale, 1e9, 0, 0);
+        if (head < 0) return -1;
+        const r = b.rk[k];
+        r.on = true; r.head = head; r.age = 0; r.rise = ROAD_FW_RISE; r.emit = 0;
+        r.scale = scale > 0 ? scale : 1; r.seed = seed | 0; r.shell = shell;
+        r.x0 = x0; r.y0 = y0; r.z0 = z0; r.x1 = x1; r.y1 = y1; r.z1 = z1;
+        r.r1 = r1; r.g1 = g1; r.b1 = b1; r.r2 = r2; r.g2 = g2; r.b2 = b2;
+        return k;
+    }
+    // Where a rocket is at u (0..1 of its climb): straight out and away,
+    // the climb slowing toward the top like a real shell.
+    function _fwPathY(y0, y1, u) {
+        const v = u < 0 ? 0 : (u > 1 ? 1 : u);
+        return y0 + (y1 - y0) * (1 - (1 - v) * (1 - v));
+    }
+    // Throw a rocket's shell: points on a jittered Fibonacci sphere, so
+    // every burst is round and the same seed gives the same burst.
+    function _fwBurst(b, r) {
+        const sh = r.shell;
+        if (!sh) return 0;
+        const sc = r.scale, seed = r.seed;
+        const sp0 = ROAD_FW_SPEED * sh.speed * sc, g = ROAD_FW_GRAVITY * sc;
+        const kind = sh.willow ? ROAD_FW_KIND_WILLOW : ROAD_FW_KIND_SPARK;
+        const drag = sh.willow ? ROAD_FW_WILLOW_DRAG : ROAD_FW_DRAG;
+        const life = sh.willow ? sh.life * 1.15 : sh.life;
+        const bright = sh.bright * ROAD_FW_GAIN;
+        let made = 0;
+        const shells = sh.inner ? 2 : 1;
+        for (let s = 0; s < shells; s++) {
+            const n = s === 0 ? sh.n : Math.round(sh.n / 3);
+            const spMul = s === 0 ? 1 : 0.55;
+            for (let i = 0; i < n; i++) {
+                const y = 1 - 2 * (i + 0.5) / n;
+                const rad = Math.sqrt(Math.max(0, 1 - y * y));
+                const phi = i * 2.399963229728653 + _roadHash01(seed, 60 + s, 7) * 6.283185307;
+                const sp = sp0 * spMul * (0.88 + 0.24 * _roadHash01(i, 61 + s, seed));
+                const two = s === 1 || (sh.colors === 1 && (i & 1) === 1);
+                const cr = (two ? r.r2 : r.r1) * bright, cg = (two ? r.g2 : r.g1) * bright, cb = (two ? r.b2 : r.b1) * bright;
+                if (_fwPut(b, kind, r.x1, r.y1, r.z1, Math.cos(phi) * rad * sp, y * sp, Math.sin(phi) * rad * sp,
+                    cr, cg, cb, ROAD_FW_SPARK_SIZE * sc, life * (0.9 + 0.2 * _roadHash01(i, 62 + s, seed)), drag, g) < 0) return made;
+                made++;
+            }
+        }
+        if (sh.core) {
+            const n = Math.round(sh.n / 6);
+            for (let i = 0; i < n; i++) {
+                const y = 1 - 2 * (i + 0.5) / n;
+                const rad = Math.sqrt(Math.max(0, 1 - y * y));
+                const phi = i * 2.399963229728653;
+                const sp = sp0 * 0.32;
+                if (_fwPut(b, ROAD_FW_KIND_SPARK, r.x1, r.y1, r.z1, Math.cos(phi) * rad * sp, y * sp, Math.sin(phi) * rad * sp,
+                    bright, bright * 0.95, bright * 0.85, ROAD_FW_SPARK_SIZE * 1.3 * sc, 0.9, ROAD_FW_DRAG, g) < 0) return made;
+                made++;
+            }
+        }
+        return made;
+    }
+    // Advance every rocket and point by dt. Points below floorY die (the
+    // hard floor keeps falling sparks out of the board band whatever the
+    // camera does). Returns how many rockets burst this step.
+    function _fwStep(b, dt, floorY) {
+        if (!(dt > 0)) return 0;
+        let bursts = 0;
+        for (let k = 0; k < b.rk.length; k++) {
+            const r = b.rk[k];
+            if (!r.on) continue;
+            r.age += dt;
+            const u = r.age / r.rise;
+            const h = r.head, j = h * 3;
+            if (u >= 1) {
+                if (h >= 0 && b.kind[h] === ROAD_FW_KIND_HEAD) _fwKill(b, h);
+                r.on = false; r.head = -1;
+                _fwBurst(b, r);
+                bursts++;
+                continue;
+            }
+            if (h < 0) continue;
+            b.pos[j] = r.x0 + (r.x1 - r.x0) * u;
+            b.pos[j + 1] = _fwPathY(r.y0, r.y1, u);
+            b.pos[j + 2] = r.z0 + (r.z1 - r.z0) * u;
+            if (r.shell && r.shell.trail) {
+                r.emit -= dt;
+                while (r.emit <= 0) {
+                    r.emit += ROAD_FW_TRAIL_DT;
+                    const q = _roadHash01(k * 977 + (r.age * 1000 | 0), 63, r.seed) - 0.5;
+                    _fwPut(b, ROAD_FW_KIND_SPARKLE, b.pos[j], b.pos[j + 1], b.pos[j + 2],
+                        q * 20 * r.scale, -10 * r.scale, 0,
+                        0.9, 0.6, 0.3, ROAD_FW_TRAIL_SIZE * r.scale, ROAD_FW_TRAIL_LIFE, 3, 30 * r.scale);
+                }
+            }
+        }
+        let top = 0;
+        const n = b.top;
+        for (let i = 0; i < n; i++) {
+            const kd = b.kind[i];
+            if (kd === 0) continue;
+            if (kd === ROAD_FW_KIND_HEAD) { top = i + 1; continue; }
+            const j = i * 3;
+            const a = (b.age[i] += dt);
+            const lf = b.life[i];
+            if (a >= lf) { _fwKill(b, i); continue; }
+            const damp = Math.exp(-b.drag[i] * dt);
+            b.vel[j] *= damp; b.vel[j + 1] = b.vel[j + 1] * damp - b.grav[i] * dt; b.vel[j + 2] *= damp;
+            b.pos[j] += b.vel[j] * dt; b.pos[j + 1] += b.vel[j + 1] * dt; b.pos[j + 2] += b.vel[j + 2] * dt;
+            if (b.pos[j + 1] < floorY && kd !== ROAD_FW_KIND_SPARKLE) { _fwKill(b, i); continue; }
+            const u = a / lf;
+            let fade, sz;
+            if (kd === ROAD_FW_KIND_TRAIL || kd === ROAD_FW_KIND_SPARKLE) {
+                fade = 1 - u; sz = 1 - 0.5 * u;
+            } else {
+                // A bright first instant, then a smooth fade.
+                fade = (a < 0.06 ? 1.5 : 1) * Math.pow(1 - u, kd === ROAD_FW_KIND_WILLOW ? 1.2 : 1.6);
+                sz = 1 - 0.4 * u;
+            }
+            let cr = b.base[j], cg = b.base[j + 1], cb = b.base[j + 2];
+            if (kd === ROAD_FW_KIND_WILLOW) {
+                const w = u < 0.5 ? u * 2 : 1;      // toward gold as it hangs
+                cr += (ROAD_FW_GOLD_R - cr) * w; cg += (ROAD_FW_GOLD_G - cg) * w; cb += (ROAD_FW_GOLD_B - cb) * w;
+                b.emit[i] -= dt;
+                if (b.emit[i] <= 0 && (i & 1) === 0) {
+                    b.emit[i] = ROAD_FW_WILLOW_DT;
+                    const t = _fwPut(b, ROAD_FW_KIND_TRAIL, b.pos[j], b.pos[j + 1], b.pos[j + 2], 0, 0, 0,
+                        cr * fade * 0.5, cg * fade * 0.5, cb * fade * 0.5, b.size0[i] * 0.6, ROAD_FW_TRAIL_LIFE, 4, b.grav[i] * 0.3);
+                    if (t + 1 > top) top = t + 1;
+                }
+            }
+            b.col[j] = cr * fade; b.col[j + 1] = cg * fade; b.col[j + 2] = cb * fade;
+            b.size[i] = b.size0[i] * sz;
+            top = i + 1;
+        }
+        // Points spawned past the old top during this pass keep theirs.
+        b.top = b.top > n ? b.top : top;
+        return bursts;
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -3927,6 +4169,41 @@
     // _roadQualityStep). Lite drops pools, fog, rain, windows, neon,
     // sidewalk joints and the hills' motion, and lights every other beat.
     const ROAD_LITE_POST_SKIP = 2;
+    // Fireworks (the simulation is _fw* in the road placement block). A
+    // rocket leaves the hill strip ahead and bursts over the city, between
+    // the road's end and the skyline, at a height picked from the live
+    // camera so the burst sits in the sky above the towers.
+    const ROAD_FW_NDC_Y = 0.58, ROAD_FW_NDC_SPREAD = 0.14;   // burst centre, screen height (-1..1)
+    const ROAD_FW_Y_MIN = 220 * K, ROAD_FW_Y_MAX = 1100 * K, ROAD_FW_Y_DEFAULT = 420 * K;
+    const ROAD_FW_FLASH_S = 0.3;              // sky and window lift after each burst
+    const ROAD_FW_FLASH_SKY = 0.22, ROAD_FW_FLASH_WIN = 0.3;
+    // Soft round additive points sized in pixels from the live viewport
+    // (uScale, set in onBeforeRender). Size 0 = a dead slot, moved off screen.
+    const ROAD_FW_VERT = [
+        'attribute float aSize;',
+        'attribute vec3 aColor;',
+        'uniform float uScale;',
+        'varying vec3 vCol;',
+        'void main() {',
+        '    vCol = aColor;',
+        '    vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+        '    if (aSize <= 0.0 || mv.z >= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }',
+        '    gl_PointSize = min(48.0, aSize * uScale / -mv.z);',
+        '    gl_Position = projectionMatrix * mv;',
+        '}',
+    ].join('\n');
+    const ROAD_FW_FRAG = [
+        'varying vec3 vCol;',
+        'void main() {',
+        '    vec2 d = gl_PointCoord - 0.5;',
+        '    float r = dot(d, d) * 4.0;',
+        '    if (r >= 1.0) discard;',
+        '    float a = 1.0 - r;',
+        '    gl_FragColor = vec4(vCol, a * a);',
+        '    #include <tonemapping_fragment>',
+        '    #include <colorspace_fragment>',
+        '}',
+    ].join('\n');
 
     // Mix two 0xRRGGBB colours (t = 0 -> a, 1 -> b), no allocation.
     function _roadMixHex(a, b, t) {
@@ -4219,6 +4496,90 @@
     // only when a new section takes it (a 512x128 upload while the sign is
     // still far off in the fog), never per frame. Opacity eases down near
     // the hit line (ROAD_SIGN_FADE_FAR / ROAD_SIGN_NEAR_OPACITY).
+    // The burst height that puts (x, y, z) at screen height `target` (NDC)
+    // for the live camera, within [ROAD_FW_Y_MIN, ROAD_FW_Y_MAX]. Bisection
+    // over a dozen projections, once per rocket.
+    function _bgRoadFwBurstY(s, x, z, target) {
+        const cam = s.cam, v = s.fwV;
+        if (!cam || !cam.projectionMatrix || !cam.matrixWorldInverse || !s.root) return ROAD_FW_Y_DEFAULT;
+        const m = s.root.matrixWorld;
+        const ndc = (y) => v.set(x, y, z).applyMatrix4(m).project(cam).y;
+        let lo = ROAD_FW_Y_MIN, hi = ROAD_FW_Y_MAX;
+        const a = ndc(lo), b = ndc(hi);
+        if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return ROAD_FW_Y_DEFAULT;
+        if (a >= target) return lo;
+        if (b <= target) return hi;
+        for (let i = 0; i < 12; i++) {
+            const mid = (lo + hi) / 2;
+            if (ndc(mid) < target) lo = mid; else hi = mid;
+        }
+        return (lo + hi) / 2;
+    }
+    // One rocket for a streak milestone: off the hill strip ahead of you,
+    // alternating sides, up and out (always leaning away from the road, so
+    // it never crosses the board on screen) to a burst over the city.
+    function _bgRoadLaunchRocket(s, streak, mult, c1, c2, lite) {
+        const n = ++s.fwCount;
+        const seed = (s.seed ^ Math.imul(n, 0x9e3779b1)) | 0;
+        const side = (n & 1) ? 1 : -1;
+        const x0abs = s.postX + (40 + 80 * _roadHash01(n, 71, seed)) * K;
+        const x1 = side * (x0abs + (60 + 300 * _roadHash01(n, 72, seed)) * K);
+        const z1 = s.zFar + (s.skylineZ - s.zFar) * (0.35 + 0.3 * _roadHash01(n, 73, seed));
+        const y1 = _bgRoadFwBurstY(s, x1, z1, ROAD_FW_NDC_Y + ROAD_FW_NDC_SPREAD * _roadHash01(n, 74, seed));
+        // Speeds and sizes scale with the burst's distance, so every burst
+        // looks about the same size on screen.
+        let sc = 1;
+        const cam = s.cam;
+        if (cam && cam.position && s.root) {
+            const w = s.fwV.set(x1, y1, z1).applyMatrix4(s.root.matrixWorld);
+            sc = w.distanceTo(cam.position) / (ROAD_FW_REF_DIST * K);
+            sc = sc < 0.6 ? 0.6 : (sc > 2 ? 2 : sc);
+        }
+        const c = s.tmpColor;
+        c.setHex(c1); const r1 = c.r, g1 = c.g, b1 = c.b;   // linear, like the material colours
+        c.setHex(c2);
+        _fwLaunch(s.fwBuf, side * x0abs, s.groundY, -ROAD_FW_AHEAD * TS, x1, y1, z1, K * sc,
+            _fwShellFor(streak, mult, lite), r1, g1, b1, c.r, c.g, c.b, seed);
+    }
+    // Per frame: launch queued milestones, kill everything on a backward
+    // seek or a new song, and run the simulation by wall-clock dt while the
+    // song plays, or after it has ended (the chart clock stops ~0.1 s after
+    // the audio, which would freeze a rocket fired on the last note).
+    // Paused, everything freezes.
+    function _bgRoadUpdateFireworks(s, chart, playing, lite, dt) {
+        const fb = s.fwBuf;
+        if (!fb || !s.fw) return;
+        const key = chart && chart.songKey != null ? chart.songKey : '';
+        if (key !== s.fwKey || (chart && chart.back)) {
+            s.fwKey = key;
+            if (fb.live > 0) { _fwClear(fb); s.fwDirty = true; }
+            s.fwFlash = 0;
+        }
+        if (chart && chart.fwN > 0 && chart.fwQ) {
+            for (let i = 0; i < chart.fwN; i++) {
+                const o = i * 4;
+                _bgRoadLaunchRocket(s, chart.fwQ[o], chart.fwQ[o + 1], chart.fwQ[o + 2], chart.fwQ[o + 3], lite);
+            }
+            s.fwDirty = true;
+        }
+        const moving = fb.live > 0 && (playing || !!(chart && chart.ended));
+        s.fwMoving = moving;
+        if (moving) {
+            if (_fwStep(fb, dt, s.fwFloorY) > 0) s.fwFlash = 1;
+            else if (s.fwFlash > 0) s.fwFlash = Math.max(0, s.fwFlash - dt / ROAD_FW_FLASH_S);
+            s.fwDirty = true;
+        } else if (fb.live === 0) {
+            s.fwFlash = 0;
+        }
+        if (s.fwDirty) {
+            s.fwDirty = false;
+            const g = s.fw.geometry;
+            g.setDrawRange(0, fb.top);
+            g.attributes.position.needsUpdate = true;
+            g.attributes.aColor.needsUpdate = true;
+            g.attributes.aSize.needsUpdate = true;
+        }
+    }
     function _bgRoadUpdateSigns(s, chart) {
         const secs = chart ? chart.sections : null;
         if (secs !== s.signSections) {
@@ -4394,7 +4755,8 @@
         const treble = (bands && bands.treble) || 0;
         const dim = 1 - ROAD_WIN_GLOOM_CUT * s.fogAmt;   // fog greys the city out
         let b = ROAD_WIN_BASE * lift + ROAD_WIN_MID * mid;
-        b = (b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b)) * dim * (1 + ROAD_WIN_HEAT_LIFT * heat);
+        b = (b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b)) * dim * (1 + ROAD_WIN_HEAT_LIFT * heat)
+            * (1 + ROAD_FW_FLASH_WIN * s.fwFlash);
         s.windowMat.color.setRGB(ROAD_WIN_WARM_R * b, ROAD_WIN_WARM_G * b, ROAD_WIN_WARM_B * b);
         // Neon: off as the city goes dark; when hot it flashes on the beat.
         let pulse = 0;
@@ -4411,7 +4773,7 @@
             * (1 + ROAD_NEON_HEAT_PULSE * heat * pulse);
         s.neonMat.color.setScalar(b);
         s.skyMat.color.setScalar((0.8 + 0.2 * prog) * (1 - ROAD_SKY_GLOOM_CUT * s.fogAmt)
-            * (1 - ROAD_SKY_DARK_CUT * dark) * (1 + ROAD_SKY_HEAT_LIFT * heat));
+            * (1 - ROAD_SKY_DARK_CUT * dark) * (1 + ROAD_SKY_HEAT_LIFT * heat) * (1 + ROAD_FW_FLASH_SKY * s.fwFlash));
     }
 
     // Per-frame lane drawing for the road style: every distinct fret
@@ -4863,6 +5225,11 @@
                     rainZ: new Float32Array(ROAD_RAIN_POOL),
                     rainPhase: new Float32Array(ROAD_RAIN_POOL),
                     rainFar: new Uint8Array(ROAD_RAIN_POOL),
+                    // Fireworks: the simulation's arrays are the point
+                    // cloud's attributes (see _bgRoadUpdateFireworks).
+                    fw: null, fwBuf: _fwMakeBuf(ROAD_FW_POOL, ROAD_FW_ROCKETS),
+                    fwKey: null, fwCount: 0, fwFlash: 0, fwMoving: false, fwDirty: false,
+                    fwFloorY: 0, fwV: new T.Vector3(), fwVp: new T.Vector4(),
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -4999,6 +5366,7 @@
                 const panelH = panelW / ROAD_SIGN_ASPECT;
                 const panelY = s.baseY + ROAD_POST_H * ROAD_BAR_H_MUL + ROAD_SIGN_CLEAR + panelH / 2;
                 const barY = panelY + panelH * 0.25;
+                s.fwFloorY = panelY + panelH / 2;   // fireworks never fall below the sign tops
                 const gPostH = barY - roadY + ROAD_GANTRY_W / 2;
                 const gPostGeo = geo(new T.BoxGeometry(ROAD_GANTRY_W, gPostH, ROAD_GANTRY_W));
                 gPostGeo.translate(0, gPostH / 2, 0);
@@ -5172,6 +5540,32 @@
                 s.rain.frustumCulled = false;
                 root.add(s.rain);
 
+                // Fireworks: one point cloud, additive and unfogged (the
+                // bursts sit beyond the scene fog, over the city). It is
+                // drawn every frame with an empty range while idle, so its
+                // shader compiles at mount, not on the first milestone.
+                {
+                    const fb = s.fwBuf;
+                    const g = geo(new T.BufferGeometry());
+                    g.setAttribute('position', new T.BufferAttribute(fb.pos, 3).setUsage(T.DynamicDrawUsage));
+                    g.setAttribute('aColor', new T.BufferAttribute(fb.col, 3).setUsage(T.DynamicDrawUsage));
+                    g.setAttribute('aSize', new T.BufferAttribute(fb.size, 1).setUsage(T.DynamicDrawUsage));
+                    g.setDrawRange(0, 0);
+                    const uni = { uScale: { value: 400 } };
+                    const m = mat(new T.ShaderMaterial({
+                        uniforms: uni, vertexShader: ROAD_FW_VERT, fragmentShader: ROAD_FW_FRAG,
+                        transparent: true, depthWrite: false, blending: T.AdditiveBlending,
+                    }));
+                    s.fw = new T.Points(g, m);
+                    s.fw.frustumCulled = false;
+                    const vp = s.fwVp;
+                    s.fw.onBeforeRender = (renderer, _scene, camera) => {
+                        renderer.getCurrentViewport(vp);
+                        uni.uScale.value = vp.w * 0.5 * camera.projectionMatrix.elements[5];
+                    };
+                    root.add(s.fw);
+                }
+
                 _bgRoadApplyTheme(s, settings ? settings.clearHex : undefined);
                 if (s.quality.lite) _bgRoadEnterLite(s, '', ROAD_AUTO_MIN_FPS);
                 return s;
@@ -5203,6 +5597,7 @@
                 }
                 s.fogAmt = _roadSmooth(ROAD_FOG_START, ROAD_FOG_FULL, s.mood.gloom);
                 s.rainAmt = _roadSmooth(ROAD_RAIN_START, ROAD_RAIN_FULL, s.mood.gloom);
+                _bgRoadUpdateFireworks(s, chart, playing, lite, dt);   // before the skyline: it reads the burst flash
                 _bgRoadUpdateSkyline(s, bands, chart);   // first: a new song re-seeds the hills too
                 _bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0));
                 _bgRoadUpdateSigns(s, chart);
@@ -5348,6 +5743,9 @@
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
                 s.pools = s.fogFar = s.fogSide = s.rain = null;
                 s.fogMat = s.rainMat = s.poolTex = s.fogTex = null;
+                if (s.fw) s.fw.onBeforeRender = () => {};
+                s.fw = null;
+                s.fwMoving = false;
             },
         },
         // Venue visualization — generated small-club raster bg plate
@@ -6874,6 +7272,10 @@
             // Road Auto quality: the host's frame-rate cap (0 = none) and
             // whether the window is in front (+ a counter of its returns).
             maxFps: 0, away: false, wake: 0,
+            // Fireworks: a backward seek this frame, whether the song has
+            // ended, and the milestones queued since the last frame
+            // (fwQ holds streak, mult, accent, accent2 per rocket).
+            back: false, ended: false, fwN: 0, fwQ: null,
         };
         // Road mood inputs. drawNote counts each judged note once: keys are
         // round(t * 1e4) * 16 + string (15 = the whole chord), the value
@@ -6881,6 +7283,11 @@
         // Pruned past 5 s behind the hit line; cleared on a new song or a
         // backward seek. Only kept while the road is the mounted style.
         let _bgHits = 0, _bgMisses = 0, _bgMult = 1, _bgPrevSongT = NaN;
+        // Night road rockets queued by _fxHandle (up to 4 a frame) and the
+        // song-ended latch (set by 'song:ended', cleared when play resumes,
+        // on a backward seek or a new song).
+        const _bgFwQ = new Float64Array(16);
+        let _bgFwN = 0, _bgEnded = false, _bgWasPlaying = false, _bgOnEnded = null;
         const _bgVerdictSeen = new Map();
         let _bgPruneBefore = 0;
         const _bgPruneVerdict = (v, k) => { if (k < _bgPruneBefore) _bgVerdictSeen.delete(k); };
@@ -7070,6 +7477,19 @@
                 return;
             }
         }
+        function _fxHexInt(str, fallback) {
+            const v = typeof str === 'string' && /^#[0-9a-f]{6}$/i.test(str) ? parseInt(str.slice(1), 16) : NaN;
+            return Number.isFinite(v) ? v : fallback;
+        }
+        function _bgQueueRocket(streak, mult) {
+            if (_bgFwN >= 4) return;
+            const o = _bgFwN * 4;
+            _bgFwQ[o] = Number.isFinite(streak) ? streak : 0;
+            _bgFwQ[o + 1] = Number.isFinite(mult) ? mult : 1;
+            _bgFwQ[o + 2] = _fxHexInt(_fxPalette.accent, 0x00f0ff);
+            _bgFwQ[o + 3] = _fxHexInt(_fxPalette.accent2, 0xff2ec4);
+            _bgFwN++;
+        }
         function _fxHandle(d) {
             // Reference dedup — notedetect dispatches the SAME detail object
             // on window and on its instanceRoot; whichever arrives first wins.
@@ -7079,7 +7499,11 @@
             else if (d.fxType === 'streakBreak') _bgMult = 1;
             const nowMs = performance.now();
             if (d.fxType === 'milestone') {
-                _fxSpawnBurst(nowMs);
+                // On the night road a rocket replaces the 2D burst (with
+                // Streak feedback on); everywhere else, and with it off,
+                // the burst stays.
+                if (bgMountedStyleId === 'road' && bgState && _streakFx) _bgQueueRocket(d.streak, d.mult);
+                else _fxSpawnBurst(nowMs);
             } else if (d.fxType === 'multiplier' && d.mult > (d.prevMult || 1)) {
                 _fxRingMs = nowMs;
                 _fxRingMult = d.mult;
@@ -10697,6 +11121,9 @@
                     && typeof window.feedBack.off === 'function') {
                 _fxOnSkin = (e) => _fxResolvePalette(e && e.detail && e.detail.skin);
                 window.feedBack.on('notedetect:skin', _fxOnSkin);
+                // The night road keeps its rockets flying after the song ends.
+                _bgOnEnded = () => { _bgEnded = true; };
+                window.feedBack.on('song:ended', _bgOnEnded);
             }
 
             return true;
@@ -17917,6 +18344,7 @@
             if (_fxOnFx) { window.removeEventListener('notedetect:fx', _fxOnFx); _fxOnFx = null; }
             if (window.feedBack && typeof window.feedBack.off === 'function') {
                 if (_fxOnSkin) { try { window.feedBack.off('notedetect:skin', _fxOnSkin); } catch (e) {} _fxOnSkin = null; }
+                if (_bgOnEnded) { try { window.feedBack.off('song:ended', _bgOnEnded); } catch (e) {} _bgOnEnded = null; }
                 if (_ndOnBusHit)  window.feedBack.off('note:hit', _ndOnBusHit);
                 if (_ndOnBusMiss) window.feedBack.off('note:miss', _ndOnBusMiss);
                 if (_visibilityHandler) {
@@ -18277,6 +18705,8 @@
                 // Night road rain falls by wall clock, paused too; at the
                 // host's 10 fps paused throttle it would strobe.
                 if (bgMountedStyleId === 'road' && bgState && bgState.rain && bgState.rain.count > 0) return true;
+                // ...and fireworks still flying after the song ends.
+                if (bgMountedStyleId === 'road' && bgState && bgState.fwMoving) return true;
                 for (const v of _venueCrowdVideos) {
                     if (v && !v.paused && !v.ended && v.readyState >= 2) return true;
                 }
@@ -18402,6 +18832,8 @@
                                 + '\0' + String(bsi.arrangement_index ?? '') : '';
                             _bgMult = 1;
                             _bgVerdictSeen.clear();
+                            _bgEnded = false;
+                            _bgFwN = 0;
                         }
                         _bgChart.songKey = _bgSongKey;
                         _bgChart.duration = bundle.songInfo ? bundle.songInfo.duration : 0;
@@ -18427,6 +18859,16 @@
                             _bgPruneBefore = Math.round((_bgT - 5) * 1e4) * 16;
                             _bgVerdictSeen.forEach(_bgPruneVerdict);
                         }
+                        // Fireworks: the kill on a backward seek, the
+                        // ended latch (cleared when play resumes) and the
+                        // milestones queued by _fxHandle.
+                        const _bgPlay = bundle.isPlaying === undefined ? true : !!bundle.isPlaying;
+                        if (_bgBack || (_bgPlay && !_bgWasPlaying)) _bgEnded = false;
+                        _bgWasPlaying = _bgPlay;
+                        _bgChart.back = _bgBack;
+                        _bgChart.ended = _bgEnded;
+                        _bgChart.fwN = _bgFwN;
+                        _bgChart.fwQ = _bgFwQ;
                         _bgChart.hits = _bgHits;
                         _bgChart.misses = _bgMisses;
                         _bgChart.mult = _bgMult;
@@ -18435,6 +18877,7 @@
                         _bgMisses = 0;
                         try { style.update(bgState, bands, dt, nowMs / 1000, _bgChart); }
                         catch (e) { console.error('[3D-Hwy] bg update threw', _bgEffectiveStyleId(), e); }
+                        _bgFwN = 0;
                     }
                 }
 

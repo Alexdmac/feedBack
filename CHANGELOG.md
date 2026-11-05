@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slower than 55 Hz (a 50 Hz TV or projector) the bars fit what the display
   can deliver, and a Full that gives out soon after a try counts as a failed
   try, so a slow spell that comes and goes can't make it flip back and forth.
+- **Streak fireworks on the night road (3D Highway).** With note detection
+  on, each streak milestone (25, 50, then every 100) launches a firework from
+  beside the road that bursts over the city between the road's end and the
+  skyline, in the scoring skin's colours, and briefly lights up the sky and
+  the windows. The shell grows with the streak: two colours from 50 (or a 4x
+  multiplier), a gold willow and a white core from 100, an inner shell from
+  200. On the night road it replaces the 2D milestone burst; with Streak
+  feedback off, the 2D burst stays as before. Lite quality fires a smaller
+  shell. Fireworks freeze on pause, vanish when you rewind, and a rocket
+  launched on the last note still bursts after the song ends. Free play has
+  no fireworks.
 - **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
   (Off, 120, 60, 30) that draws the highway at most that many times a second,
   to save power and heat or leave the graphics card free for other apps. Off
