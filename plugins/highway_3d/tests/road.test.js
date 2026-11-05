@@ -898,7 +898,7 @@ test('_roadQualityStep: the first wake value is adopted, not taken as a return',
     assert.equal(evs(runQ(r, q, 5, 60, { wake: 7 })), '');
 });
 
-test('_roadQualityStep: wake probes stop after two failures in front; a pass resets them', () => {
+test('_roadQualityStep: wake probes stop after two failures in front; a minute of good Full resets them', () => {
     const r = load();
     const q = r._roadMakeQuality('auto');
     runQ(r, q, 8, 40, { wake: 0 });
@@ -918,12 +918,80 @@ test('_roadQualityStep: wake probes stop after two failures in front; a pass res
     assert.equal(r._roadQualityStep(a, 1 / 60, true, 50, true, 0), 'probe');
     assert.equal(evs(runQ(r, a, 3, 40, { away: true })), 'fail');
     assert.equal(a.presentFails, 0);
-    // A pass resets both counters.
+    // A pass alone doesn't clear them (it may give out at once); a minute
+    // of good Full does.
     q.wait = 1e6;
     assert.equal(r._roadQualityStep(q, 1 / 60, true, 50, false, wake), 'probe');
-    assert.equal(evs(runQ(r, q, 6, 60, { wake })), 'pass');
+    assert.equal(evs(runQ(r, q, 6, 60, { wake, until: 'pass' })), 'pass');
+    assert.equal(q.presentFails, 2);
+    assert.equal(evs(runQ(r, q, 61, 60, { wake })), '');
     assert.equal(q.presentFails, 0);
     assert.equal(q.betterFails, 0);
+});
+
+test('_roadQualityStep: a 50 Hz display climbs back to Full (the bars fit what Lite reaches)', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    assert.equal(evs(runQ(r, q, 30, 50)), '', 'Full holds at 50 Hz');
+    assert.equal(evs(runQ(r, q, 12, 30, { until: 'drop' })), 'drop', 'a slow spell drops it');
+    // Lite is capped by the display too: 50.
+    const e = runQ(r, q, 120, 50);
+    assert.equal(evs(e), 'probe,pass', 'the next try holds at 50');
+    assert.ok(q.ceil > 49 && q.ceil < 51, `display limit ${q.ceil}`);
+    assert.equal(evs(runQ(r, q, 300, 50)), '', 'and Full stays');
+    // At 60 Hz the bars are the usual 50 / 55: a 52 fps Full still fails a probe.
+    const w = r._roadMakeQuality('auto');
+    runQ(r, w, 8, 40, { until: 'drop' });
+    runQ(r, w, 15.1, 60, { until: 'probe' });
+    assert.equal(evs(runQ(r, w, 5, 52, { until: 'fail' })), 'fail');
+});
+
+test('_roadQualityStep: a slow spell that comes and goes cannot make Auto flap', () => {
+    const r = load();
+    // A hog 20 s on / 25 s off: Full 40 / 60, Lite 45 / 60, for 15 minutes.
+    const q = r._roadMakeQuality('auto');
+    let t = 0;
+    const out = [];
+    while (t < 900) {
+        const hog = (t % 45) < 20;
+        const fps = q.lite ? (hog ? 45 : 60) : (hog ? 40 : 60);
+        const dt = 1 / fps;
+        t += dt;
+        const ev = r._roadQualityStep(q, dt, true, 50, false, 0);
+        if (ev) out.push(ev);
+    }
+    const drops = out.filter((x) => x === 'drop').length;
+    assert.ok(drops <= 8, `${drops} drops in 15 min (${out.join(',')})`);
+    // Lighter and heavier passages in the song (30 s each): Full 60 / 35, Lite 60 / 45.
+    const c = r._roadMakeQuality('auto');
+    t = 0;
+    const out2 = [];
+    while (t < 900) {
+        const heavy = Math.floor(t / 30) % 2 === 1;
+        const fps = c.lite ? (heavy ? 45 : 60) : (heavy ? 35 : 60);
+        t += 1 / fps;
+        const ev = r._roadQualityStep(c, 1 / fps, true, 50, false, 0);
+        if (ev) out2.push(ev);
+    }
+    const drops2 = out2.filter((x) => x === 'drop').length;
+    assert.ok(drops2 <= 8, `${drops2} drops in 15 min (${out2.join(',')})`);
+});
+
+test('_roadQualityStep: brief returns to the window stop waking Full on a weak machine', () => {
+    const r = load();
+    // Full 40, Lite 60. The player pops in for 2 s, then away for 8 s, for 10 minutes.
+    const q = r._roadMakeQuality('auto');
+    runQ(r, q, 8, 40, { until: 'drop' });
+    let wake = 0, t = 0, probes = 0;
+    while (t < 600) {
+        const front = (t % 10) < 2;
+        if (front && (t % 10) < 1 / 60 + 1e-9) wake++;
+        const fps = q.lite ? 60 : 40;
+        t += 1 / fps;
+        const ev = r._roadQualityStep(q, 1 / fps, true, 50, !front, wake);
+        if (ev === 'probe' && q.why === 'wake') probes++;
+    }
+    assert.ok(probes <= 4, `${probes} wake probes`);
 });
 
 test('_roadQualityStep: Lite getting clearly faster tries Full (a hog went away)', () => {

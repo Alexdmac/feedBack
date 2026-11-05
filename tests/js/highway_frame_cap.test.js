@@ -135,7 +135,10 @@ test('api: setMaxFps sanitizes, resyncs and persists; stop() resyncs; the bundle
     assert.match(set, /localStorage\.setItem\('highwayMaxFps', String\(hwState\._maxFps\)\)/);
     assert.match(set, /hwState\._capFlagAt = Infinity;/, 'unwritable storage keeps the chosen value');
     assert.doesNotMatch(set, /resize\(/, 'a cap changes cadence, not size');
-    assert.match(highwaySrc, /getMaxFps\(\) \{ return hwState\._maxFps; \},/);
+    const get = extractBlock(highwaySrc, 'getMaxFps()');
+    assert.match(get, /if \(hwState\._capFlagAt !== Infinity\)/, 'unwritable storage keeps the in-memory cap');
+    assert.match(get, /_sanitizeMaxFps\(localStorage\.getItem\('highwayMaxFps'\)\)/, 'reads the device-wide setting');
+    assert.match(get, /return hwState\._maxFps;/);
     assert.match(highwaySrc, /b\.maxFps = hwState\._maxFps;/);
     assert.match(highwaySrc, /hwState\._capLastTs = 0;[^\n]*\n\s*if \(hwState\._capFlagAt !== Infinity\) hwState\._capFlagAt = 0;/);
     // Draw budgets stretch under a cap below 60 so render scale doesn't drop for nothing.
@@ -151,4 +154,26 @@ test('ui: the FPS cap control exists and session hydration is guarded', () => {
     const session = read('static/js/session.js');
     assert.match(session, /max-fps-select/);
     assert.match(session, /getMaxFps/);
+    assert.match(session, /e\.key === 'highwayMaxFps'\) _syncMaxFpsSelect\(\)/, 'follows a change made in another window');
+});
+
+test('smoothing keeps its speed under a cap: 2D fret zoom and 3D camera use real frame time below 60 fps', () => {
+    // A cap of 30 halves the frames; per-frame steps tuned at 60 fps would
+    // halve the catch-up speed (feedBack#88's rejected ~3 s lag). Below 60
+    // both use the real time since the last frame; at 60+ nothing changes.
+    const def = highwaySrc.slice(highwaySrc.indexOf('const anchor = getAnchorAt(hwState.currentTime);'));
+    const call = def.slice(0, def.indexOf('hwState.ctx.save();'));
+    assert.doesNotMatch(call, /updateSmoothAnchor\(anchor, 1 \/ 60\)/);
+    assert.match(call, /Math\.min\(0\.1, Math\.max\(1 \/ 60, \(_zoomNow - hwState\._zoomLastAt\) \/ 1000\)\)/);
+    assert.match(call, /updateSmoothAnchor\(anchor, _zoomDt\);/);
+    assert.match(highwaySrc, /hwState\._zoomLastAt = 0;   \/\/ the fret zoom's dt starts fresh/);
+    const screen = read('plugins/highway_3d/screen.js').replace(/\r\n/g, '\n');
+    const cam = extractBlock(screen, 'function camUpdate(bundle)');
+    assert.match(cam, /Math\.min\(6, Math\.max\(1, \(_camNowMs - _camLastMs\) \* 0\.06\)\)/);
+    assert.match(cam, /const lerp = _camFrames === 1 \? _lerp60 : 1 - Math\.pow\(1 - _lerp60, _camFrames\);/);
+    // One 30 fps frame moves exactly as far as two 60 fps frames.
+    const l = 0.02;
+    const two60 = 1 - (1 - l) * (1 - l);
+    const one30 = 1 - Math.pow(1 - l, 2);
+    assert.ok(Math.abs(two60 - one30) < 1e-12);
 });

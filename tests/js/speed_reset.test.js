@@ -181,6 +181,7 @@ function loadPlaySong(sandbox) {
         function _getArrangementNamingMode() { return 'default'; }
         function _scheduleSectionPracticeRetries() {}
         function loadSavedLoops() {}
+        function _syncMaxFpsSelect() {}
         function _songEventPayload() { return { time: 7, audioT: 7, chartT: 7, perfNow: 7 }; }
         ${extractFunction(controls, 'function setSpeed')}
         ${speedPresetHelpers}

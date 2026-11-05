@@ -3609,6 +3609,11 @@
     const ROAD_AUTO_LITE_REF = 2;       // s of Lite play before Lite's own frame time is sampled
     const ROAD_AUTO_BETTER = 0.8;       // Lite this much faster than that sample = conditions improved
     const ROAD_AUTO_BETTER_SECS = 2;    // ...for this long
+    // The best frame rate Lite has reached is about what the display can
+    // deliver (Lite is light). When that is under the bars above (a 50 Hz
+    // screen) both bars come down to fit it, or a fast machine could never
+    // climb back from Lite.
+    const ROAD_AUTO_CEIL_DROP = 0.9, ROAD_AUTO_CEIL_PASS = 0.95;
     function _roadAutoMinFps(maxFps) {
         return maxFps > 0 ? Math.min(ROAD_AUTO_MIN_FPS, maxFps * ROAD_AUTO_CAP_RATIO) : ROAD_AUTO_MIN_FPS;
     }
@@ -3624,6 +3629,9 @@
             held: ROAD_AUTO_TRUST, trust: 0, level: 0,
             presentFails: 0, betterFails: 0, tainted: false, liteRef: 0, better: 0,
             why: '', fps: 0, wasAway: false, wakeSeen: -1,
+            ceil: 0,          // best fps Lite has reached (about the display's limit)
+            slowFront: 0,     // s of the current slow run taken with the window in front
+            passWhy: '',      // the probe kind that last passed, until Full has held ROAD_AUTO_TRUST s
         };
     }
     function _roadQualityEnter(q, phase, why) {
@@ -3631,7 +3639,7 @@
         q.wasAway = q.tainted;
         q.phase = phase; q.lite = phase === 'lite'; q.why = why;
         q.warm = 0; q.slow = 0; q.ema = 0; q.judged = 0; q.wait = 0;
-        q.tainted = false; q.liteRef = 0; q.better = 0;
+        q.tainted = false; q.liteRef = 0; q.better = 0; q.slowFront = 0;
     }
     function _roadQualityStep(q, dt, playing, minFps, away, wake) {
         if (!q || q.mode !== 'auto') return '';
@@ -3646,7 +3654,7 @@
             if (q.phase === 'lite') {
                 if (q.presentFails < ROAD_AUTO_WAKE_FAILS) { _roadQualityEnter(q, 'probe', 'wake'); return 'probe'; }
             } else {
-                q.slow = 0; q.ema = 0;              // don't carry a slow spell from the background
+                q.slow = 0; q.slowFront = 0; q.ema = 0;   // don't carry a slow spell from the background
                 if (q.phase === 'probe') { q.judged = 0; q.tainted = false; }
             }
         }
@@ -3655,49 +3663,72 @@
         if (away) q.tainted = true;
         q.warm += dt;
         q.ema = q.ema > 0 ? q.ema + (dt - q.ema) * ROAD_AUTO_EMA : dt;
+        // The bars, fitted under what the display can deliver.
+        const ceil = q.ceil > 0 ? q.ceil : Infinity;
+        const dropFps = Math.min(minFps, ceil * ROAD_AUTO_CEIL_DROP);
+        const passFps = Math.min(minFps * ROAD_AUTO_PROBE_MARGIN, ceil * ROAD_AUTO_CEIL_PASS);
         if (q.phase === 'full') {
             if (q.warm < ROAD_AUTO_WARMUP) return '';
             q.held += dt;
-            if (q.ema * minFps > 1) {
+            if (q.ema * dropFps > 1) {
                 q.slow += dt;
+                if (!away) q.slowFront += dt;
                 if (q.slow >= ROAD_AUTO_HOLD) {
-                    if (q.held < ROAD_AUTO_TRUST) q.level = Math.min(ROAD_AUTO_MAX_LEVEL, q.level + 1);
+                    // Full gave out soon after a probe passed: that probe
+                    // didn't really hold, so it counts as a failure of its
+                    // kind (and the back-off goes up).
+                    if (q.held < ROAD_AUTO_TRUST) {
+                        q.level = Math.min(ROAD_AUTO_MAX_LEVEL, q.level + 1);
+                        if (q.passWhy === 'better') q.betterFails++;
+                        else if (q.passWhy !== '' && q.slowFront >= ROAD_AUTO_HOLD * 0.5) q.presentFails++;
+                    }
                     _roadQualityEnter(q, 'lite', 'drop');
                     return 'drop';
                 }
             } else {
-                q.slow = 0;
+                q.slow = 0; q.slowFront = 0;
                 q.trust += dt;
-                if (q.trust >= ROAD_AUTO_TRUST) { q.trust = 0; if (q.level > 0) q.level--; }
+                if (q.trust >= ROAD_AUTO_TRUST) {          // a minute of good Full
+                    q.trust = 0;
+                    if (q.level > 0) q.level--;
+                    q.presentFails = 0; q.betterFails = 0; q.passWhy = '';
+                }
             }
             return '';
         }
         if (q.phase === 'probe') {
             if (q.warm < ROAD_AUTO_PROBE_WARMUP) return '';
             q.judged += dt;
-            if (q.ema * minFps * ROAD_AUTO_PROBE_MARGIN > 1) {
+            if (q.ema * passFps > 1) {
                 q.slow += dt;
+                if (!away) q.slowFront += dt;
                 if (q.slow >= ROAD_AUTO_PROBE_HOLD) {
+                    // A wake probe that fails with the window in front for
+                    // most of the slow run counts against waking, however
+                    // briefly the window was away.
                     if (q.why === 'better') q.betterFails++;
-                    else if (!q.tainted) q.presentFails++;
+                    else if (q.slowFront >= ROAD_AUTO_PROBE_HOLD * 0.5) q.presentFails++;
                     q.level = Math.min(ROAD_AUTO_MAX_LEVEL, q.level + 1);
                     _roadQualityEnter(q, 'lite', 'fail');
                     return 'fail';
                 }
             } else {
-                q.slow = 0;
+                q.slow = 0; q.slowFront = 0;
             }
             if (q.judged >= ROAD_AUTO_PROBE_SECS) {      // stay on Full; warm and ema are already valid
                 q.fps = 1 / q.ema; q.wasAway = q.tainted;
-                q.phase = 'full'; q.why = 'pass';
-                q.held = 0; q.trust = 0; q.slow = 0;
-                q.presentFails = 0; q.betterFails = 0; q.tainted = false;
+                q.phase = 'full'; q.passWhy = q.why; q.why = 'pass';
+                q.held = 0; q.trust = 0; q.slow = 0; q.slowFront = 0;
+                q.tainted = false;
+                // presentFails / betterFails clear only after a minute of
+                // good Full: a pass that gives out quickly still counts.
                 return 'pass';
             }
             return '';
         }
         // phase 'lite'
         q.wait += dt;
+        if (q.warm >= ROAD_AUTO_LITE_REF && 1 / q.ema > q.ceil) q.ceil = 1 / q.ema;
         if (q.warm >= ROAD_AUTO_LITE_REF) {
             if (q.liteRef === 0) q.liteRef = q.ema;
             else if (q.ema < q.liteRef * ROAD_AUTO_BETTER) {
@@ -7349,6 +7380,7 @@
         // promise of the lock toggle.
         let prevLockActive = false;
         let tgtLookY = 0, curLookY = 0;   // lerped look-at Y for self-correcting camera
+        let _camLastMs = 0;               // wall time of the last camUpdate (frame-rate independent lerp)
         let aspectScale = 1;
         // _camSnapped / _camPreScanned / _songKey: together they gate the
         // first-data bootstrap.
@@ -17615,7 +17647,16 @@
         /* ── Camera smooth lerp ──────────────────────────────────────────── */
         function camUpdate(bundle) {
             const bpm = computeBPM(bundle.beats, bundle.currentTime);
-            const lerp = CAM_LERP_BASE * Math.max(bpm, 60) / 120;
+            // The lerp is a per-frame step tuned at 60 fps. Below 60 (a
+            // frame-rate cap, a slow machine) a frame takes the steps of the
+            // 60 fps frames it stands in for, so the camera tracks as fast per
+            // second; at 60 fps and above each frame keeps its own step, as
+            // before.
+            const _camNowMs = performance.now();
+            const _camFrames = _camLastMs > 0 ? Math.min(6, Math.max(1, (_camNowMs - _camLastMs) * 0.06)) : 1;
+            _camLastMs = _camNowMs;
+            const _lerp60 = CAM_LERP_BASE * Math.max(bpm, 60) / 120;
+            const lerp = _camFrames === 1 ? _lerp60 : 1 - Math.pow(1 - _lerp60, _camFrames);
 
             // ── Horizontal-FOV-hold + optional wide-pane pose nudges ──
             // Driven by window.__h3dAspectTune (default off → exact no-op).
@@ -18059,6 +18100,7 @@
             gNote = gSus = gBeat = gTapChevron = null;
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;
             _lookaheadCamX = xFretMid(CAM_LOCK_CENTER_FRET);
+            _camLastMs = 0;
             _lookaheadFretSpan = DEFAULT_LOOKAHEAD_FRET_SPAN;
             _lookaheadCamPrevNow = null;
             _lookaheadLowBonusU = 0;
