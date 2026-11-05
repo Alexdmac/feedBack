@@ -2887,6 +2887,27 @@
         _bgEmitChange(key);
     }
 
+    // Is the window in front? Night road Auto quality judges frames taken
+    // while it isn't with suspicion, and tries Full again as soon as it
+    // comes back (_h3dWakeGen counts the returns). Window state, so one copy
+    // serves every panel; focus as well as visibility, because a desktop
+    // shell may keep a minimized window 'visible'.
+    let _h3dAway = false, _h3dWakeGen = 0;
+    function _h3dSyncFront() {
+        let away = false;
+        try { away = document.visibilityState === 'hidden' || !document.hasFocus(); } catch (_) { away = false; }
+        if (_h3dAway && !away) _h3dWakeGen++;
+        _h3dAway = away;
+    }
+    try {
+        document.addEventListener('visibilitychange', _h3dSyncFront);
+        window.addEventListener('focus', _h3dSyncFront);
+        // Re-check after the event: focus moving into an in-page iframe
+        // blurs the window but keeps document.hasFocus() true.
+        window.addEventListener('blur', () => setTimeout(_h3dSyncFront, 0));
+        _h3dSyncFront();
+    } catch (_) { /* no DOM (tests) */ }
+
     // Pub-sub so settings.html can update live across all panel instances.
     const _bgListeners = new Set();
     function _bgSubscribe(fn) { _bgListeners.add(fn); }
@@ -3552,32 +3573,148 @@
         u = u < 0 ? 0 : (u > 1 ? 1 : u);
         return u * u * (3 - 2 * u);
     }
-    // Night road quality. mode 'full' / 'lite' are fixed; 'auto' starts
-    // Full and latches Lite once frames stay under minFps for `hold` seconds
-    // of play after `warmup` seconds of play. dt is the real (unclamped)
-    // frame time. Only frames while the song plays count: paused, the host
-    // throttles drawing to 10 fps on purpose. Frames over ROAD_AUTO_STALL
-    // (a tab switch, a load) are skipped; the average absorbs one-off
-    // hitches, and a machine that is steadily slow, even under 10 fps,
-    // still switches. Returns true on the frame it switches.
-    const ROAD_AUTO_STALL = 0.5;
+    // Night road quality. mode 'full' / 'lite' are fixed. 'auto' is a
+    // two-way watcher with three phases:
+    //   full  -> lite   'drop'  frames stayed under minFps for HOLD s of play
+    //   lite  -> probe  'probe' try Full again: a scheduled retry (back-off
+    //                           15, 30, 60, 120, 240 s of play), the window
+    //                           coming back to the front ('wake'), or Lite
+    //                           itself getting clearly faster ('better')
+    //   probe -> full   'pass'  Full held minFps * PROBE_MARGIN for PROBE_SECS
+    //   probe -> lite   'fail'  it didn't; the next retry waits longer
+    // fps measured in Lite can't prove Full would hold (Lite is lighter), so
+    // going back up is always a probe. Only frames while the song plays are
+    // judged (paused, the host draws at 10 fps on purpose) and frames over
+    // ROAD_AUTO_STALL (a tab switch, a load) are skipped; a wake needs no
+    // judged frame, so it also works paused. dt is the real frame time;
+    // minFps comes from _roadAutoMinFps (relative to a host frame-rate
+    // cap); away / wake are the window's focus state and a counter bumped
+    // each time it comes back to the front. Returns '' | 'drop' | 'probe'
+    // | 'pass' | 'fail'.
+    const ROAD_AUTO_STALL = 0.5;        // longer frames are never judged
+    const ROAD_AUTO_AWAY_GAP = 2;       // a gap this long between drawn frames = back from hidden
+    const ROAD_AUTO_MIN_FPS = 50;
+    const ROAD_AUTO_CAP_RATIO = 0.85;   // with a frame-rate cap: min(MIN_FPS, cap * ratio)
+    const ROAD_AUTO_EMA = 0.1;          // per-frame weight of the frame-time average
+    const ROAD_AUTO_WARMUP = 3;         // s of play before Full is judged
+    const ROAD_AUTO_HOLD = 4;           // s under minFps that drop Full
+    const ROAD_AUTO_PROBE_WARMUP = 1;   // s of play ignored after leaving Lite
+    const ROAD_AUTO_PROBE_SECS = 4;     // s of play a probe must hold to stay on Full
+    const ROAD_AUTO_PROBE_HOLD = 1.5;   // s under the probe's bar that fail it
+    const ROAD_AUTO_PROBE_MARGIN = 1.1; // a probe must hold minFps * 1.1 (55 at 50)
+    const ROAD_AUTO_BACKOFF_BASE = 15;  // s of Lite play before the first retry
+    const ROAD_AUTO_MAX_LEVEL = 4;      // 15, 30, 60, 120, 240 s
+    const ROAD_AUTO_TRUST = 60;         // s of good Full that lower the level by one; a drop sooner after a pass raises it
+    const ROAD_AUTO_WAKE_FAILS = 2;     // wake / better probes stop after this many failures in a row
+    const ROAD_AUTO_LITE_REF = 2;       // s of Lite play before Lite's own frame time is sampled
+    const ROAD_AUTO_BETTER = 0.8;       // Lite this much faster than that sample = conditions improved
+    const ROAD_AUTO_BETTER_SECS = 2;    // ...for this long
+    function _roadAutoMinFps(maxFps) {
+        return maxFps > 0 ? Math.min(ROAD_AUTO_MIN_FPS, maxFps * ROAD_AUTO_CAP_RATIO) : ROAD_AUTO_MIN_FPS;
+    }
+    function _roadAutoCooldown(level) {
+        const l = level > 0 ? Math.min(ROAD_AUTO_MAX_LEVEL, level | 0) : 0;
+        return ROAD_AUTO_BACKOFF_BASE * Math.pow(2, l);
+    }
     function _roadMakeQuality(mode) {
         const m = mode === 'full' || mode === 'lite' ? mode : 'auto';
-        return { mode: m, lite: m === 'lite', warm: 0, slow: 0, ema: 0 };
+        return {
+            mode: m, lite: m === 'lite', phase: m === 'lite' ? 'lite' : 'full',
+            warm: 0, slow: 0, ema: 0, judged: 0, wait: 0,
+            held: ROAD_AUTO_TRUST, trust: 0, level: 0,
+            presentFails: 0, betterFails: 0, tainted: false, liteRef: 0, better: 0,
+            why: '', fps: 0, wasAway: false, wakeSeen: -1,
+        };
     }
-    function _roadQualityStep(q, dt, playing, warmup, minFps, hold) {
-        if (!q || q.mode !== 'auto' || q.lite) return false;
-        if (!playing || !(dt > 0) || dt > ROAD_AUTO_STALL) return false;
-        q.warm += dt;
-        q.ema = q.ema > 0 ? q.ema + (dt - q.ema) * 0.1 : dt;
-        if (q.warm < warmup) return false;
-        if (q.ema * minFps > 1) {
-            q.slow += dt;
-            if (q.slow >= hold) { q.lite = true; return true; }
-        } else {
-            q.slow = 0;
+    function _roadQualityEnter(q, phase, why) {
+        q.fps = q.ema > 0 ? 1 / q.ema : 0;
+        q.wasAway = q.tainted;
+        q.phase = phase; q.lite = phase === 'lite'; q.why = why;
+        q.warm = 0; q.slow = 0; q.ema = 0; q.judged = 0; q.wait = 0;
+        q.tainted = false; q.liteRef = 0; q.better = 0;
+    }
+    function _roadQualityStep(q, dt, playing, minFps, away, wake) {
+        if (!q || q.mode !== 'auto') return '';
+        if (!(minFps > 0)) minFps = ROAD_AUTO_MIN_FPS;
+        // 1. Back in front? (A long gap between drawn frames means the
+        // window was hidden.) Needs no judged frame, so it works paused.
+        let woke = dt >= ROAD_AUTO_AWAY_GAP;
+        const w = wake | 0;
+        if (q.wakeSeen < 0) q.wakeSeen = w;
+        else if (w !== q.wakeSeen) { q.wakeSeen = w; woke = true; }
+        if (woke) {
+            if (q.phase === 'lite') {
+                if (q.presentFails < ROAD_AUTO_WAKE_FAILS) { _roadQualityEnter(q, 'probe', 'wake'); return 'probe'; }
+            } else {
+                q.slow = 0; q.ema = 0;              // don't carry a slow spell from the background
+                if (q.phase === 'probe') { q.judged = 0; q.tainted = false; }
+            }
         }
-        return false;
+        // 2. Judge only real playing frames.
+        if (!playing || !(dt > 0) || dt > ROAD_AUTO_STALL) return '';
+        if (away) q.tainted = true;
+        q.warm += dt;
+        q.ema = q.ema > 0 ? q.ema + (dt - q.ema) * ROAD_AUTO_EMA : dt;
+        if (q.phase === 'full') {
+            if (q.warm < ROAD_AUTO_WARMUP) return '';
+            q.held += dt;
+            if (q.ema * minFps > 1) {
+                q.slow += dt;
+                if (q.slow >= ROAD_AUTO_HOLD) {
+                    if (q.held < ROAD_AUTO_TRUST) q.level = Math.min(ROAD_AUTO_MAX_LEVEL, q.level + 1);
+                    _roadQualityEnter(q, 'lite', 'drop');
+                    return 'drop';
+                }
+            } else {
+                q.slow = 0;
+                q.trust += dt;
+                if (q.trust >= ROAD_AUTO_TRUST) { q.trust = 0; if (q.level > 0) q.level--; }
+            }
+            return '';
+        }
+        if (q.phase === 'probe') {
+            if (q.warm < ROAD_AUTO_PROBE_WARMUP) return '';
+            q.judged += dt;
+            if (q.ema * minFps * ROAD_AUTO_PROBE_MARGIN > 1) {
+                q.slow += dt;
+                if (q.slow >= ROAD_AUTO_PROBE_HOLD) {
+                    if (q.why === 'better') q.betterFails++;
+                    else if (!q.tainted) q.presentFails++;
+                    q.level = Math.min(ROAD_AUTO_MAX_LEVEL, q.level + 1);
+                    _roadQualityEnter(q, 'lite', 'fail');
+                    return 'fail';
+                }
+            } else {
+                q.slow = 0;
+            }
+            if (q.judged >= ROAD_AUTO_PROBE_SECS) {      // stay on Full; warm and ema are already valid
+                q.fps = 1 / q.ema; q.wasAway = q.tainted;
+                q.phase = 'full'; q.why = 'pass';
+                q.held = 0; q.trust = 0; q.slow = 0;
+                q.presentFails = 0; q.betterFails = 0; q.tainted = false;
+                return 'pass';
+            }
+            return '';
+        }
+        // phase 'lite'
+        q.wait += dt;
+        if (q.warm >= ROAD_AUTO_LITE_REF) {
+            if (q.liteRef === 0) q.liteRef = q.ema;
+            else if (q.ema < q.liteRef * ROAD_AUTO_BETTER) {
+                q.better += dt;
+                if (q.better >= ROAD_AUTO_BETTER_SECS && q.betterFails < ROAD_AUTO_WAKE_FAILS) {
+                    _roadQualityEnter(q, 'probe', 'better');
+                    return 'probe';
+                }
+            } else {
+                q.better = 0;
+            }
+        }
+        if (q.wait >= _roadAutoCooldown(q.level)) {
+            _roadQualityEnter(q, 'probe', 'retry');
+            return 'probe';
+        }
+        return '';
     }
     // --- end road placement ---
 
@@ -3755,11 +3892,9 @@
     const ROAD_RAIN_HEX = 0xa8b8cc;
     // Wet asphalt: the carriageway shifts toward a cool sheen in the rain.
     const ROAD_WET_HEX = 0x56677a, ROAD_WET_MIX = 0.25;
-    // Lite level (Settings > Night road quality). Auto switches after
-    // ROAD_AUTO_WARMUP s once frames stay under ROAD_AUTO_MIN_FPS for
-    // ROAD_AUTO_HOLD s. Lite drops pools, fog, rain, windows, neon,
+    // Lite level (Settings > Night road quality; Auto's watcher is
+    // _roadQualityStep). Lite drops pools, fog, rain, windows, neon,
     // sidewalk joints and the hills' motion, and lights every other beat.
-    const ROAD_AUTO_MIN_FPS = 50, ROAD_AUTO_HOLD = 4, ROAD_AUTO_WARMUP = 3;
     const ROAD_LITE_POST_SKIP = 2;
 
     // Mix two 0xRRGGBB colours (t = 0 -> a, 1 -> b), no allocation.
@@ -3920,16 +4055,50 @@
         tex.colorSpace = T.SRGBColorSpace;
         return tex;
     }
-    // Lite: hide everything Lite drops. Called once when Auto switches (or
-    // at build for a fixed Lite); update() keeps it that way.
-    function _bgRoadEnterLite(s, auto) {
+    // Lite: hide everything Lite drops. Called when Auto drops to Lite or a
+    // probe fails (or at build for a fixed Lite); update() keeps it that way.
+    function _bgRoadEnterLite(s, why, minFps) {
         if (!s || !s.posts) return;
         for (const m of [s.joints, s.pools, s.fogFar, s.fogSide, s.rain, s.windows, s.neon]) {
             if (m) m.count = 0;
         }
         s.hillDirty = true;                  // re-lay the hills once, at rest
-        if (auto) console.info('[3D-Hwy] night road: frame rate stayed under '
-            + ROAD_AUTO_MIN_FPS + ' fps, switching to Lite');
+        if (why) _bgRoadLogQuality(s, why, minFps);
+    }
+    // Back to Full (Auto's probe). Build never skips a Full layer, so this
+    // is counts and dirty flags only; update() redoes the rest this frame.
+    function _bgRoadLeaveLite(s, minFps) {
+        if (!s || !s.posts) return;
+        if (s.neon) {                        // only the skyline layout sets it
+            s.neon.count = s.nNeon | 0;
+            s.neon.instanceMatrix.needsUpdate = true;
+            if (s.neon.instanceColor) s.neon.instanceColor.needsUpdate = true;
+        }
+        s.jointPhase = -1;                   // the joints skip an unchanged phase
+        s.hillDirty = true;
+        _bgRoadLogQuality(s, 'probe', minFps);
+    }
+    function _bgRoadLogQuality(s, ev, minFps) {
+        const q = s && s.quality;
+        if (!q) return;
+        const need = Math.round(minFps > 0 ? minFps : ROAD_AUTO_MIN_FPS);
+        const fps = Math.round(q.fps);
+        let msg;
+        if (ev === 'drop') {
+            msg = fps + ' fps for ' + ROAD_AUTO_HOLD + ' s (needs ' + need + '), switching to Lite; trying Full again in '
+                + _roadAutoCooldown(q.level) + ' s of play' + (q.wasAway ? ' or when the window is back in front' : '');
+        } else if (ev === 'probe') {
+            msg = 'trying Full again (' + (q.why === 'wake' ? 'window back in front'
+                : q.why === 'better' ? 'Lite sped up' : 'scheduled retry') + ')';
+        } else if (ev === 'pass') {
+            msg = 'Full holds at ' + fps + ' fps, staying on Full';
+        } else if (ev === 'fail') {
+            msg = 'Full reached ' + fps + ' fps (needs ' + Math.round(need * ROAD_AUTO_PROBE_MARGIN)
+                + '), back to Lite; next try in ' + _roadAutoCooldown(q.level) + ' s of play';
+        } else {
+            return;
+        }
+        console.info('[3D-Hwy] night road: ' + msg);
     }
     // Per-frame weather from the mood: fog banks (amount s.fogAmt), rain
     // (s.rainAmt) and the wet asphalt. `t` is wall-clock seconds (rain fall).
@@ -4143,6 +4312,7 @@
         d.position.set(0, 0, 0);
         d.scale.set(1, 1, 1);
         s.neon.count = nn;
+        s.nNeon = nn;                        // Auto restores it when it leaves Lite
         s.neon.instanceMatrix.needsUpdate = true;
         if (s.neon.instanceColor) s.neon.instanceColor.needsUpdate = true;
     }
@@ -4641,7 +4811,7 @@
                         y: new Float32Array(ROAD_WINDOW_POOL),
                         z: new Float32Array(ROAD_WINDOW_POOL),
                     },
-                    nWindows: 0, skylineZ: 0,
+                    nWindows: 0, nNeon: 0, skylineZ: 0,
                     towers: null, windows: null, neon: null, sky: null,
                     windowMat: null, neonMat: null, skyMat: null, skyTex: null,
                     orderStamped: false,
@@ -4972,7 +5142,7 @@
                 root.add(s.rain);
 
                 _bgRoadApplyTheme(s, settings ? settings.clearHex : undefined);
-                if (s.quality.lite) _bgRoadEnterLite(s, false);
+                if (s.quality.lite) _bgRoadEnterLite(s, '', ROAD_AUTO_MIN_FPS);
                 return s;
             },
             update(s, bands, dt, t, chart) {
@@ -4985,10 +5155,15 @@
                 const wall = Number.isFinite(t) ? t : 0;
                 const rawDt = s.lastWall > 0 ? wall - s.lastWall : 0;
                 s.lastWall = wall;
-                if (_roadQualityStep(s.quality, rawDt, playing, ROAD_AUTO_WARMUP, ROAD_AUTO_MIN_FPS, ROAD_AUTO_HOLD)) {
-                    _bgRoadEnterLite(s, true);
-                }
-                const lite = s.quality.lite;
+                // Auto quality: judged against the host's frame-rate cap, and
+                // told when the window comes back to the front.
+                const minFps = _roadAutoMinFps(chart ? chart.maxFps : 0);
+                const qev = _roadQualityStep(s.quality, rawDt, playing, minFps,
+                    !!(chart && chart.away), chart ? (chart.wake | 0) : 0);
+                if (qev === 'drop' || qev === 'fail') _bgRoadEnterLite(s, qev, minFps);
+                else if (qev === 'probe') _bgRoadLeaveLite(s, minFps);
+                else if (qev === 'pass') _bgRoadLogQuality(s, qev, minFps);
+                const lite = s.quality.lite;   // read after the step: a switch lands this frame
                 // Mood: a jump back to the song's start begins a clear night;
                 // the clocks only run while playing, judged notes always count.
                 if (chart && chart.restart) _roadResetMood(s.mood);
@@ -6665,6 +6840,9 @@
             // frame, its multiplier, whether the song is playing, and a
             // one-frame restart flag (a jump back to the song's start).
             hits: 0, misses: 0, mult: 1, playing: true, restart: false,
+            // Road Auto quality: the host's frame-rate cap (0 = none) and
+            // whether the window is in front (+ a counter of its returns).
+            maxFps: 0, away: false, wake: 0,
         };
         // Road mood inputs. drawNote counts each judged note once: keys are
         // round(t * 1e4) * 16 + string (15 = the whole chord), the value
@@ -10342,8 +10520,8 @@
                     return;
                 }
                 if (changedKey === 'roadQuality') {
-                    // Quality is baked in at build (Lite hides layers, Auto's
-                    // frame-rate watch starts over), so rebuild the road.
+                    // A fixed Lite is applied at build and Auto's watcher
+                    // starts over, so rebuild the road.
                     _bgLoadSettings();
                     if (bgMountedStyleId === 'road') _bgRebuild();
                     return;
@@ -18170,6 +18348,9 @@
                         }
                         _bgChart.songKey = _bgSongKey;
                         _bgChart.duration = bundle.songInfo ? bundle.songInfo.duration : 0;
+                        _bgChart.maxFps = bundle.maxFps > 0 ? bundle.maxFps : 0;
+                        _bgChart.away = _h3dAway;
+                        _bgChart.wake = _h3dWakeGen;
                         // Road mood. A backward seek (a rewind, a practice
                         // loop, the Restart button) makes the scorer recount
                         // its streak without an fx event, and the notes
@@ -18356,8 +18537,12 @@
                         const _fpsY = _fpsBaseY + cornerStack['tr'];
                         lyricsCtx.fillStyle = 'rgba(0,0,0,0.55)';
                         lyricsCtx.fillRect(_fpsX, _fpsY, _fpsBoxW, _fpsBoxH);
-                        lyricsCtx.fillStyle = _fpsDisplay >= 55 ? '#7fff9a'
-                            : _fpsDisplay >= 30 ? '#ffe84d' : '#ff6b6b';
+                        // Green / yellow bars follow a frame-rate cap under 60.
+                        const _fpsCap = bundle && bundle.maxFps > 0 && bundle.maxFps < 60 ? bundle.maxFps : 0;
+                        const _fpsGood = _fpsCap ? _fpsCap * 0.92 : 55;
+                        const _fpsOk = _fpsCap ? _fpsCap * 0.55 : 30;
+                        lyricsCtx.fillStyle = _fpsDisplay >= _fpsGood ? '#7fff9a'
+                            : _fpsDisplay >= _fpsOk ? '#ffe84d' : '#ff6b6b';
                         lyricsCtx.fillText(txt, _fpsX + _fpsBoxW - _fpsPadX, _fpsY + _fpsPadY);
                         lyricsCtx.restore();
                         stackPush('tr', _fpsBoxH);

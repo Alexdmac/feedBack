@@ -744,6 +744,19 @@ export async function playSong(filename, arrangement, options) {
     document.getElementById('quality-select').value = window.highway.getRenderScale();
     const _minScaleSel = document.getElementById('min-scale-select');
     if (_minScaleSel && window.highway.getMinRenderScale) _minScaleSel.value = String(window.highway.getMinRenderScale());
+    const _maxFpsSel = document.getElementById('max-fps-select');
+    if (_maxFpsSel && window.highway.getMaxFps) {
+        const _cap = String(window.highway.getMaxFps());
+        // A cap set outside the four choices (setMaxFps from the console) gets its own entry.
+        if (_maxFpsSel.options && !Array.from(_maxFpsSel.options).some(o => o.value === _cap)
+            && typeof document.createElement === 'function') {
+            const _opt = document.createElement('option');
+            _opt.value = _cap;
+            _opt.textContent = _cap;
+            _maxFpsSel.appendChild(_opt);
+        }
+        _maxFpsSel.value = _cap;
+    }
 }
 
 // Leave the player and return to the screen the song was launched from

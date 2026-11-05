@@ -35,8 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off, and good playing lights every window and flashes the neon on the beat.
   Weather never covers the board or the notes, and free play stays a clear
   night. A new "Night road quality" setting (Auto, Full, Lite) adds a
-  Lite level for weaker graphics; Auto switches to it if the frame rate stays
-  under 50 fps.
+  Lite level for weaker graphics. Auto switches to it while the frame rate
+  stays under 50 fps (or 85% of the FPS cap), then tries Full again: after
+  15 s of Lite play (backing off to 4 minutes on a machine that can't hold
+  it), as soon as the window is back in front, or when Lite suddenly runs
+  much faster because another app let go of the graphics card.
+- **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
+  (Off, 120, 60, 30) that draws the highway at most that many times a second,
+  to save power and heat or leave the graphics card free for other apps. Off
+  draws at the display's refresh rate, as before. The cap is shared by every
+  highway on the device (splitscreen panels, pop-out windows) and never
+  touches audio sync. Plugins see it as `bundle.maxFps`.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
   the first twelve songs in your saved Song Library sort, using the same cards
   as the Song Library page (play, favorite, save, menu, arrangement chips,

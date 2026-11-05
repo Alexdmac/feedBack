@@ -231,7 +231,8 @@ window.feedBackViz_my_viz = function () {
             // notes, chords, anchors (all difficulty-filter-aware),
             // beats, sections, chordTemplates, stringCount, lyrics,
             // toneChanges, toneBase, mastery, hasPhraseData, inverted,
-            // lefty, renderScale, lyricsVisible, the 2D coordinate
+            // lefty, renderScale, maxFps (the user's FPS cap, 0 = off),
+            // lyricsVisible, the 2D coordinate
             // helpers project and fretX, and getNoteState (see below).
             // The bundle OBJECT is reused across frames (mutated in
             // place — no per-frame allocation): never cache it or

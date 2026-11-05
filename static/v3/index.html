@@ -1134,6 +1134,15 @@
                     </select>
                 </div>
                 <div class="v3-pop-row">
+                    <span class="v3-pop-label" id="max-fps-label">FPS cap</span>
+                    <select id="max-fps-select" onchange="highway.setMaxFps && highway.setMaxFps(parseInt(this.value, 10))" class="v3-pop-select" aria-labelledby="max-fps-label" title="Frame-rate cap: draw the highway at most this many times a second. Lower saves power and heat and leaves the graphics card free for other apps; Off draws at your display's refresh rate. Never affects audio sync.">
+                        <option value="0">Off</option>
+                        <option value="120">120</option>
+                        <option value="60">60</option>
+                        <option value="30">30</option>
+                    </select>
+                </div>
+                <div class="v3-pop-row">
                     <span class="v3-pop-label" id="scoreboard-label">Scoreboard</span>
                     <select id="scoreboard-select" onchange="setScoreboard(this.value)" class="v3-pop-select" aria-labelledby="scoreboard-label" title="Highway scoreboard">
                         <option value="core" selected>Streak</option>

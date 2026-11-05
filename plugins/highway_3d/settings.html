@@ -133,7 +133,7 @@
 
     <!-- Night road quality (road style only). Lite drops the weather and the
          busier scenery for weaker graphics; Auto switches to Lite by itself
-         when the frame rate stays low. -->
+         while the frame rate stays low and tries Full again later. -->
     <div class="mt-3">
         <label for="h3d-bg-road-quality" class="text-xs font-medium text-gray-400 mb-1 block">Night road quality</label>
         <select id="h3d-bg-road-quality"
@@ -144,7 +144,7 @@
             <option value="lite">Lite</option>
         </select>
         <p class="text-[10px] text-gray-500 mt-1">
-            Night road only. Lite drops the rain, fog, light pools, city windows and scenery motion, and lights every other beat. Auto switches to Lite if the frame rate stays under 50 fps.
+            Night road only. Lite drops the rain, fog, light pools, city windows and scenery motion, and lights every other beat. Auto switches to Lite while the frame rate stays under 50 fps (or 85% of your FPS cap) and tries Full again after a while, or as soon as the window is back in front.
         </p>
     </div>
 

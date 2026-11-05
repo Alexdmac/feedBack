@@ -54,6 +54,9 @@ function load() {
         '\nthis._roadSmooth = _roadSmooth;' +
         '\nthis._roadMakeQuality = _roadMakeQuality;' +
         '\nthis._roadQualityStep = _roadQualityStep;' +
+        '\nthis._roadAutoMinFps = _roadAutoMinFps;' +
+        '\nthis._roadAutoCooldown = _roadAutoCooldown;' +
+        '\nthis.ROAD_AUTO_WAKE_FAILS = ROAD_AUTO_WAKE_FAILS;' +
         '\nthis._roadWindowFrac = _roadWindowFrac;' +
         '\nthis._roadCityLit = _roadCityLit;' +
         '\nthis._roadCityDark = _roadCityDark;', sandbox);
@@ -691,32 +694,64 @@ test('_roadSmooth: 0 below, 1 above, monotonic between', () => {
     }
 });
 
-// Feed the quality watcher `secs` of frames at `fps` (playing unless told).
-function runQuality(r, q, secs, fps, playing = true) {
-    let switched = 0;
-    const dt = 1 / fps;
-    for (let f = 0; f < Math.round(secs * fps); f++) {
-        if (r._roadQualityStep(q, dt, playing, 3, 50, 4)) switched++;
+// Feed the Auto watcher `secs` of frames. fps is a number or fps(q) -> number
+// (so Full and Lite can run at different rates). Returns the events in order,
+// each { ev, why, t } with t = seconds since this call started. opts.until
+// stops right after that event, so the next phase starts with no leftover time.
+function runQ(r, q, secs, fps, opts = {}) {
+    const playing = opts.playing !== false;
+    const minFps = opts.minFps || 50;
+    const away = !!opts.away;
+    const wake = opts.wake | 0;
+    const out = [];
+    let t = 0;
+    while (t < secs - 1e-9) {
+        const f = typeof fps === 'function' ? fps(q) : fps;
+        const dt = 1 / f;
+        t += dt;
+        const ev = r._roadQualityStep(q, dt, playing, minFps, away, wake);
+        if (ev) {
+            out.push({ ev, why: q.why, t });
+            if (ev === opts.until) break;
+        }
     }
-    return switched;
+    return out;
 }
+const evs = (list) => list.map((e) => e.ev).join(',');
+// Full at `full` fps, Lite (and the switch frames) at `lite` fps.
+const byPhase = (full, lite) => (q) => (q.lite ? lite : full);
 
-test('_roadQualityStep: Auto latches Lite once frames stay under 50 fps', () => {
+test('_roadAutoMinFps: 50 without a cap, 85% of a cap under 59', () => {
+    const r = load();
+    for (const v of [0, undefined, NaN, -5, null]) assert.equal(r._roadAutoMinFps(v), 50);
+    assert.equal(r._roadAutoMinFps(30), 25.5);
+    assert.equal(r._roadAutoMinFps(60), 50);
+    assert.equal(r._roadAutoMinFps(120), 50);
+});
+
+test('_roadAutoCooldown: 15, 30, 60, 120, 240 s of Lite play, capped', () => {
+    const r = load();
+    assert.deepEqual([0, 1, 2, 3, 4].map(r._roadAutoCooldown), [15, 30, 60, 120, 240]);
+    assert.equal(r._roadAutoCooldown(9), 240);
+    assert.equal(r._roadAutoCooldown(-1), 15);
+    assert.equal(r._roadAutoCooldown(undefined), 15);
+});
+
+test('_roadQualityStep: Auto drops to Lite once frames stay under 50 fps', () => {
     const r = load();
     const q = r._roadMakeQuality('auto');
     assert.equal(q.lite, false);
-    assert.equal(runQuality(r, q, 6.5, 40), 0, 'not before warm-up + hold');
-    assert.equal(runQuality(r, q, 2, 40), 1, 'switches exactly once');
+    assert.equal(evs(runQ(r, q, 6.5, 40)), '', 'not before warm-up + hold');
+    assert.equal(evs(runQ(r, q, 2, 40)), 'drop', 'drops exactly once');
     assert.equal(q.lite, true);
-    assert.equal(runQuality(r, q, 30, 120), 0, 'Lite stays latched');
-    assert.equal(q.lite, true);
+    assert.equal(q.phase, 'lite');
 });
 
-test('_roadQualityStep: a machine steadily under 10 fps switches too', () => {
+test('_roadQualityStep: a machine steadily under 10 fps drops too', () => {
     const r = load();
     for (const fps of [8, 4]) {
         const q = r._roadMakeQuality('auto');
-        assert.equal(runQuality(r, q, 12, fps), 1, `${fps} fps switches`);
+        assert.equal(evs(runQ(r, q, 12, fps)), 'drop', `${fps} fps drops`);
         assert.equal(q.lite, true);
     }
 });
@@ -724,30 +759,249 @@ test('_roadQualityStep: a machine steadily under 10 fps switches too', () => {
 test('_roadQualityStep: steady 60 fps, short dips, pauses and stalls keep Full', () => {
     const r = load();
     const q = r._roadMakeQuality('auto');
-    assert.equal(runQuality(r, q, 20, 60), 0);
+    assert.equal(evs(runQ(r, q, 20, 60)), '');
     for (let i = 0; i < 5; i++) {
-        runQuality(r, q, 2, 40);                // two-second dips
-        runQuality(r, q, 3, 60);
+        runQ(r, q, 2, 40);                      // two-second dips
+        runQ(r, q, 3, 60);
     }
     assert.equal(q.lite, false, 'dips shorter than the hold do not switch');
-    assert.equal(runQuality(r, q, 60, 10, false), 0, 'the host draws paused at 10 fps on purpose');
+    assert.equal(evs(runQ(r, q, 60, 10, { playing: false })), '', 'the host draws paused at 10 fps on purpose');
     for (let i = 0; i < 100; i++) {
-        r._roadQualityStep(q, 0.8, true, 3, 50, 4);   // tab switches, loads
-        runQuality(r, q, 0.5, 60);
+        assert.equal(r._roadQualityStep(q, 0.8, true, 50, false, 0), '');   // tab switches, loads
+        runQ(r, q, 0.5, 60);
     }
     assert.equal(q.lite, false, 'stalls over half a second are skipped');
+});
+
+test('_roadQualityStep: after a drop, Full is tried again after 15 s of Lite play', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    assert.equal(evs(runQ(r, q, 8, 40, { until: 'drop' })), 'drop');
+    assert.equal(q.lite, true);
+    assert.equal(evs(runQ(r, q, 14.9, 60)), '', 'not before the cooldown');
+    const e = runQ(r, q, 0.2, 60);
+    assert.equal(evs(e), 'probe');
+    assert.equal(e[0].why, 'retry');
+    assert.equal(q.lite, false, 'the probe renders Full');
+    assert.equal(q.phase, 'probe');
+});
+
+test('_roadQualityStep: a probe that holds stays on Full; one that does not goes back to Lite', () => {
+    const r = load();
+    // Full can do 60 now (the slow spell is over).
+    const ok = r._roadMakeQuality('auto');
+    runQ(r, ok, 8, 40, { until: 'drop' });
+    assert.equal(evs(runQ(r, ok, 15.1, 60, { until: 'probe' })), 'probe');
+    assert.equal(ok.phase, 'probe');
+    const pass = runQ(r, ok, 6, 60);
+    assert.equal(evs(pass), 'pass');
+    assert.ok(pass[0].t > 4.9 && pass[0].t < 5.2, `passes after warm-up + 4 s (${pass[0].t})`);
+    assert.equal(ok.lite, false);
+    assert.equal(ok.phase, 'full');
+    assert.equal(evs(runQ(r, ok, 120, 60)), '', 'and stays');
+    // Full still only does 45.
+    const bad = r._roadMakeQuality('auto');
+    runQ(r, bad, 8, 45, { until: 'drop' });
+    assert.equal(bad.lite, true);
+    assert.equal(evs(runQ(r, bad, 15.1, 60, { until: 'probe' })), 'probe');
+    const fail = runQ(r, bad, 4, 45, { until: 'fail' });
+    assert.equal(evs(fail), 'fail');
+    assert.ok(fail[0].t < 3, `fails within 3 s (${fail[0].t})`);
+    assert.equal(bad.lite, true);
+    assert.equal(bad.level, 1);
+    assert.equal(evs(runQ(r, bad, 29.9, 60)), '', 'the next try waits 30 s');
+    assert.equal(evs(runQ(r, bad, 0.2, 60)), 'probe');
+});
+
+test('_roadQualityStep: a weak machine backs off and never flaps', () => {
+    const r = load();
+    // Full 35 fps, Lite 60 fps, for 15 minutes of play.
+    const q = r._roadMakeQuality('auto');
+    const e = runQ(r, q, 900, byPhase(35, 60));
+    const probes = e.filter((x) => x.ev === 'probe').map((x) => x.t);
+    assert.equal(e[0].ev, 'drop');
+    assert.equal(e.filter((x) => x.ev === 'pass').length, 0, 'Full never sticks');
+    assert.ok(probes.length >= 5 && probes.length <= 7, `${probes.length} probes in 15 min`);
+    const gaps = [];
+    for (let i = 1; i < probes.length; i++) gaps.push(probes[i] - probes[i - 1]);
+    for (let i = 1; i < gaps.length; i++) assert.ok(gaps[i] >= gaps[i - 1] - 0.5, `gaps grow: ${gaps.map(Math.round)}`);
+    assert.ok(gaps[gaps.length - 1] > 235, 'the back-off reaches 240 s');
+    // Borderline: 52 fps in Full is fine, no events at all.
+    const b = r._roadMakeQuality('auto');
+    assert.equal(evs(runQ(r, b, 600, 52)), '');
+    // Full 48 / Lite 60: every probe fails, with growing gaps.
+    const c = r._roadMakeQuality('auto');
+    const ce = runQ(r, c, 900, byPhase(48, 60));
+    assert.equal(ce.filter((x) => x.ev === 'pass').length, 0);
+    assert.ok(ce.length <= 16, `bounded: ${ce.length} events`);
+});
+
+test('_roadQualityStep: good Full lowers the back-off; a quick re-drop raises it', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    const step = (secs, fps, until) => evs(runQ(r, q, secs, fps, { until }));
+    assert.equal(step(8, 40, 'drop'), 'drop'); // first drop of a scene: level stays 0
+    assert.equal(q.level, 0);
+    assert.equal(step(15.1, 60, 'probe'), 'probe');
+    assert.equal(step(3, 45, 'fail'), 'fail');  // -> level 1
+    assert.equal(q.level, 1);
+    assert.equal(step(30.1, 60, 'probe'), 'probe');
+    assert.equal(step(6, 60, 'pass'), 'pass');
+    assert.equal(q.phase, 'full');
+    assert.equal(q.level, 1);
+    assert.equal(step(70, 60), '');            // 60 s of good Full -> level 0
+    assert.equal(q.level, 0);
+    // A drop within 60 s of a pass raises it.
+    assert.equal(step(8, 40, 'drop'), 'drop');
+    assert.equal(step(15.1, 60, 'probe'), 'probe');
+    assert.equal(step(6, 60, 'pass'), 'pass');
+    const before = q.level;
+    assert.equal(step(8, 40, 'drop'), 'drop'); // drop again, soon after the pass
+    assert.equal(q.lite, true);
+    assert.equal(q.level, before + 1);
+});
+
+test('_roadQualityStep: back in front tries Full at once, even paused', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    runQ(r, q, 20, 60, { wake: 0 });
+    runQ(r, q, 8, 30, { away: true, wake: 0 });    // another app hogs the GPU while we're in the background
+    assert.equal(q.lite, true);
+    assert.match(String(q.why), /drop/);
+    // Back in front: the wake counter moved. The very next step probes,
+    // even though the song is paused and it's long before the cooldown.
+    assert.equal(r._roadQualityStep(q, 0.1, false, 50, false, 1), 'probe');
+    assert.equal(q.why, 'wake');
+    assert.equal(q.lite, false);
+    // Paused for a minute: nothing is judged, nothing fails.
+    assert.equal(evs(runQ(r, q, 60, 10, { playing: false, wake: 1 })), '');
+    assert.equal(q.warm, 0);
+    // Play again at 60: Full holds.
+    assert.equal(evs(runQ(r, q, 6, 60, { wake: 1 })), 'pass');
+});
+
+test('_roadQualityStep: a long gap between frames (window was hidden) is a wake too', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    runQ(r, q, 8, 40);
+    assert.equal(q.lite, true);
+    assert.equal(r._roadQualityStep(q, 0.8, true, 50, false, 0), '', 'a short stall is not');
+    assert.equal(r._roadQualityStep(q, 3, true, 50, false, 0), 'probe');
+    assert.equal(q.why, 'wake');
+});
+
+test('_roadQualityStep: the first wake value is adopted, not taken as a return', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    runQ(r, q, 8, 40, { wake: 7 });
+    assert.equal(q.lite, true);
+    assert.equal(evs(runQ(r, q, 5, 60, { wake: 7 })), '');
+});
+
+test('_roadQualityStep: wake probes stop after two failures in front; a pass resets them', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    runQ(r, q, 8, 40, { wake: 0 });
+    let wake = 0;
+    for (let i = 0; i < r.ROAD_AUTO_WAKE_FAILS; i++) {
+        wake++;
+        assert.equal(r._roadQualityStep(q, 1 / 60, true, 50, false, wake), 'probe');
+        assert.equal(evs(runQ(r, q, 3, 40, { wake })), 'fail');
+    }
+    assert.equal(q.presentFails, 2);
+    wake++;
+    assert.equal(r._roadQualityStep(q, 1 / 60, true, 50, false, wake), '', 'no more wake probes');
+    // A failure while away doesn't count against waking.
+    const a = r._roadMakeQuality('auto');
+    runQ(r, a, 8, 40);
+    a.wait = 1e6;                               // force the scheduled retry
+    assert.equal(r._roadQualityStep(a, 1 / 60, true, 50, true, 0), 'probe');
+    assert.equal(evs(runQ(r, a, 3, 40, { away: true })), 'fail');
+    assert.equal(a.presentFails, 0);
+    // A pass resets both counters.
+    q.wait = 1e6;
+    assert.equal(r._roadQualityStep(q, 1 / 60, true, 50, false, wake), 'probe');
+    assert.equal(evs(runQ(r, q, 6, 60, { wake })), 'pass');
+    assert.equal(q.presentFails, 0);
+    assert.equal(q.betterFails, 0);
+});
+
+test('_roadQualityStep: Lite getting clearly faster tries Full (a hog went away)', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    runQ(r, q, 8, 25);                          // hog: Full 25
+    assert.equal(q.lite, true);
+    assert.equal(evs(runQ(r, q, 5, 40)), '', 'steady Lite: nothing');
+    const e = runQ(r, q, 3, 60);                // hog gone: Lite jumps to 60
+    assert.equal(evs(e), 'probe');
+    assert.equal(e[0].why, 'better');
+    // Two failed 'better' probes, then no more.
+    const b = r._roadMakeQuality('auto');
+    runQ(r, b, 8, 25);
+    for (let i = 0; i < 2; i++) {
+        runQ(r, b, 2.5, 40);                    // sample Lite's reference at 40
+        const p = runQ(r, b, 3, 60);
+        assert.equal(evs(p), 'probe');
+        assert.equal(evs(runQ(r, b, 3, 40)), 'fail');
+    }
+    assert.equal(b.betterFails, 2);
+    runQ(r, b, 2.5, 40);
+    assert.equal(evs(runQ(r, b, 3, 60)), '', 'no third better probe (the scheduled retry still comes)');
+});
+
+test('_roadQualityStep: judged against a frame-rate cap', () => {
+    const r = load();
+    const min30 = r._roadAutoMinFps(30);
+    const q = r._roadMakeQuality('auto');
+    assert.equal(evs(runQ(r, q, 120, 30, { minFps: min30 })), '', 'a 30 cap alone never drops');
+    const s = r._roadMakeQuality('auto');
+    assert.equal(evs(runQ(r, s, 10, 22, { minFps: min30, until: 'drop' })), 'drop', 'under the cap it does');
+    assert.equal(evs(runQ(r, s, 15.1, 30, { minFps: min30, until: 'probe' })), 'probe');
+    assert.equal(s.phase, 'probe');
+    assert.equal(evs(runQ(r, s, 6, 30, { minFps: min30 })), 'pass', 'a probe at the cap passes');
+});
+
+test('_roadQualityStep: paused Lite never retries; stalls inside a probe never fail it', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    runQ(r, q, 8, 40, { until: 'drop' });
+    assert.equal(evs(runQ(r, q, 600, 10, { playing: false })), '');
+    assert.equal(q.wait, 0);
+    q.wait = 1e6;
+    assert.equal(r._roadQualityStep(q, 1 / 60, true, 50, false, 0), 'probe');
+    for (let i = 0; i < 30; i++) assert.equal(r._roadQualityStep(q, 0.9, true, 50, false, 0), '');
+    assert.equal(q.phase, 'probe');
 });
 
 test('_roadQualityStep: Full and Lite are fixed; unknown modes mean Auto', () => {
     const r = load();
     const full = r._roadMakeQuality('full');
-    assert.equal(runQuality(r, full, 30, 20), 0);
+    assert.equal(evs(runQ(r, full, 30, 20)), '');
     assert.equal(full.lite, false);
     const lite = r._roadMakeQuality('lite');
     assert.equal(lite.lite, true);
-    assert.equal(r._roadQualityStep(lite, 1 / 60, true, 3, 50, 4), false);
+    assert.equal(evs(runQ(r, lite, 600, 60)), '', 'fixed Lite never probes');
+    assert.equal(r._roadQualityStep(lite, 3, true, 50, false, 5), '', 'not even on a wake');
+    assert.equal(lite.lite, true);
     assert.equal(r._roadMakeQuality('bogus').mode, 'auto');
     assert.equal(r._roadMakeQuality(undefined).mode, 'auto');
+});
+
+test('road wiring: Auto leaves Lite by restoring the neon and the joints, and hears the window', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const leave = src.slice(src.indexOf('    function _bgRoadLeaveLite('), src.indexOf('    function _bgRoadLogQuality('));
+    assert.match(leave, /s\.neon\.count = s\.nNeon \| 0;/, 'neon only comes back if restored by hand');
+    assert.match(leave, /s\.jointPhase = -1;/, 'the joints skip an unchanged phase');
+    assert.match(src, /s\.neon\.count = nn;\n\s*s\.nNeon = nn;/, 'the layout remembers the neon count');
+    // The call site reads lite AFTER the step, so a switch lands the same frame.
+    assert.match(src, /const qev = _roadQualityStep\([\s\S]{0,200}?\);\n\s*if \(qev === 'drop' \|\| qev === 'fail'\) _bgRoadEnterLite\(s, qev, minFps\);\n\s*else if \(qev === 'probe'\) _bgRoadLeaveLite\(s, minFps\);[\s\S]{0,120}?const lite = s\.quality\.lite;/);
+    // The cap and the window state ride the per-frame handoff, ahead of the pinned mood block.
+    const cap = src.indexOf('_bgChart.maxFps = bundle.maxFps > 0 ? bundle.maxFps : 0;');
+    const hits = src.indexOf('_bgChart.hits = _bgHits;');
+    assert.ok(cap > 0 && cap < hits);
+    assert.match(src, /_bgChart\.away = _h3dAway;\n\s*_bgChart\.wake = _h3dWakeGen;/);
+    assert.match(src, /document\.addEventListener\('visibilitychange', _h3dSyncFront\);/);
+    assert.match(src, /window\.addEventListener\('focus', _h3dSyncFront\);/);
 });
 
 // --- renderer wiring: verdicts must reach the road's mood ------------------
