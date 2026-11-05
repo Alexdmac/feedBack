@@ -3487,19 +3487,24 @@
         const f = (base + (1 - base) * h) * (1 - _roadCityDark(gloom));
         return f < 0 ? 0 : (f > 1 ? 1 : f);
     }
-    // Playing mood (step 3). m = { heat, gloom, run, quiet }. Per frame of
-    // moving song time: hit / miss = a lit / missed gem of THIS panel was on
-    // screen, mult = the scorer's multiplier (1 when there is none). Heat
-    // follows the multiplier or the run of clean play, whichever is higher,
-    // and drops on a miss; gloom builds while misses are on screen and
-    // clears on hits, slowly on its own. With no verdict for ROAD_MOOD_IDLE
-    // seconds (free play, no detector) heat settles to 0 and gloom drains.
+    // Playing mood (step 3). m = { heat, gloom, run, quiet }. hits / misses
+    // = notes of THIS panel the scorer judged since the last step, each note
+    // counted once (a chord once), so a missed long note is one miss however
+    // long it stays on screen; mult = the scorer's multiplier (1 when none).
+    // dt = playing time since the last step (0 while paused: the verdicts
+    // still count, the clocks don't move). Heat follows the multiplier or
+    // the run of clean play, whichever is higher, and each miss knocks a
+    // share off it; each miss adds a dose of gloom, each hit clears some,
+    // and it drains slowly on its own. Nothing judged for ROAD_MOOD_IDLE
+    // seconds (free play, no detector): heat settles to 0, gloom drains.
     const ROAD_MOOD_IDLE = 4;             // s without a verdict = not being judged
     const ROAD_MOOD_RUN_FULL = 24;        // s of clean play for full heat on its own
     const ROAD_MOOD_HEAT_UP = 1.5, ROAD_MOOD_HEAT_DOWN = 0.8;   // easing time constants (s)
-    const ROAD_MOOD_GLOOM_MISS = 0.35;    // gloom per second while a miss is on screen
-    const ROAD_MOOD_GLOOM_HIT = 0.3;      // cleared per second while a hit is on screen
-    const ROAD_MOOD_GLOOM_CALM = 0.08;    // cleared per second otherwise
+    const ROAD_MOOD_HEAT_MISS_CUT = 0.35; // each miss takes this share of the heat at once
+    const ROAD_MOOD_GLOOM_MISS = 0.13;    // gloom per missed note (about 5 in a row brings rain)
+    const ROAD_MOOD_GLOOM_HIT = 0.07;     // cleared per hit note
+    const ROAD_MOOD_GLOOM_DRAIN = 0.04;   // cleared per second of play regardless
+    const ROAD_MOOD_MAX_EVENTS = 16;      // per step (a frame after a stall)
     function _roadMakeMood() {
         return { heat: 0, gloom: 0, run: 0, quiet: ROAD_MOOD_IDLE };
     }
@@ -3507,28 +3512,37 @@
         m.heat = 0; m.gloom = 0; m.run = 0; m.quiet = ROAD_MOOD_IDLE;
         return m;
     }
-    function _roadMoodStep(m, dt, hit, miss, mult) {
-        if (!m || !(dt > 0)) return m;
+    function _roadMoodStep(m, dt, hits, misses, mult) {
+        if (!m) return m;
+        if (!(dt > 0)) dt = 0;
         if (dt > 0.1) dt = 0.1;
-        if (miss) { m.run = 0; m.quiet = 0; }
-        else if (hit) m.quiet = 0;
-        else m.quiet += dt;
+        let nh = hits > 0 ? +hits : 0, nm = misses > 0 ? +misses : 0;
+        if (nh > ROAD_MOOD_MAX_EVENTS) nh = ROAD_MOOD_MAX_EVENTS;
+        if (nm > ROAD_MOOD_MAX_EVENTS) nm = ROAD_MOOD_MAX_EVENTS;
+        if (nm > 0) {
+            m.run = 0; m.quiet = 0;
+            m.heat *= Math.pow(1 - ROAD_MOOD_HEAT_MISS_CUT, nm);
+        } else if (nh > 0) {
+            m.quiet = 0;
+        } else {
+            m.quiet += dt;
+        }
         const judged = m.quiet < ROAD_MOOD_IDLE;
         if (!judged) m.run = 0;
-        else if (!miss) m.run += dt;
+        else if (nm === 0) m.run += dt;
         let target = 0;
-        if (judged && !miss) {
+        if (judged) {
             const fromMult = mult > 1 ? (mult - 1) / 3 : 0;
             const fromRun = m.run / ROAD_MOOD_RUN_FULL;
             target = fromMult > fromRun ? fromMult : fromRun;
             if (target > 1) target = 1;
         }
-        const tau = target > m.heat ? ROAD_MOOD_HEAT_UP : ROAD_MOOD_HEAT_DOWN;
-        m.heat += (target - m.heat) * (1 - Math.exp(-dt / tau));
+        if (dt > 0) {
+            const tau = target > m.heat ? ROAD_MOOD_HEAT_UP : ROAD_MOOD_HEAT_DOWN;
+            m.heat += (target - m.heat) * (1 - Math.exp(-dt / tau));
+        }
         if (m.heat < 1e-4) m.heat = 0;
-        if (miss) m.gloom += ROAD_MOOD_GLOOM_MISS * dt;
-        else if (hit) m.gloom -= ROAD_MOOD_GLOOM_HIT * dt;
-        else m.gloom -= ROAD_MOOD_GLOOM_CALM * dt;
+        m.gloom += ROAD_MOOD_GLOOM_MISS * nm - ROAD_MOOD_GLOOM_HIT * nh - ROAD_MOOD_GLOOM_DRAIN * dt;
         m.gloom = m.gloom < 0 ? 0 : (m.gloom > 1 ? 1 : m.gloom);
         return m;
     }
@@ -3539,17 +3553,21 @@
         return u * u * (3 - 2 * u);
     }
     // Night road quality. mode 'full' / 'lite' are fixed; 'auto' starts
-    // Full and latches Lite once steady frames stay under minFps for `hold`
-    // seconds after a `warmup`. Frames of 0.099 s or more (the host clamps
-    // dt at 0.1: tab switches, pauses, one-off hitches) are ignored, so a
-    // single stall never trips it. Returns true on the frame it switches.
+    // Full and latches Lite once frames stay under minFps for `hold` seconds
+    // of play after `warmup` seconds of play. dt is the real (unclamped)
+    // frame time. Only frames while the song plays count: paused, the host
+    // throttles drawing to 10 fps on purpose. Frames over ROAD_AUTO_STALL
+    // (a tab switch, a load) are skipped; the average absorbs one-off
+    // hitches, and a machine that is steadily slow, even under 10 fps,
+    // still switches. Returns true on the frame it switches.
+    const ROAD_AUTO_STALL = 0.5;
     function _roadMakeQuality(mode) {
         const m = mode === 'full' || mode === 'lite' ? mode : 'auto';
         return { mode: m, lite: m === 'lite', warm: 0, slow: 0, ema: 0 };
     }
-    function _roadQualityStep(q, dt, warmup, minFps, hold) {
+    function _roadQualityStep(q, dt, playing, warmup, minFps, hold) {
         if (!q || q.mode !== 'auto' || q.lite) return false;
-        if (!(dt > 0) || dt >= 0.099) return false;
+        if (!playing || !(dt > 0) || dt > ROAD_AUTO_STALL) return false;
         q.warm += dt;
         q.ema = q.ema > 0 ? q.ema + (dt - q.ema) * 0.1 : dt;
         if (q.warm < warmup) return false;
@@ -3696,8 +3714,14 @@
     const ROAD_FOG_FAR_W = 800 * K, ROAD_FOG_FAR_H = 200 * K;
     const ROAD_FOG_SIDE_N = 8;                // per side
     const ROAD_FOG_SIDE_W = 260 * K, ROAD_FOG_SIDE_H = 80 * K;
-    const ROAD_FOG_SIDE_SPREAD = 330 * K;     // banks sit this far out past the hill start
-    const ROAD_FOG_SINK = 220 * K;            // side banks sink into the hills over this distance near the camera
+    const ROAD_FOG_SIDE_SPREAD = 300 * K;     // inner edges sit up to this far out past the hill start
+    const ROAD_FOG_SIDE_CLEAR = 10 * K;       // ...and never nearer the road than the hill start + this
+    // Side banks rise out of the hills ROAD_FOG_GROW before the scene fog's
+    // far end (so they never turn into fog-coloured cards) and sink back
+    // into them ROAD_FOG_NEAR_CLEAR + ROAD_FOG_SINK in front of the camera.
+    const ROAD_FOG_GROW = 200 * K;
+    const ROAD_FOG_SINK = 200 * K;
+    const ROAD_FOG_NEAR_CLEAR = 60 * K;
     const ROAD_SKY_GLOOM_CUT = 0.35;          // sky glow dims this much in full fog
     const ROAD_WIN_GLOOM_CUT = 0.6;           // windows and neon dim this much in full fog
     // City alive / dark (_roadCityLit): heat brightens the windows and makes
@@ -3712,9 +3736,15 @@
     // over the board on screen) and beyond its far end. They fall by wall
     // clock (rain keeps falling when you pause) and drift toward you with
     // the song like the rest of the scenery.
+    // Rain is additive and unfogged; each drop's colour carries its own
+    // brightness, so side drops fade out with distance before the scene
+    // fog's far end (fogged, they would turn into dark streaks against the
+    // fog banks and the sky glow).
     const ROAD_RAIN_POOL = 420;
     const ROAD_RAIN_START = 0.55, ROAD_RAIN_FULL = 0.9;
-    const ROAD_RAIN_OPACITY = 0.4;
+    const ROAD_RAIN_BRIGHT = 0.42;            // near drop brightness in full rain
+    const ROAD_RAIN_FAR_BRIGHT = 0.22;        // drops beyond the road's far end
+    const ROAD_RAIN_FADE = 300 * K;           // side drops fade out over this distance before the fog's far end
     const ROAD_RAIN_FALL = 420 * K;           // fall speed, units per second
     const ROAD_RAIN_H = 240 * K;              // drops recycle over this height above the ground
     const ROAD_RAIN_W = 0.5 * K, ROAD_RAIN_LEN = 14 * K;
@@ -3756,7 +3786,6 @@
         if (s.fogMat) {
             const fogHex = _roadMixHex(clear, ROAD_FOG_HEX, 0.5);
             s.fogMat.color.setHex(fogHex);
-            s.fogSideMat.color.setHex(fogHex);
         }
         const ground = _roadMixHex(clear, 0x000000, 0.35);
         // Vertex colours are linear; T.Color.setHex converts like material colours do.
@@ -3912,6 +3941,10 @@
         }
         if (s.quality.lite) return;
         const time = chart && Number.isFinite(chart.time) ? chart.time : 0;
+        // Camera depth in the road's frame (the root only shifts x), for
+        // the distance fades below.
+        const camZ = s.cam && s.cam.position ? s.cam.position.z : s.zNear * 0.25;
+        const fogFarD = FOG_END * 1.2;
         // Fog banks.
         const fog = s.fogAmt;
         if (fog <= 0.002) {
@@ -3919,17 +3952,21 @@
             s.fogSide.count = 0;
         } else {
             s.fogMat.opacity = ROAD_FOG_MAX * fog;
-            s.fogSideMat.opacity = ROAD_FOG_MAX * fog;
             s.fogFar.count = ROAD_FOG_FAR_N;
             const d = s.dummy, len = s.zNear - s.zFar, scroll = time * TS;
-            const sinkFrom = s.zNear - ROAD_FOG_SINK;
+            const growFrom = fogFarD * 0.95;
             for (let i = 0; i < s.fogSideN; i++) {
                 let z = s.fogSideZ[i] + scroll;
                 z = s.zFar + (((z - s.zFar) % len) + len) % len;
-                let sink = (s.zNear - z) / ROAD_FOG_SINK;   // 0 at zNear .. 1 at sinkFrom
-                sink = z < sinkFrom ? 1 : (sink < 0 ? 0 : sink);
+                const dist = camZ - z;
+                // Rise out of the hills well inside the scene fog, sink
+                // back into them before reaching the camera.
+                let k = (growFrom - dist) / ROAD_FOG_GROW;
+                const kn = (dist - ROAD_FOG_NEAR_CLEAR) / ROAD_FOG_SINK;
+                if (kn < k) k = kn;
+                k = k < 0 ? 0 : (k > 1 ? 1 : k);
                 d.position.set(s.fogSideX[i], s.groundY, z);
-                d.scale.set(s.fogSideW[i], s.fogSideH[i] * (0.4 + 0.6 * fog) * sink + 1e-4, 1);
+                d.scale.set(s.fogSideW[i], s.fogSideH[i] * (0.4 + 0.6 * fog) * k + 1e-4, 1);
                 d.updateMatrix();
                 s.fogSide.setMatrixAt(i, d.matrix);
             }
@@ -3944,22 +3981,34 @@
             s.rain.count = 0;
             return;
         }
-        s.rainMat.opacity = ROAD_RAIN_OPACITY * (0.5 + 0.5 * rain);
         const arr = s.rain.instanceMatrix.array;
+        const col = s.rain.instanceColor.array;
         const len = s.zNear - s.zFar, scroll = time * TS;
         const fall = (Number.isFinite(t) ? t : 0) * ROAD_RAIN_FALL;
         const y0 = s.groundY, H = ROAD_RAIN_H;
+        const bright = ROAD_RAIN_BRIGHT * (0.5 + 0.5 * rain);
+        const farB = ROAD_RAIN_FAR_BRIGHT * (0.5 + 0.5 * rain);
+        const fadeFrom = fogFarD * 0.9;
+        const r0 = s.rainRGB[0], g0 = s.rainRGB[1], b0 = s.rainRGB[2];
         for (let i = 0; i < nr; i++) {
             const o = i * 16;
             const ph = s.rainPhase[i] + fall;
             arr[o + 13] = y0 + H - (ph - Math.floor(ph / H) * H);
+            let a = farB;
             if (!s.rainFar[i]) {
-                let z = s.rainZ[i] + scroll;
-                arr[o + 14] = s.zFar + (((z - s.zFar) % len) + len) % len;
+                const z = s.rainZ[i] + scroll;
+                const zw = s.zFar + (((z - s.zFar) % len) + len) % len;
+                arr[o + 14] = zw;
+                let f = (fadeFrom - (camZ - zw)) / ROAD_RAIN_FADE;
+                f = f < 0 ? 0 : (f > 1 ? 1 : f);
+                a = bright * f;
             }
+            const c = i * 3;
+            col[c] = r0 * a; col[c + 1] = g0 * a; col[c + 2] = b0 * a;
         }
         s.rain.count = nr;
         s.rain.instanceMatrix.needsUpdate = true;
+        s.rain.instanceColor.needsUpdate = true;
     }
     function _roadSignLabel(sec) {
         return sec && sec.name != null ? String(sec.name).trim().toUpperCase() : '';
@@ -4599,17 +4648,17 @@
                     // Step 3: playing mood, quality level, light pools,
                     // fog banks, rain and the wet asphalt.
                     cam: settings ? settings.cam : null,
-                    mood: _roadMakeMood(), moodTime: NaN,
+                    mood: _roadMakeMood(), lastWall: 0,
                     quality: _roadMakeQuality(settings ? settings.roadQuality : undefined),
                     fogAmt: 0, rainAmt: 0, wetShown: -1, asphaltHex: 0,
                     pools: null, poolTex: null,
-                    fogFar: null, fogSide: null, fogMat: null, fogSideMat: null, fogTex: null,
+                    fogFar: null, fogSide: null, fogMat: null, fogTex: null,
                     fogSideN: ROAD_FOG_SIDE_N * 2,
                     fogSideX: new Float32Array(ROAD_FOG_SIDE_N * 2),
                     fogSideZ: new Float32Array(ROAD_FOG_SIDE_N * 2),
                     fogSideW: new Float32Array(ROAD_FOG_SIDE_N * 2),
                     fogSideH: new Float32Array(ROAD_FOG_SIDE_N * 2),
-                    rain: null, rainMat: null,
+                    rain: null, rainMat: null, rainRGB: [0, 0, 0],
                     rainZ: new Float32Array(ROAD_RAIN_POOL),
                     rainPhase: new Float32Array(ROAD_RAIN_POOL),
                     rainFar: new Uint8Array(ROAD_RAIN_POOL),
@@ -4833,20 +4882,19 @@
                 root.add(s.pools);
 
                 // Fog banks: cards facing the camera, base sunk a little into
-                // the ground. Far banks are fixed between the road's end and
-                // the skyline (fog: false, like the skyline); side banks sit
-                // over the hills, scroll with the song and take the scene fog.
+                // the ground, unfogged (fog: false, like the skyline). Far
+                // banks are fixed between the road's end and the skyline;
+                // side banks sit over the hills, wholly outside the posts,
+                // scroll with the song and rise / sink with distance
+                // (_bgRoadUpdateWeather).
                 s.fogTex = _roadFogTexture();
                 s.fogMat = mat(new T.MeshBasicMaterial({
                     map: s.fogTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, fog: false,
                 }));
-                s.fogSideMat = mat(new T.MeshBasicMaterial({
-                    map: s.fogTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false,
-                }));
                 const fogGeo = geo(new T.PlaneGeometry(1, 1));
                 fogGeo.translate(0, 0.35, 0);    // bottom 15% of the card below the ground line
                 s.fogFar = new T.InstancedMesh(fogGeo, s.fogMat, ROAD_FOG_FAR_N);
-                s.fogSide = new T.InstancedMesh(fogGeo, s.fogSideMat, s.fogSideN);
+                s.fogSide = new T.InstancedMesh(fogGeo, s.fogMat, s.fogSideN);
                 s.fogSide.instanceMatrix.setUsage(T.DynamicDrawUsage);
                 {
                     const d = s.dummy, gap = s.skylineZ - zFar;
@@ -4859,12 +4907,15 @@
                         d.updateMatrix();
                         s.fogFar.setMatrixAt(i, d.matrix);
                     }
-                    const fogX0 = hillStart + 40 * K;
+                    // Placed by the inner edge, so no card ever reaches
+                    // the hill start (and so the posts, sidewalk or board).
+                    const fogX0 = hillStart + ROAD_FOG_SIDE_CLEAR;
                     for (let i = 0; i < s.fogSideN; i++) {
                         const side = i % 2 === 0 ? -1 : 1, k = i >> 1;
-                        s.fogSideX[i] = side * (fogX0 + ROAD_FOG_SIDE_SPREAD * _roadHash01(i, 31, 5));
+                        const w = ROAD_FOG_SIDE_W * (0.7 + 0.6 * _roadHash01(i, 33, 5));
+                        s.fogSideW[i] = w;
+                        s.fogSideX[i] = side * (fogX0 + w / 2 + ROAD_FOG_SIDE_SPREAD * _roadHash01(i, 31, 5));
                         s.fogSideZ[i] = zFar + len * ((k + _roadHash01(i, 32, 5) * 0.8) / ROAD_FOG_SIDE_N);
-                        s.fogSideW[i] = ROAD_FOG_SIDE_W * (0.7 + 0.6 * _roadHash01(i, 33, 5));
                         s.fogSideH[i] = ROAD_FOG_SIDE_H * (0.7 + 0.6 * _roadHash01(i, 34, 5));
                     }
                     d.position.set(0, 0, 0);
@@ -4878,13 +4929,20 @@
 
                 // Rain: thin vertical streaks; scale and x are fixed per drop,
                 // update() rewrites only the translation's y (and z for side
-                // drops, which drift with the song).
+                // drops, which drift with the song) and each drop's
+                // brightness (additive, unfogged: see ROAD_RAIN_FADE).
                 s.rainMat = mat(new T.MeshBasicMaterial({
-                    color: ROAD_RAIN_HEX, transparent: true, opacity: 0, depthWrite: false,
+                    color: 0xffffff, transparent: true, depthWrite: false, fog: false,
+                    blending: T.AdditiveBlending,
                 }));
                 const rainGeo = geo(new T.PlaneGeometry(1, 1));
                 s.rain = new T.InstancedMesh(rainGeo, s.rainMat, ROAD_RAIN_POOL);
                 s.rain.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                s.tmpColor.setRGB(0, 0, 0);
+                for (let i = 0; i < ROAD_RAIN_POOL; i++) s.rain.setColorAt(i, s.tmpColor);
+                s.rain.instanceColor.setUsage(T.DynamicDrawUsage);
+                s.tmpColor.setHex(ROAD_RAIN_HEX);   // linear rgb, like the material colours
+                s.rainRGB[0] = s.tmpColor.r; s.rainRGB[1] = s.tmpColor.g; s.rainRGB[2] = s.tmpColor.b;
                 {
                     const arr = s.rain.instanceMatrix.array;
                     const xIn = halfW + ROAD_RAIN_CLEAR;
@@ -4919,17 +4977,24 @@
             },
             update(s, bands, dt, t, chart) {
                 if (!s || !s.posts) return;
-                if (_roadQualityStep(s.quality, dt, ROAD_AUTO_WARMUP, ROAD_AUTO_MIN_FPS, ROAD_AUTO_HOLD)) {
+                // Is the song playing? The host's flag, not a change in the
+                // raw clock (that only ticks ~60 times a second, so on a
+                // high-refresh screen many playing frames would look paused).
+                const playing = !!(chart && chart.isReady && chart.playing !== false);
+                // Real frame time for Auto (dt is clamped at 0.1 by the host).
+                const wall = Number.isFinite(t) ? t : 0;
+                const rawDt = s.lastWall > 0 ? wall - s.lastWall : 0;
+                s.lastWall = wall;
+                if (_roadQualityStep(s.quality, rawDt, playing, ROAD_AUTO_WARMUP, ROAD_AUTO_MIN_FPS, ROAD_AUTO_HOLD)) {
                     _bgRoadEnterLite(s, true);
                 }
                 const lite = s.quality.lite;
-                // Mood moves only while song time does: a paused miss on
-                // screen must not keep piling up gloom.
-                const ctime = chart && Number.isFinite(chart.time) ? chart.time : NaN;
-                if (ctime === ctime && ctime !== s.moodTime) {
-                    _roadMoodStep(s.mood, dt, !!chart.hit, !!chart.miss, chart.mult > 1 ? chart.mult : 1);
+                // Mood: a jump back to the song's start begins a clear night;
+                // the clocks only run while playing, judged notes always count.
+                if (chart && chart.restart) _roadResetMood(s.mood);
+                if (chart) {
+                    _roadMoodStep(s.mood, playing ? dt : 0, chart.hits, chart.misses, chart.mult > 1 ? chart.mult : 1);
                 }
-                s.moodTime = ctime;
                 s.fogAmt = _roadSmooth(ROAD_FOG_START, ROAD_FOG_FULL, s.mood.gloom);
                 s.rainAmt = _roadSmooth(ROAD_RAIN_START, ROAD_RAIN_FULL, s.mood.gloom);
                 _bgRoadUpdateSkyline(s, bands, chart);   // first: a new song re-seeds the hills too
@@ -5076,7 +5141,7 @@
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
                 s.pools = s.fogFar = s.fogSide = s.rain = null;
-                s.fogMat = s.fogSideMat = s.rainMat = s.poolTex = s.fogTex = null;
+                s.fogMat = s.rainMat = s.poolTex = s.fogTex = null;
             },
         },
         // Venue visualization — generated small-club raster bg plate
@@ -6596,11 +6661,20 @@
             time: 0, beats: null, sections: null, isReady: false, lowerBoundTime: null,
             anchors: null, xFret: null,   // road lanes: chart anchors + this instance's lefty-aware fret x
             songKey: null, duration: 0,   // road: per-song seed + progress (windows, sky glow)
-            hit: false, miss: false, mult: 1,   // road mood: this panel's verdicts this frame + multiplier
+            // Road mood: notes this panel's scorer judged since the last
+            // frame, its multiplier, whether the song is playing, and a
+            // one-frame restart flag (a jump back to the song's start).
+            hits: 0, misses: 0, mult: 1, playing: true, restart: false,
         };
-        // Road mood inputs, set while this panel draws its gems (per-panel
-        // note-state verdicts) and from this panel's scorer fx events.
-        let _bgHitSeen = false, _bgMissSeen = false, _bgMult = 1;
+        // Road mood inputs. drawNote counts each judged note once: keys are
+        // round(t * 1e4) * 16 + string (15 = the whole chord), the value
+        // remembers which verdicts were already counted (1 hit, 2 miss).
+        // Pruned past 5 s behind the hit line; cleared on a new song or a
+        // backward seek. Only kept while the road is the mounted style.
+        let _bgHits = 0, _bgMisses = 0, _bgMult = 1, _bgPrevSongT = NaN;
+        const _bgVerdictSeen = new Map();
+        let _bgPruneBefore = 0;
+        const _bgPruneVerdict = (v, k) => { if (k < _bgPruneBefore) _bgVerdictSeen.delete(k); };
 
         // Notedetect feedback (issue #9). Per-panel mark queues populated
         // by two event sources: (a) legacy `notedetect:hit` /
@@ -16212,13 +16286,28 @@
                 if (now >= susEnd) _susVerdictLatch.delete(_sk);
             }
 
-            // Night road mood: note this panel's verdict here, before the
+            // Night road mood: count this panel's verdict here, before the
             // linger / body gates below. A scorer's verdict lands ~0.4 s
             // after the strike, when most gems are already past their
-            // 0.1 s linger and skip the body block, so a write inside it
-            // almost never fired and the road's weather never moved.
-            if (_ndState === 'miss') { _bgMissSeen = true; _bgMult = 1; }
-            else if (_ndGood) _bgHitSeen = true;
+            // 0.1 s linger and skip the body block, so a count inside it
+            // almost never fired and the road's weather never moved. Each
+            // note (a chord: the chord) counts once per verdict kind, so a
+            // missed sustain re-latched every frame is still one miss.
+            if (bgMountedStyleId === 'road' && (_ndState === 'miss' || _ndGood)) {
+                const _bgK = Math.round(n.t * 1e4) * 16 + (fromChord ? 15 : (n.s & 15));
+                const _bgV = _bgVerdictSeen.get(_bgK) || 0;
+                const _bgBit = _ndState === 'miss' ? 2 : 1;
+                if (!(_bgV & _bgBit)) {
+                    _bgVerdictSeen.set(_bgK, _bgV | _bgBit);
+                    if (_bgBit === 2) {
+                        _bgMisses++;
+                    } else {
+                        _bgHits++;
+                        // The scorer's own multiplier rides on its hit verdicts.
+                        if (_ndCsIsObj && _ndCs && Number.isFinite(_ndCs.mult)) _bgMult = _ndCs.mult;
+                    }
+                }
+            }
 
             const _showHit = (_ndState === 'miss') ? false
                 : (_ndState ? _ndGood
@@ -17950,6 +18039,9 @@
             // throttle still saves the GPU as #654 intended.
             needsContinuousFrames() {
                 if (!_isReady || _ctxLost) return false;
+                // Night road rain falls by wall clock, paused too; at the
+                // host's 10 fps paused throttle it would strobe.
+                if (bgMountedStyleId === 'road' && bgState && bgState.rain && bgState.rain.count > 0) return true;
                 for (const v of _venueCrowdVideos) {
                     if (v && !v.paused && !v.ended && v.readyState >= 2) return true;
                 }
@@ -18074,14 +18166,35 @@
                             _bgSongKey = bsi ? String(bsi.artist || '') + '\0' + String(bsi.title || '')
                                 + '\0' + String(bsi.arrangement_index ?? '') : '';
                             _bgMult = 1;
+                            _bgVerdictSeen.clear();
                         }
                         _bgChart.songKey = _bgSongKey;
                         _bgChart.duration = bundle.songInfo ? bundle.songInfo.duration : 0;
-                        _bgChart.hit = _bgHitSeen;
-                        _bgChart.miss = _bgMissSeen;
+                        // Road mood. A backward seek (a rewind, a practice
+                        // loop, the Restart button) makes the scorer recount
+                        // its streak without an fx event, and the notes
+                        // ahead must count again. Only a jump back to the
+                        // start of the song also clears the weather.
+                        const _bgT = bundle.currentTime;
+                        const _bgBack = Number.isFinite(_bgT) && _bgT < _bgPrevSongT - 0.75;
+                        _bgChart.restart = _bgBack && _bgT < 2;
+                        if (_bgBack) {
+                            _bgVerdictSeen.clear();
+                            _bgMult = 1;
+                            _bgHits = 0;
+                            _bgMisses = 0;
+                        }
+                        _bgPrevSongT = _bgT;
+                        if (_bgVerdictSeen.size > 0 && Number.isFinite(_bgT)) {
+                            _bgPruneBefore = Math.round((_bgT - 5) * 1e4) * 16;
+                            _bgVerdictSeen.forEach(_bgPruneVerdict);
+                        }
+                        _bgChart.hits = _bgHits;
+                        _bgChart.misses = _bgMisses;
                         _bgChart.mult = _bgMult;
-                        _bgHitSeen = false;
-                        _bgMissSeen = false;
+                        _bgChart.playing = bundle.isPlaying === undefined ? true : !!bundle.isPlaying;
+                        _bgHits = 0;
+                        _bgMisses = 0;
                         try { style.update(bgState, bands, dt, nowMs / 1000, _bgChart); }
                         catch (e) { console.error('[3D-Hwy] bg update threw', _bgEffectiveStyleId(), e); }
                     }

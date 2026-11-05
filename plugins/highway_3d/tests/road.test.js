@@ -553,15 +553,23 @@ test('_roadPostPattern: no bar lines falls back to the beat index; skip <= 1 kee
 
 // --- step 3: playing mood and quality level ---------------------------------
 
-// Run the mood for `secs` at 60 fps; play(t) -> { hit, miss, mult }.
-function runMood(r, m, secs, play) {
-    const dt = 1 / 60;
-    for (let f = 0; f < Math.round(secs * 60); f++) {
-        const p = play ? play(f * dt) : {};
-        r._roadMoodStep(m, dt, !!p.hit, !!p.miss, p.mult || 1);
+// Run the mood for `secs` at `fps`; notes(t0, t1) -> { hits, misses, mult }
+// for the notes judged in (t0, t1]. Events are per note, not per frame.
+function runMood(r, m, secs, notes, fps = 60) {
+    const dt = 1 / fps;
+    const n = Math.round(secs * fps);
+    for (let f = 0; f < n; f++) {
+        const p = notes ? notes(f * dt, (f + 1) * dt) : {};
+        r._roadMoodStep(m, dt, p.hits || 0, p.misses || 0, p.mult || 1);
     }
     return m;
 }
+// How many ticks of a `rate` per second fall in (t0, t1].
+function ticks(t0, t1, rate) {
+    return Math.floor(t1 * rate + 1e-9) - Math.floor(t0 * rate + 1e-9);
+}
+const hitsAt = (rate, mult = 1) => (t0, t1) => ({ hits: ticks(t0, t1, rate), mult });
+const missesAt = (rate) => (t0, t1) => ({ misses: ticks(t0, t1, rate) });
 
 test('_roadMoodStep: free play (no verdicts) stays a calm clear night', () => {
     const r = load();
@@ -572,37 +580,79 @@ test('_roadMoodStep: free play (no verdicts) stays a calm clear night', () => {
 
 test('_roadMoodStep: a run of hits warms up, a high multiplier warms faster', () => {
     const r = load();
-    const hits = (t) => ({ hit: (t * 4) % 1 < 0.4 });   // four notes a second, lit 0.1 s each
-    const run = runMood(r, r._roadMakeMood(), 8, hits);
+    const run = runMood(r, r._roadMakeMood(), 8, hitsAt(4));
     assert.ok(run.heat > 0.2 && run.heat < 0.45, `8 s of clean play is warm, not hot (${run.heat})`);
-    const long = runMood(r, r._roadMakeMood(), 30, hits);
+    const long = runMood(r, r._roadMakeMood(), 30, hitsAt(4));
     assert.ok(long.heat > 0.9, `30 s of clean play is hot (${long.heat})`);
-    const x4 = runMood(r, r._roadMakeMood(), 8, (t) => ({ ...hits(t), mult: 4 }));
+    const x4 = runMood(r, r._roadMakeMood(), 8, hitsAt(4, 4));
     assert.ok(x4.heat > 0.95, `a 4x multiplier is hot within seconds (${x4.heat})`);
     assert.equal(x4.gloom, 0);
 });
 
-test('_roadMoodStep: a miss cools the heat; misses bring gloom that hits clear', () => {
+test('_roadMoodStep: each miss cuts the heat; a few misses in a row bring the weather', () => {
     const r = load();
-    const m = runMood(r, r._roadMakeMood(), 10, () => ({ hit: true, mult: 4 }));
-    runMood(r, m, 0.5, () => ({ miss: true }));
-    assert.ok(m.heat < 0.6, `heat drops fast on a miss (${m.heat})`);
+    const m = runMood(r, r._roadMakeMood(), 10, hitsAt(4, 4));
+    const hot = m.heat;
+    r._roadMoodStep(m, 1 / 60, 0, 1, 1);
+    assert.ok(m.heat < hot * 0.7, `one miss knocks the heat down at once (${hot} -> ${m.heat})`);
     assert.equal(m.run, 0);
-    runMood(r, m, 3, () => ({ miss: true }));
-    assert.ok(m.gloom > 0.9, `3.5 s of misses on screen is deep gloom (${m.gloom})`);
-    assert.ok(m.heat < 0.05);
-    runMood(r, m, 4, () => ({ hit: true }));
-    assert.ok(m.gloom < 0.1, `four seconds of hits clear it (${m.gloom})`);
+    assert.ok(Math.abs(m.gloom - 0.13) < 1e-3, `one miss is one dose of gloom (${m.gloom})`);
+    // Four more misses, one every 0.25 s: five in a row is rain (gloom >= 0.55).
+    runMood(r, m, 1, missesAt(4));
+    assert.ok(m.gloom >= 0.55 && m.gloom < 0.7, `five misses in a row bring rain (${m.gloom})`);
+    assert.ok(m.heat < 0.15, `and leave no heat (${m.heat})`);
+    // Three misses: fog (from gloom 0.25), no rain.
+    const three = r._roadMakeMood();
+    runMood(r, three, 0.75, missesAt(4));
+    assert.ok(three.gloom > 0.3 && three.gloom < 0.55, `three misses: fog, no rain (${three.gloom})`);
+});
+
+test('_roadMoodStep: hits clear the gloom; it also drains slowly on its own', () => {
+    const r = load();
+    const m = r._roadMakeMood();
+    runMood(r, m, 2, missesAt(4));           // eight misses: deep gloom
+    assert.ok(m.gloom > 0.9, `eight misses is deep gloom (${m.gloom})`);
+    runMood(r, m, 3.5, hitsAt(4));           // fourteen hits
+    assert.ok(m.gloom < 0.1, `a few seconds of hits clear it (${m.gloom})`);
     const g = r._roadMakeMood();
-    runMood(r, g, 2, () => ({ miss: true }));
+    r._roadMoodStep(g, 1 / 60, 0, 3, 1);
     const before = g.gloom;
     runMood(r, g, 5);
     assert.ok(g.gloom < before && g.gloom > 0, 'gloom drains slowly on its own');
 });
 
+test('_roadMoodStep: the same playing gives the same mood at 30, 60 and 240 fps', () => {
+    // Four notes a second, one in eight missed: the result must not depend
+    // on how many frames the screen draws.
+    const r = load();
+    const notes = (t0, t1) => {
+        const all = ticks(t0, t1, 4), miss = ticks(t0, t1, 0.5);
+        return { hits: all - miss, misses: miss, mult: 2 };
+    };
+    const at = (fps) => runMood(r, r._roadMakeMood(), 12, notes, fps);
+    const a = at(30), b = at(60), c = at(240);
+    for (const [x, y] of [[a, b], [b, c]]) {
+        assert.ok(Math.abs(x.heat - y.heat) < 0.03, `heat ${x.heat} vs ${y.heat}`);
+        assert.ok(Math.abs(x.gloom - y.gloom) < 0.03, `gloom ${x.gloom} vs ${y.gloom}`);
+    }
+});
+
+test('_roadMoodStep: paused (dt 0), notes still count but the clocks stand still', () => {
+    const r = load();
+    const m = runMood(r, r._roadMakeMood(), 10, hitsAt(4));
+    const heat = m.heat, quiet = m.quiet, run = m.run;
+    for (let i = 0; i < 600; i++) r._roadMoodStep(m, 0, 0, 0, 1);   // ten seconds paused
+    assert.equal(m.heat, heat, 'heat holds while paused');
+    assert.equal(m.quiet, quiet, 'not "idle" just because the song is paused');
+    assert.equal(m.run, run);
+    r._roadMoodStep(m, 0, 0, 1, 1);           // a verdict landing right after the pause
+    assert.ok(m.gloom > 0.1, 'a miss judged while paused still counts');
+    assert.equal(m.run, 0);
+});
+
 test('_roadMoodStep: after ROAD_MOOD_IDLE s without verdicts the heat settles', () => {
     const r = load();
-    const m = runMood(r, r._roadMakeMood(), 30, () => ({ hit: true }));
+    const m = runMood(r, r._roadMakeMood(), 30, hitsAt(4));
     assert.ok(m.heat > 0.9);
     runMood(r, m, r.ROAD_MOOD_IDLE - 0.5);
     assert.ok(m.heat > 0.9, 'a short gap between notes keeps the heat');
@@ -611,14 +661,17 @@ test('_roadMoodStep: after ROAD_MOOD_IDLE s without verdicts the heat settles', 
     assert.equal(m.run, 0);
 });
 
-test('_roadMoodStep: bad dt is ignored, big dt is clamped, values stay in 0..1', () => {
+test('_roadMoodStep: bad dt and counts are safe, big steps are clamped, values stay in 0..1', () => {
     const r = load();
     const m = r._roadMakeMood();
-    for (const dt of [0, -1, NaN, undefined]) r._roadMoodStep(m, dt, false, true, 1);
+    for (const dt of [0, -1, NaN, undefined]) r._roadMoodStep(m, dt, 0, 0, 1);
     assert.deepEqual({ ...m }, { ...r._roadMakeMood() });
-    for (let i = 0; i < 100; i++) r._roadMoodStep(m, 5, false, true, 1);
-    assert.equal(m.gloom, 1);
-    for (let i = 0; i < 100; i++) r._roadMoodStep(m, 5, true, false, 99);
+    for (const bad of [-3, NaN, undefined, null, 'x']) r._roadMoodStep(m, 1 / 60, bad, bad, 1);
+    assert.equal(m.gloom, 0);
+    assert.ok(Number.isFinite(m.heat) && Number.isFinite(m.run) && Number.isFinite(m.quiet));
+    r._roadMoodStep(m, 5, 0, 1e6, 1);
+    assert.equal(m.gloom, 1, 'a flood of misses saturates, no overflow');
+    for (let i = 0; i < 100; i++) r._roadMoodStep(m, 5, 1e6, 0, 99);
     assert.ok(m.heat <= 1 && m.heat > 0.9);
     assert.equal(m.gloom, 0);
     r._roadResetMood(m);
@@ -638,12 +691,12 @@ test('_roadSmooth: 0 below, 1 above, monotonic between', () => {
     }
 });
 
-// Feed the quality watcher `secs` of frames at `fps`.
-function runQuality(r, q, secs, fps) {
+// Feed the quality watcher `secs` of frames at `fps` (playing unless told).
+function runQuality(r, q, secs, fps, playing = true) {
     let switched = 0;
     const dt = 1 / fps;
     for (let f = 0; f < Math.round(secs * fps); f++) {
-        if (r._roadQualityStep(q, dt, 3, 50, 4)) switched++;
+        if (r._roadQualityStep(q, dt, playing, 3, 50, 4)) switched++;
     }
     return switched;
 }
@@ -659,7 +712,16 @@ test('_roadQualityStep: Auto latches Lite once frames stay under 50 fps', () => 
     assert.equal(q.lite, true);
 });
 
-test('_roadQualityStep: steady 60 fps, short dips and clamped frames keep Full', () => {
+test('_roadQualityStep: a machine steadily under 10 fps switches too', () => {
+    const r = load();
+    for (const fps of [8, 4]) {
+        const q = r._roadMakeQuality('auto');
+        assert.equal(runQuality(r, q, 12, fps), 1, `${fps} fps switches`);
+        assert.equal(q.lite, true);
+    }
+});
+
+test('_roadQualityStep: steady 60 fps, short dips, pauses and stalls keep Full', () => {
     const r = load();
     const q = r._roadMakeQuality('auto');
     assert.equal(runQuality(r, q, 20, 60), 0);
@@ -668,8 +730,12 @@ test('_roadQualityStep: steady 60 fps, short dips and clamped frames keep Full',
         runQuality(r, q, 3, 60);
     }
     assert.equal(q.lite, false, 'dips shorter than the hold do not switch');
-    for (let i = 0; i < 600; i++) r._roadQualityStep(q, 0.1, 3, 50, 4);   // tab hidden / paused
-    assert.equal(q.lite, false, 'clamped 0.1 s frames are ignored');
+    assert.equal(runQuality(r, q, 60, 10, false), 0, 'the host draws paused at 10 fps on purpose');
+    for (let i = 0; i < 100; i++) {
+        r._roadQualityStep(q, 0.8, true, 3, 50, 4);   // tab switches, loads
+        runQuality(r, q, 0.5, 60);
+    }
+    assert.equal(q.lite, false, 'stalls over half a second are skipped');
 });
 
 test('_roadQualityStep: Full and Lite are fixed; unknown modes mean Auto', () => {
@@ -679,38 +745,47 @@ test('_roadQualityStep: Full and Lite are fixed; unknown modes mean Auto', () =>
     assert.equal(full.lite, false);
     const lite = r._roadMakeQuality('lite');
     assert.equal(lite.lite, true);
-    assert.equal(r._roadQualityStep(lite, 1 / 60, 3, 50, 4), false);
+    assert.equal(r._roadQualityStep(lite, 1 / 60, true, 3, 50, 4), false);
     assert.equal(r._roadMakeQuality('bogus').mode, 'auto');
     assert.equal(r._roadMakeQuality(undefined).mode, 'auto');
 });
 
 // --- renderer wiring: verdicts must reach the road's mood ------------------
 
-test('drawNote records the road mood before the linger / body gates', () => {
+test('drawNote counts the road mood before the linger / body gates, once per note', () => {
     // A scorer's verdict lands ~0.4 s after the strike, when most gems are
     // past their 0.1 s linger and skip the body block. The first version
-    // wrote the mood flags inside that block, so they almost never fired and
-    // the weather never moved in a real song. Pin the write to the verdict
+    // wrote the mood inside that block, so it almost never fired and the
+    // weather never moved in a real song. Pin the count to the verdict
     // resolution, ahead of every gate that depends on _overLinger.
     const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
     const fn = src.indexOf('        function drawNote(');
     assert.ok(fn > 0, 'drawNote not found');
     const end = src.indexOf('\n        function ', fn + 10);
     const body = src.slice(fn, end);
-    const write = body.indexOf("if (_ndState === 'miss') { _bgMissSeen = true;");
-    assert.ok(write > 0, 'mood write missing from drawNote');
-    assert.equal(src.split('_bgMissSeen = true').length, 2, 'one miss write only');
-    assert.match(body.slice(write, write + 120), /else if \(_ndGood\) _bgHitSeen = true;/);
+    const write = body.indexOf("if (bgMountedStyleId === 'road' && (_ndState === 'miss' || _ndGood)) {");
+    assert.ok(write > 0, 'mood count missing from drawNote');
+    const block = body.slice(write, write + 900);
+    // One key per note (per chord for chord notes), one count per verdict kind:
+    // a missed sustain the latch re-reports every frame is still one miss.
+    assert.match(block, /const _bgK = Math\.round\(n\.t \* 1e4\) \* 16 \+ \(fromChord \? 15 : \(n\.s & 15\)\);/);
+    assert.match(block, /if \(!\(_bgV & _bgBit\)\) \{\n\s*_bgVerdictSeen\.set\(_bgK, _bgV \| _bgBit\);/);
+    assert.equal(src.split('_bgMisses++').length, 2, 'one miss count only');
+    assert.equal(src.split('_bgHits++').length, 2, 'one hit count only');
     const latch = body.indexOf('if (now >= susEnd) _susVerdictLatch.delete(_sk);');
-    assert.ok(latch > 0 && latch < write, 'write comes after the sustain latch has resolved the verdict');
+    assert.ok(latch > 0 && latch < write, 'count comes after the sustain latch has resolved the verdict');
     const gate = body.indexOf('if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {');
-    assert.ok(gate > write, 'write comes before the linger-gated body block');
-    // Nothing between the verdict probe and the write may return early.
+    assert.ok(gate > write, 'count comes before the linger-gated body block');
+    // Nothing between the verdict probe and the count may return early.
     const probe = body.indexOf('if (_ndGetNoteState) {');
     assert.ok(probe > 0 && probe < write);
-    assert.equal(/\breturn\b/.test(body.slice(probe, write)), false, 'no early return between probe and write');
-    // The chart object hands the flags to the style each frame, then clears them.
-    assert.match(src, /_bgChart\.hit = _bgHitSeen;\n\s*_bgChart\.miss = _bgMissSeen;\n\s*_bgChart\.mult = _bgMult;\n\s*_bgHitSeen = false;\n\s*_bgMissSeen = false;/);
+    assert.equal(/\breturn\b/.test(body.slice(probe, write)), false, 'no early return between probe and count');
+    // The chart object hands the counts to the style each frame, then zeroes them.
+    assert.match(src, /_bgChart\.hits = _bgHits;\n\s*_bgChart\.misses = _bgMisses;\n\s*_bgChart\.mult = _bgMult;\n\s*_bgChart\.playing = [^\n]*\n\s*_bgHits = 0;\n\s*_bgMisses = 0;\n\s*try \{ style\.update\(/);
+    // A backward seek forgets the counted notes so replayed notes count again.
+    assert.match(src, /if \(_bgBack\) \{\n\s*_bgVerdictSeen\.clear\(\);\n\s*_bgMult = 1;/);
+    // Rain falls by wall clock, so the road asks for full-rate frames while it rains.
+    assert.match(src, /needsContinuousFrames\(\) \{[\s\S]{0,600}?bgMountedStyleId === 'road' && bgState && bgState\.rain && bgState\.rain\.count > 0\) return true;/);
 });
 
 // --- city lights follow the playing ------------------------------------------
