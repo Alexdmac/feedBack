@@ -13,14 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Night road background (3D Highway).** A new "Night road (procedural)"
-  background style draws a dark freeway under and beside the fretboard, with
-  a street light passing the hit line on every beat and a taller, brighter one
-  on every bar line. The carriageway runs under the note track, with the
-  barriers and lights at the board edges. Every fret position is drawn as a
+  background style draws a dark city road under the fretboard, with a curb and
+  sidewalk either side and street lights that pass the hit line on the beat
+  (skipping every third beat in the bar) and a taller, brighter one on every
+  bar line. The carriageway runs under the note track, with the curbs at the
+  board edges. Every fret position is drawn as a
   road lane with dashed edges (the current one brighter), and each change of
   fret position is a lane change, drawn as a short diagonal between the old
-  and new lanes. The lights, lane dashes and a thin seam across the road on
-  every beat move with the song, so pausing, seeking and practice speed carry
+  and new lanes. The lights, lane dashes, sidewalk joints and a thin seam across the
+  road on every beat move with the song, so pausing, seeking and practice speed carry
   them too. A green overhead sign with the section name passes over the road
   as each section begins, fading as it nears the hit line so it never sits
   solid behind the notes, low hills seeded from the song roll past either

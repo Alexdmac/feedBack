@@ -34,6 +34,7 @@ function load() {
         '\nthis.ROAD_POST_POOL = ROAD_POST_POOL;' +
         '\nthis._roadMakeSlots = _roadMakeSlots;' +
         '\nthis._roadPlacePosts = _roadPlacePosts;' +
+        '\nthis._roadPostPattern = _roadPostPattern;' +
         '\nthis._roadDashPhase = _roadDashPhase;' +
         '\nthis._roadMakeLaneBuf = _roadMakeLaneBuf;' +
         '\nthis._roadBuildLanes = _roadBuildLanes;' +
@@ -472,4 +473,70 @@ test('_roadWindowCount: 0 at the start, all at the end, monotonic', () => {
         prev = n;
     }
     assert.ok(r._roadWindowCount(2 / 3, 800) >= 0.8 * 800, 'most are lit by the last third');
+});
+
+// --- street lights on two of every three beats (counted from each bar line) ---
+
+function postPattern(r, beats, now, skip = 3) {
+    const slots = r._roadMakeSlots(64);
+    const n = r._roadPlacePosts(beats, now, TS, BEHIND, AHEAD, lowerBoundTime, slots, 64);
+    const keep = new Array(64).fill(null);
+    const kept = r._roadPostPattern(beats, now, BEHIND, lowerBoundTime, n, skip, keep);
+    // Map each placed slot back to its beat time (z = -(time - now) * TS).
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ time: Math.round((now - slots[i].z / TS) * 1000) / 1000, isBar: slots[i].isBar, keep: keep[i] });
+    return { n, kept, out };
+}
+
+test('_roadPostPattern drops beat 3 of every 4/4 bar and keeps every bar line', () => {
+    const r = load();
+    const beats = makeBeats(200);
+    const { n, kept, out } = postPattern(r, beats, 20.1);
+    assert.ok(n > 0);
+    assert.equal(kept, out.filter((o) => o.keep).length);
+    for (const o of out) {
+        const inBar = Math.round(o.time / 0.5) % 4;
+        assert.equal(o.keep, inBar !== 2, `beat at ${o.time} (in-bar ${inBar})`);
+        if (o.isBar) assert.ok(o.keep, 'bar lines always keep their post');
+    }
+});
+
+test('_roadPostPattern drops a third in 3/4 and two of six in 6/8', () => {
+    const r = load();
+    for (const per of [3, 6]) {
+        const beats = [];
+        for (let i = 0; i < 300; i++) beats.push({ time: i * 0.4, measure: i % per === 0 ? i / per + 1 : -1 });
+        const { out } = postPattern(r, beats, 40.05);
+        for (const o of out) {
+            const inBar = Math.round(o.time / 0.4) % per;
+            assert.equal(o.keep, inBar % 3 !== 2, `${per} beats/bar, beat at ${o.time}`);
+        }
+        const keptShare = out.filter((o) => o.keep).length / out.length;
+        assert.ok(Math.abs(keptShare - 2 / 3) < 0.1, `${per}/bar keeps about two thirds (${keptShare})`);
+    }
+});
+
+test('_roadPostPattern: a beat keeps its verdict while the window scrolls', () => {
+    const r = load();
+    const beats = makeBeats(400);
+    const verdict = new Map();
+    for (let f = 0; f < 600; f++) {
+        const { out } = postPattern(r, beats, 30 + f / 60);
+        for (const o of out) {
+            if (verdict.has(o.time)) assert.equal(verdict.get(o.time), o.keep, `beat ${o.time} flipped at frame ${f}`);
+            else verdict.set(o.time, o.keep);
+        }
+    }
+});
+
+test('_roadPostPattern: no bar lines falls back to the beat index; skip <= 1 keeps all', () => {
+    const r = load();
+    const beats = [];
+    for (let i = 0; i < 100; i++) beats.push({ time: i * 0.5, measure: -1 });
+    const { out } = postPattern(r, beats, 10.2);
+    for (const o of out) assert.equal(o.keep, Math.round(o.time / 0.5) % 3 !== 2, `beat at ${o.time}`);
+    const all = postPattern(r, makeBeats(100), 10.2, 1);
+    assert.equal(all.kept, all.n);
+    assert.equal(r._roadPostPattern(null, 0, BEHIND, lowerBoundTime, 5, 3, []), 0);
+    assert.equal(r._roadPostPattern(makeBeats(10), 0, BEHIND, lowerBoundTime, 0, 3, []), 0);
 });

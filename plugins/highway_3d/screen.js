@@ -3202,6 +3202,37 @@
         }
         return n;
     }
+    // Which placed beats get a street light. Posts skip every skipEvery-th
+    // beat counted from each bar line (in-bar index k with
+    // k % skipEvery === skipEvery - 1), so a bar line always keeps its tall
+    // post and the pattern repeats bar by bar: 4/4 and 3/4 drop beat 3, 6/8
+    // drops beats 3 and 6. Fills keep[0..n) for the n slots _roadPlacePosts
+    // just filled from the same beats / now / behind (they are consecutive
+    // beats), and returns how many are kept. skipEvery <= 1 keeps them all.
+    // A beat's verdict never depends on where the window starts, so posts
+    // don't flicker as it scrolls.
+    function _roadPostPattern(beats, now, behind, lowerBoundTime, n, skipEvery, keep) {
+        if (!beats || !keep || !(n > 0)) return 0;
+        const t0 = now - behind;
+        let i = typeof lowerBoundTime === 'function' ? lowerBoundTime(beats, t0) : 0;
+        if (!(i >= 0)) i = 0;
+        while (i < beats.length && beats[i].time < t0) i++;
+        // In-bar index of the first beat: count back to the last bar line.
+        // With no bar line within reach, fall back to the beat's own index.
+        let k = 0, j = i;
+        while (j > 0 && j < beats.length && beats[j].measure < 0 && k < 256) { j--; k++; }
+        if (j >= 0 && j < beats.length && beats[j].measure < 0 && j > 0) k = i;
+        let kept = 0;
+        for (let m = 0; m < n; m++, i++) {
+            const b = beats[i];
+            if (b && b.measure >= 0) k = 0;
+            const on = !(skipEvery > 1) || (k % skipEvery) !== skipEvery - 1;
+            keep[m] = on;
+            if (on) kept++;
+            k++;
+        }
+        return kept;
+    }
     // Dash phase for the lane-edge dashes: song time mapped to z at note
     // speed, wrapped to [0, period). Adding it to a dash's base z moves the
     // dash toward +z (the player) exactly as fast as the notes, so pause
@@ -3438,9 +3469,21 @@
     // The carriageway runs under the note track: board width plus this
     // margin each side, so the barriers and posts hug the board edges.
     const ROAD_EDGE_W = 4 * K;
-    const ROAD_SHOULDER_W = 6 * K;          // barrier strip width
-    const ROAD_SHOULDER_H = 3 * K;          // barrier strip height
-    const ROAD_POST_GAP = 6 * K;            // post sits this far outside the barrier
+    const ROAD_SHOULDER_W = 6 * K;          // curb width
+    const ROAD_SHOULDER_H = 3 * K;          // curb height
+    // Sidewalks between the curb and the lamp posts: a concrete slab level
+    // with the curb top, with expansion joints that scroll by song time like
+    // the lane dashes. Lamp posts stand near the sidewalk's outer edge.
+    const ROAD_SIDEWALK_W = 22 * K;
+    const ROAD_SIDEWALK_H = ROAD_SHOULDER_H;
+    const ROAD_SIDEWALK_COLOR = 0x3c4048;
+    const ROAD_SIDEWALK_JOINT = 22 * K;     // joint spacing: square slabs
+    const ROAD_SIDEWALK_JOINT_D = 0.8 * K;
+    const ROAD_SIDEWALK_JOINT_COLOR = 0x1a1d22;
+    const ROAD_POST_INSET = 4 * K;          // post sits this far in from the sidewalk's outer edge
+    // Street lights skip every third beat counted from each bar line (see
+    // _roadPostPattern): a third fewer posts, every bar line still lit.
+    const ROAD_POST_SKIP_EVERY = 3;
     const ROAD_POST_W = 2.5 * K;
     const ROAD_POST_H = 60 * K;             // beat post; bar posts are 1.6x
     const ROAD_BAR_H_MUL = 1.6;
@@ -3898,6 +3941,30 @@
         s.laneShown = nDim + nBright + nc;
     }
 
+    // Per-frame sidewalk joints: square slabs whose joints scroll toward the
+    // player at note speed (same phase rule as the lane dashes). Skipped
+    // while the song time hasn't moved (paused).
+    function _bgRoadUpdateSidewalks(s, chart) {
+        const time = chart && Number.isFinite(chart.time) ? chart.time : 0;
+        const phase = _roadDashPhase(time, TS, ROAD_SIDEWALK_JOINT);
+        if (phase === s.jointPhase) return;
+        s.jointPhase = phase;
+        const d = s.dummy;
+        const per = s.jointsPerSide;
+        let n = 0;
+        for (let side = -1; side <= 1; side += 2) {
+            for (let j = 0; j < per; j++) {
+                const z = s.zNear - (j + 0.5) * ROAD_SIDEWALK_JOINT + phase;
+                if (z < s.zFar) break;
+                d.position.set(side * s.sidewalkX, s.jointY, z);
+                d.updateMatrix();
+                s.joints.setMatrixAt(n++, d.matrix);
+            }
+        }
+        s.joints.count = n;
+        s.joints.instanceMatrix.needsUpdate = true;
+    }
+
     // Background-style registry. Each entry returns a per-panel state
     // object from build() and reads from it in update() / teardown().
     // T (THREE) is set by the time these are invoked (initScene runs
@@ -4186,8 +4253,14 @@
                     edgeD: new Array(ROAD_LANE_CAP * 2).fill(0),
                     edgeCur: new Array(ROAD_LANE_CAP * 2).fill(false),
                     cx,
-                    postX: halfW + ROAD_SHOULDER_W + ROAD_POST_GAP,
-                    baseY: roadY,
+                    postX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W - ROAD_POST_INSET,
+                    baseY: roadY + ROAD_SIDEWALK_H,     // posts stand on the sidewalk
+                    postKeep: new Array(ROAD_POST_POOL).fill(true),
+                    sidewalkX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W / 2,
+                    jointY: roadY + ROAD_SIDEWALK_H + 0.05 * K,
+                    jointsPerSide: Math.ceil(len / ROAD_SIDEWALK_JOINT) + 1,
+                    jointPhase: -1,
+                    joints: null,
                     markY: roadY + 0.1 * K,
                     seamY: roadY + 0.05 * K,
                     zNear, zFar,
@@ -4264,14 +4337,31 @@
                     s.hills.push({ pos, col, hx, hz, ramp, cnt });
                 }
 
-                // Barriers at the carriageway edges.
+                // Curbs at the carriageway edges, then a sidewalk each side.
                 const barrierMat = mat(new T.MeshBasicMaterial({ color: 0x6a6e76 }));
                 const barrierGeo = geo(new T.BoxGeometry(ROAD_SHOULDER_W, ROAD_SHOULDER_H, len));
+                const walkMat = mat(new T.MeshBasicMaterial({ color: ROAD_SIDEWALK_COLOR }));
+                const walkGeo = geo(new T.BoxGeometry(ROAD_SIDEWALK_W, ROAD_SIDEWALK_H, len));
                 for (const side of [-1, 1]) {
                     const b = new T.Mesh(barrierGeo, barrierMat);
                     b.position.set(side * (halfW + ROAD_SHOULDER_W / 2), roadY + ROAD_SHOULDER_H / 2, zMid);
                     root.add(b);
+                    const w = new T.Mesh(walkGeo, walkMat);
+                    w.position.set(side * s.sidewalkX, roadY + ROAD_SIDEWALK_H / 2, zMid);
+                    root.add(w);
                 }
+                // Expansion joints across each sidewalk, placed per frame by
+                // song time (see _bgRoadUpdateSidewalks).
+                const jointMat = mat(new T.MeshBasicMaterial({
+                    color: ROAD_SIDEWALK_JOINT_COLOR, transparent: true, opacity: 0.8, depthWrite: false,
+                }));
+                const jointGeo = geo(new T.PlaneGeometry(ROAD_SIDEWALK_W, ROAD_SIDEWALK_JOINT_D));
+                jointGeo.rotateX(-Math.PI / 2);
+                s.joints = new T.InstancedMesh(jointGeo, jointMat, s.jointsPerSide * 2);
+                s.joints.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                s.joints.count = 0;
+                s.joints.frustumCulled = false;
+                root.add(s.joints);
 
                 // Fret-position lanes: dashed edge lines (dim, and bright
                 // for the lane in force now), lane-change diagonals and beat
@@ -4334,10 +4424,10 @@
                 // the hit line. Transparent, depthWrite: false and drawn
                 // before the notes (ROAD_GANTRY_ORDER), so notes always paint
                 // over a gantry passing overhead.
-                const gantryX = halfW + ROAD_SHOULDER_W / 2;
+                const gantryX = halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W + ROAD_GANTRY_W;
                 const panelW = halfW * 2 * ROAD_SIGN_W_FRAC;
                 const panelH = panelW / ROAD_SIGN_ASPECT;
-                const panelY = roadY + ROAD_POST_H * ROAD_BAR_H_MUL + ROAD_SIGN_CLEAR + panelH / 2;
+                const panelY = s.baseY + ROAD_POST_H * ROAD_BAR_H_MUL + ROAD_SIGN_CLEAR + panelH / 2;
                 const barY = panelY + panelH * 0.25;
                 const gPostH = barY - roadY + ROAD_GANTRY_W / 2;
                 const gPostGeo = geo(new T.BoxGeometry(ROAD_GANTRY_W, gPostH, ROAD_GANTRY_W));
@@ -4417,6 +4507,11 @@
                         chart.lowerBoundTime, s.slots, ROAD_POST_POOL);
                 }
                 _bgRoadUpdateLanes(s, chart);
+                _bgRoadUpdateSidewalks(s, chart);
+                if (n > 0) {
+                    _roadPostPattern(chart.beats, chart.time, BEHIND, chart.lowerBoundTime,
+                        n, ROAD_POST_SKIP_EVERY, s.postKeep);
+                }
                 if (n === 0) {
                     if (s.shown !== 0) {
                         s.posts.count = 0; s.beatHeads.count = 0; s.barHeads.count = 0;
@@ -4429,6 +4524,7 @@
                 const x = s.postX, y0 = s.baseY;
                 let np = 0, nBeat = 0, nBar = 0;
                 for (let i = 0; i < n; i++) {
+                    if (!s.postKeep[i]) continue;   // every third beat in the bar: no light
                     const slot = s.slots[i];
                     const h = slot.isBar ? ROAD_POST_H * ROAD_BAR_H_MUL : ROAD_POST_H;
                     const hs = slot.isBar ? ROAD_BAR_HEAD_MUL : 1;
@@ -4479,7 +4575,7 @@
                 if (!s) return;
                 s.root.parent?.remove(s.root);
                 for (const m of [s.posts, s.beatHeads, s.barHeads,
-                    s.laneDim, s.laneBright, s.connectors, s.seams,
+                    s.laneDim, s.laneBright, s.connectors, s.seams, s.joints,
                     s.towers, s.windows, s.neon]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
@@ -4495,7 +4591,7 @@
                 s.signs.length = 0;
                 s.signMats.length = 0;
                 s.posts = s.beatHeads = s.barHeads = null;
-                s.laneDim = s.laneBright = s.connectors = s.seams = null;
+                s.laneDim = s.laneBright = s.connectors = s.seams = s.joints = null;
                 s.towers = s.windows = s.neon = s.sky = null;
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
