@@ -6988,10 +6988,25 @@
             metal:   { accent: '#ffb347', accent2: '#ff6b35', miss: '#ef4444', font: 'Russo One' },
         };
         let _fxPalette = _FX_PALETTES.neon;
-        function _fxResolvePalette() {
-            let skin = null;
-            try { skin = localStorage.getItem('feedBack_notedetect_skin'); } catch (e) {}
-            _fxPalette = _FX_PALETTES[skin] || _FX_PALETTES.neon;
+        // notedetect stores the skin under its legacy 'slopsmith_' key (the
+        // 'feedBack_' spelling this read alone used to look for never existed,
+        // so the ring and burst stayed neon whatever skin was picked). Read
+        // that first, keep the 'feedBack_' spelling for a later rename, and
+        // let a 'notedetect:skin' event's own skin win: it also covers a
+        // setSkin() whose storage write failed.
+        const _FX_SKIN_KEYS = ['slopsmith_notedetect_skin', 'feedBack_notedetect_skin'];
+        const _fxIsSkin = (v) => typeof v === 'string' && Object.prototype.hasOwnProperty.call(_FX_PALETTES, v);
+        function _fxResolvePalette(skin) {
+            if (!_fxIsSkin(skin)) {
+                skin = null;
+                for (let i = 0; i < _FX_SKIN_KEYS.length && !skin; i++) {
+                    try {
+                        const v = localStorage.getItem(_FX_SKIN_KEYS[i]);
+                        if (_fxIsSkin(v)) skin = v;
+                    } catch (e) { /* storage blocked */ }
+                }
+            }
+            _fxPalette = skin ? _FX_PALETTES[skin] : _FX_PALETTES.neon;
         }
         function _fxSpawnPop(popKey, points, mult, x, y, z) {
             if (_fxSeen.has(popKey)) return;
@@ -10648,7 +10663,7 @@
             window.addEventListener('notedetect:fx', _fxOnFx);
             if (window.feedBack && typeof window.feedBack.on === 'function'
                     && typeof window.feedBack.off === 'function') {
-                _fxOnSkin = () => _fxResolvePalette();
+                _fxOnSkin = (e) => _fxResolvePalette(e && e.detail && e.detail.skin);
                 window.feedBack.on('notedetect:skin', _fxOnSkin);
             }
 

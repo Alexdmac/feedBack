@@ -411,6 +411,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- **3D Highway streak effects follow the note detection skin again.** The
+  tier-up ring, milestone burst and score pops read the skin from a storage
+  key note detection never writes, so they stayed neon whatever skin was
+  picked. They now read note detection's own key, and switch live when the
+  skin changes.
 - **Count-in follows the song's meter and its pickup measure.** The count-in
   (loop wrap, section practice, and the "Countdown before song" setting) always
   clicked exactly four beats, so a 3/4 song was counted in 4/4, and a song
