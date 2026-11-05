@@ -21,7 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fret position is a lane change, drawn as a short diagonal between the old
   and new lanes. The lights, lane dashes and a thin seam across the road on
   every beat move with the song, so pausing, seeking and practice speed carry
-  them too.
+  them too. A green overhead sign with the section name passes over the road
+  as each section begins, low hills seeded from the song roll past either
+  side, and a city skyline sits at the end of the road, its windows lighting
+  up as the song progresses.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
   the first twelve songs in your saved Song Library sort, using the same cards
   as the Song Library page (play, favorite, save, menu, arrangement chips,

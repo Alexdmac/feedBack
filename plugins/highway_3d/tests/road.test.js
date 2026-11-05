@@ -36,7 +36,16 @@ function load() {
         '\nthis._roadPlacePosts = _roadPlacePosts;' +
         '\nthis._roadDashPhase = _roadDashPhase;' +
         '\nthis._roadMakeLaneBuf = _roadMakeLaneBuf;' +
-        '\nthis._roadBuildLanes = _roadBuildLanes;', sandbox);
+        '\nthis._roadBuildLanes = _roadBuildLanes;' +
+        '\nthis.ROAD_SIGN_POOL = ROAD_SIGN_POOL;' +
+        '\nthis._roadMakeSignSlots = _roadMakeSignSlots;' +
+        '\nthis._roadPlaceSigns = _roadPlaceSigns;' +
+        '\nthis._roadHashStr = _roadHashStr;' +
+        '\nthis._roadNoise2 = _roadNoise2;' +
+        '\nthis._roadMakeTowerBuf = _roadMakeTowerBuf;' +
+        '\nthis._roadTowerLayout = _roadTowerLayout;' +
+        '\nthis._roadWindowLayout = _roadWindowLayout;' +
+        '\nthis._roadWindowCount = _roadWindowCount;', sandbox);
     return sandbox;
 }
 
@@ -322,4 +331,145 @@ test('lanes respect the cap and reuse the buffer', () => {
         assert.equal(after[i], arrays[i], 'same array object');
         assert.equal(after[i].length, 4, 'never grows');
     }
+});
+
+// --- step 2: section signs, hills, skyline ---
+
+const SECTIONS = [
+    { time: 0, name: 'intro' }, { time: 8, name: 'verse' }, { time: 16, name: 'chorus' },
+    { time: 24, name: 'verse' }, { time: 32, name: 'solo' }, { time: 40, name: 'outro' },
+];
+
+test('signs sit at z = -(section.time - now) * TS with their section index', () => {
+    const r = load();
+    assert.equal(r.ROAD_SIGN_POOL, 6);
+    const slots = r._roadMakeSignSlots(r.ROAD_SIGN_POOL);
+    const now = 15;
+    const n = r._roadPlaceSigns(SECTIONS, now, TS, BEHIND, AHEAD, lowerBoundTime, slots, 6);
+    assert.equal(n, 1);
+    assert.equal(slots[0].index, 2);
+    assert.ok(Math.abs(slots[0].z - (-(16 - now) * TS)) < 1e-9);
+    // At the section start the gantry is exactly over the hit line.
+    r._roadPlaceSigns(SECTIONS, 16, TS, BEHIND, AHEAD, lowerBoundTime, slots, 6);
+    assert.ok(Math.abs(slots[0].z) < 1e-12);
+});
+
+test('signs are culled to [now - behind, now + ahead]', () => {
+    const r = load();
+    const slots = r._roadMakeSignSlots(6);
+    // 8.4: 'verse' at 8 is 0.4 s behind (kept); 'chorus' at 16 is too far ahead.
+    let n = r._roadPlaceSigns(SECTIONS, 8.4, TS, BEHIND, AHEAD, lowerBoundTime, slots, 6);
+    assert.equal(n, 1);
+    assert.equal(slots[0].index, 1);
+    // 8.6: 'verse' is 0.6 s behind (gone), nothing ahead within 4 s.
+    n = r._roadPlaceSigns(SECTIONS, 8.6, TS, BEHIND, AHEAD, lowerBoundTime, slots, 6);
+    assert.equal(n, 0);
+    // Without a lower-bound helper the linear scan gives the same answer.
+    n = r._roadPlaceSigns(SECTIONS, 8.4, TS, BEHIND, AHEAD, null, slots, 6);
+    assert.equal(n, 1);
+    assert.equal(slots[0].index, 1);
+});
+
+test('signs: empty input places nothing', () => {
+    const r = load();
+    const slots = r._roadMakeSignSlots(6);
+    assert.equal(r._roadPlaceSigns([], 1, TS, BEHIND, AHEAD, lowerBoundTime, slots, 6), 0);
+    assert.equal(r._roadPlaceSigns(null, 1, TS, BEHIND, AHEAD, lowerBoundTime, slots, 6), 0);
+    assert.equal(r._roadPlaceSigns(SECTIONS, 1, TS, BEHIND, AHEAD, lowerBoundTime, null, 6), 0);
+});
+
+test('signs respect the cap', () => {
+    const r = load();
+    const slots = r._roadMakeSignSlots(6);
+    const dense = [];
+    for (let i = 0; i < 40; i++) dense.push({ time: i * 0.25, name: 's' + i });
+    assert.equal(r._roadPlaceSigns(dense, 5, TS, BEHIND, AHEAD, lowerBoundTime, slots, 6), 6);
+    assert.equal(r._roadPlaceSigns(dense, 5, TS, BEHIND, AHEAD, lowerBoundTime, slots, 3), 3);
+    assert.equal(slots.length, 6, 'never grows');
+});
+
+test('_roadHashStr is deterministic and separates strings', () => {
+    const r = load();
+    const a = r._roadHashStr('song.sloppak\u00000');
+    assert.equal(a, r._roadHashStr('song.sloppak\u00000'));
+    assert.ok(Number.isInteger(a) && a >= 0 && a < 2 ** 32);
+    const seen = new Set();
+    for (const k of ['', 'a', 'b', 'ab', 'ba', 'song.sloppak\u00000', 'song.sloppak\u00001', 'other.sloppak\u00000']) {
+        seen.add(r._roadHashStr(k));
+    }
+    assert.equal(seen.size, 8);
+});
+
+test('_roadNoise2 is deterministic, bounded, seeded and continuous', () => {
+    const r = load();
+    const seed = 12345;
+    let differ = 0;
+    for (let i = 0; i < 400; i++) {
+        const x = i * 0.37 - 50, z = i * 0.91 - 120;
+        const v = r._roadNoise2(x, z, seed);
+        assert.equal(v, r._roadNoise2(x, z, seed));
+        assert.ok(v >= -1 && v <= 1, `in range: ${v}`);
+        if (Math.abs(v - r._roadNoise2(x, z, seed + 1)) > 1e-6) differ++;
+        // Continuity: a step of 0.001 lattice cells moves the value very little.
+        assert.ok(Math.abs(r._roadNoise2(x + 0.001, z, seed) - v) < 0.01);
+        assert.ok(Math.abs(r._roadNoise2(x, z + 0.001, seed) - v) < 0.01);
+    }
+    assert.ok(differ > 350, 'different seeds give a different landscape');
+    // Not constant.
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < 200; i++) { const v = r._roadNoise2(i * 1.3, i * 0.7, seed); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    assert.ok(hi - lo > 0.8);
+});
+
+test('_roadTowerLayout is seeded, respects n and the ranges', () => {
+    const r = load();
+    const a = r._roadMakeTowerBuf(48), b = r._roadMakeTowerBuf(48), c = r._roadMakeTowerBuf(48);
+    assert.equal(r._roadTowerLayout(7, 48, a), 48);
+    assert.equal(r._roadTowerLayout(7, 48, b), 48);
+    assert.equal(r._roadTowerLayout(8, 48, c), 48);
+    assert.deepEqual([...a.x], [...b.x]);
+    assert.deepEqual([...a.h], [...b.h]);
+    assert.notDeepEqual([...a.h], [...c.h]);
+    for (let i = 0; i < 48; i++) {
+        assert.ok(a.x[i] >= -1400 && a.x[i] <= 1400, 'x');
+        assert.ok(a.w[i] >= 30 && a.w[i] <= 90, 'w');
+        assert.ok(a.h[i] >= 60 && a.h[i] <= 360, 'h');
+        assert.ok(a.d[i] > 0 && a.d[i] <= a.w[i], 'd');
+        assert.ok(a.z[i] >= -60 && a.z[i] <= 0, 'z');
+    }
+    const small = r._roadMakeTowerBuf(48);
+    assert.equal(r._roadTowerLayout(7, 10, small), 10);
+    assert.equal(small.h[10], 0, 'only n towers written');
+    assert.equal(r._roadTowerLayout(7, 100, r._roadMakeTowerBuf(48)), 48, 'capped at the buffer');
+});
+
+test('_roadWindowLayout fits the pool and is seeded', () => {
+    const r = load();
+    const tb = r._roadMakeTowerBuf(48);
+    const nt = r._roadTowerLayout(99, 48, tb);
+    const mk = () => ({ x: new Array(800).fill(0), y: new Array(800).fill(0), z: new Array(800).fill(0) });
+    const w1 = mk(), w2 = mk();
+    const n1 = r._roadWindowLayout(99, tb, nt, w1, 800);
+    const n2 = r._roadWindowLayout(99, tb, nt, w2, 800);
+    assert.equal(n1, n2);
+    assert.ok(n1 > 200 && n1 <= 800, `window count ${n1}`);
+    assert.deepEqual(w1.x.slice(0, n1), w2.x.slice(0, n1));
+    for (let i = 0; i < n1; i++) assert.ok(w1.y[i] > 0 && w1.y[i] < 360);
+});
+
+test('_roadWindowCount: 0 at the start, all at the end, monotonic', () => {
+    const r = load();
+    assert.equal(r._roadWindowCount(0, 800), 0);
+    assert.equal(r._roadWindowCount(1, 800), 800);
+    assert.equal(r._roadWindowCount(-1, 800), 0);
+    assert.equal(r._roadWindowCount(2, 800), 800);
+    assert.equal(r._roadWindowCount(NaN, 800), 0);
+    assert.equal(r._roadWindowCount(0.5, 0), 0);
+    let prev = 0;
+    for (let i = 0; i <= 100; i++) {
+        const n = r._roadWindowCount(i / 100, 800);
+        assert.ok(n >= prev, `monotonic at ${i}`);
+        prev = n;
+    }
+    assert.ok(r._roadWindowCount(2 / 3, 800) >= 0.8 * 800, 'most are lit by the last third');
 });

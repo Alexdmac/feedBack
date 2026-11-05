@@ -3279,6 +3279,158 @@
         out.nJumps = nj;
         return n;
     }
+    // Section signs: one overhead gantry per section start, at most this
+    // many in the window at once (sections are seconds apart, so 6 is ample).
+    const ROAD_SIGN_POOL = 6;
+    function _roadMakeSignSlots(cap) {
+        const out = new Array(cap);
+        for (let i = 0; i < cap; i++) out[i] = { z: 0, index: 0 };
+        return out;
+    }
+    // Fill out[0..n) with one { z, index } per section whose start time lies
+    // in [now - behind, now + ahead], at the z a note at that time would sit,
+    // so the gantry passes overhead exactly as the section begins. index is
+    // the section's position in `sections` (sorted by .time). Returns n.
+    function _roadPlaceSigns(sections, now, ts, behind, ahead, lowerBoundTime, out, cap) {
+        if (!sections || sections.length === 0 || !out) return 0;
+        const t0 = now - behind;
+        const t1 = now + ahead;
+        const max = cap < out.length ? cap : out.length;
+        let i = typeof lowerBoundTime === 'function' ? lowerBoundTime(sections, t0) : 0;
+        if (!(i >= 0)) i = 0;
+        let n = 0;
+        for (; i < sections.length && n < max; i++) {
+            const sec = sections[i];
+            if (sec.time < t0) continue;   // linear-scan fallback
+            if (sec.time > t1) break;
+            const slot = out[n++];
+            slot.z = -(sec.time - now) * ts;
+            slot.index = i;
+        }
+        return n;
+    }
+    // 32-bit seed from a string (FNV-1a plus a final avalanche), so every
+    // song key gets its own, stable landscape and skyline.
+    function _roadHashStr(str) {
+        const s = String(str == null ? '' : str);
+        let h = 0x811c9dc5;
+        for (let i = 0; i < s.length; i++) {
+            h ^= s.charCodeAt(i);
+            h = Math.imul(h, 0x01000193);
+        }
+        h ^= h >>> 16;
+        h = Math.imul(h, 0x85ebca6b);
+        h ^= h >>> 13;
+        h = Math.imul(h, 0xc2b2ae35);
+        h ^= h >>> 16;
+        return h >>> 0;
+    }
+    // Hash of two integers and a seed to [0, 1). Stateless, so every seeded
+    // choice in the road is a pure function of (seed, indices).
+    function _roadHash01(a, b, seed) {
+        let h = Math.imul((a | 0) ^ 0x9e3779b9, 0x85ebca6b) ^ (seed | 0);
+        h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+        h ^= Math.imul((b | 0) ^ 0x632be5ab, 0xc2b2ae35);
+        h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+        h ^= h >>> 16;
+        return (h >>> 0) / 4294967296;
+    }
+    // 2-D value noise: seeded random values on the integer lattice,
+    // smoothstep-interpolated between them. Continuous, output in [-1, 1).
+    function _roadNoise2(x, z, seed) {
+        const ix = Math.floor(x), iz = Math.floor(z);
+        const fx = x - ix, fz = z - iz;
+        const ux = fx * fx * (3 - 2 * fx);
+        const uz = fz * fz * (3 - 2 * fz);
+        const a = _roadHash01(ix, iz, seed);
+        const b = _roadHash01(ix + 1, iz, seed);
+        const c = _roadHash01(ix, iz + 1, seed);
+        const d = _roadHash01(ix + 1, iz + 1, seed);
+        const top = a + (b - a) * ux;
+        const bot = c + (d - c) * ux;
+        return (top + (bot - top) * uz) * 2 - 1;
+    }
+    // Skyline layout, in units of K (the caller scales): per tower a centre
+    // x across [-1400, 1400], width 30..90, height 60..360 (taller toward
+    // the middle), depth 0.6..1 of the width and a z jitter of -60..0.
+    // Fills the preallocated arrays of out (see _roadMakeTowerBuf).
+    function _roadMakeTowerBuf(cap) {
+        const nums = () => { const a = new Array(cap); for (let i = 0; i < cap; i++) a[i] = 0; return a; };
+        return { cap, x: nums(), z: nums(), w: nums(), h: nums(), d: nums() };
+    }
+    function _roadTowerLayout(seed, n, out) {
+        if (!out) return 0;
+        const m = n < out.cap ? (n > 0 ? n : 0) : out.cap;
+        const span = 2800, step = m > 0 ? span / m : 0;
+        for (let i = 0; i < m; i++) {
+            let x = -1400 + (i + 0.5 + (_roadHash01(i, 1, seed) - 0.5) * 0.9) * step;
+            x = x < -1400 ? -1400 : (x > 1400 ? 1400 : x);
+            const w = 30 + 60 * _roadHash01(i, 2, seed);
+            const centre = 1 - Math.abs(x) / 1400;
+            const r = _roadHash01(i, 3, seed);
+            out.x[i] = x;
+            out.w[i] = w;
+            out.h[i] = 60 + 300 * r * (0.45 + 0.55 * centre);
+            out.d[i] = w * (0.6 + 0.4 * _roadHash01(i, 4, seed));
+            out.z[i] = -60 * _roadHash01(i, 5, seed);
+        }
+        return m;
+    }
+    // Lit windows on the towers' camera-facing (+z) faces, in units of K:
+    // a grid per face with seeded skipping, thinned so the total fits the
+    // pool, then shuffled by seed so the lit prefix (InstancedMesh.count)
+    // spreads across the whole skyline. out = { x, y, z } arrays of length
+    // >= cap (y measured up from the tower base). Returns the window count.
+    const ROAD_WIN_W = 7, ROAD_WIN_H = 9, ROAD_WIN_COL = 14, ROAD_WIN_ROW = 18, ROAD_WIN_MARGIN = 6;
+    function _roadWindowLayout(seed, towers, nTowers, out, cap) {
+        if (!out || !towers || !(cap > 0)) return 0;
+        let total = 0;
+        for (let t = 0; t < nTowers; t++) {
+            const cols = Math.floor((towers.w[t] - ROAD_WIN_MARGIN) / ROAD_WIN_COL);
+            const rows = Math.floor((towers.h[t] - 2 * ROAD_WIN_MARGIN) / ROAD_WIN_ROW);
+            if (cols > 0 && rows > 0) total += cols * rows;
+        }
+        if (total === 0) return 0;
+        let keep = cap / total;
+        if (keep > 0.6) keep = 0.6;
+        let n = 0;
+        for (let t = 0; t < nTowers && n < cap; t++) {
+            const w = towers.w[t];
+            const cols = Math.floor((w - ROAD_WIN_MARGIN) / ROAD_WIN_COL);
+            const rows = Math.floor((towers.h[t] - 2 * ROAD_WIN_MARGIN) / ROAD_WIN_ROW);
+            if (!(cols > 0 && rows > 0)) continue;
+            const x0 = towers.x[t] - ((cols - 1) * ROAD_WIN_COL) / 2;
+            const zf = towers.z[t] + towers.d[t] / 2;
+            for (let r = 0; r < rows && n < cap; r++) {
+                for (let c = 0; c < cols && n < cap; c++) {
+                    if (_roadHash01(t * 64 + c, r, seed ^ 0x5bd1e995) >= keep) continue;
+                    out.x[n] = x0 + c * ROAD_WIN_COL;
+                    out.y[n] = 2 * ROAD_WIN_MARGIN + r * ROAD_WIN_ROW;
+                    out.z[n] = zf;
+                    n++;
+                }
+            }
+        }
+        // Fisher-Yates in place, seeded.
+        for (let i = n - 1; i > 0; i--) {
+            const j = Math.floor(_roadHash01(i, 777, seed) * (i + 1));
+            let tmp = out.x[i]; out.x[i] = out.x[j]; out.x[j] = tmp;
+            tmp = out.y[i]; out.y[i] = out.y[j]; out.y[j] = tmp;
+            tmp = out.z[i]; out.z[i] = out.z[j]; out.z[j] = tmp;
+        }
+        return n;
+    }
+    // How many windows are lit at song progress p (0..1): 0 at the start,
+    // all of them at the end, easing out so most are lit by the last third.
+    // Monotonic, so a window once lit stays lit.
+    function _roadWindowCount(progress, total) {
+        if (!(total > 0)) return 0;
+        let p = Number.isFinite(progress) ? progress : 0;
+        p = p < 0 ? 0 : (p > 1 ? 1 : p);
+        const f = 1 - Math.pow(1 - p, 2.2);
+        const n = Math.floor(total * f + 1e-9);
+        return n > total ? total : n;
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -3311,14 +3463,62 @@
     const ROAD_LANE_CAP = 32;
     const ROAD_LANE_DASH_POOL = 768;
     const ROAD_CONNECTOR_POOL = ROAD_LANE_CAP * 2;
-    const ROAD_LANE_DIM_OPACITY = 0.18;     // lane edges away from the current position
-    const ROAD_LANE_BRIGHT_OPACITY = 0.45;  // current lane edges + lane-change diagonals
+    const ROAD_LANE_DIM_OPACITY = 0.12;     // lane edges away from the current position
+    const ROAD_LANE_BRIGHT_OPACITY = 0.35;  // current lane edges + lane-change diagonals
     // Beat seams: a thin dark line across the carriageway on every beat,
     // a little deeper on bar lines, at the same z as the posts.
     const ROAD_SEAM_D = 1.5 * K;
     const ROAD_BAR_SEAM_MUL = 1.8;
     const ROAD_SEAM_COLOR = 0x0e141b;
     const ROAD_SEAM_OPACITY = 0.6;
+    // Lane-change diagonals: twice a dash length, centred on the jump z.
+    const ROAD_CONNECTOR_LEN = 2 * ROAD_DASH_LEN;
+    // Section gantries (see _roadPlaceSigns). The panel's bottom edge sits
+    // ROAD_SIGN_CLEAR above the bar-post tops so it clears the notes; the
+    // panel is ROAD_SIGN_W_FRAC of the carriageway wide, 4:1 like its canvas.
+    const ROAD_SIGN_CLEAR = 14 * K;
+    const ROAD_SIGN_W_FRAC = 0.5;
+    const ROAD_SIGN_ASPECT = 4;
+    const ROAD_SIGN_TEX_W = 512, ROAD_SIGN_TEX_H = 128;
+    const ROAD_SIGN_GREEN = 0x1f6b3a;
+    const ROAD_GANTRY_W = 2.5 * K;          // post / crossbar thickness
+    const ROAD_GANTRY_COLOR = 0x3a3f48;
+    // Hills and verges either side of the road: value noise with lattice
+    // cell ROAD_HILL_SCALE, positive half only, scaled to ROAD_HILL_H and
+    // ramped in over ROAD_HILL_RAMP from just beyond the lamp posts, so the
+    // ground is flat beside the road. Tops shade ROAD_HILL_TOP_LIFT of the
+    // way toward ROAD_HILL_TOP_HEX.
+    const ROAD_HILL_H = 45 * K;
+    const ROAD_HILL_RAMP = 120 * K;
+    const ROAD_HILL_SCALE = 170 * K;
+    const ROAD_HILL_CLEAR = 10 * K;         // flat margin outside the lamp posts
+    const ROAD_HILL_SEG_X = 24, ROAD_HILL_SEG_Z = 48;
+    const ROAD_HILL_TOP_HEX = 0x4a5a48;
+    const ROAD_HILL_TOP_LIFT = 0.3;
+    // City skyline at the far end of the road (static in z: it is the
+    // horizon). Layout units are K (see _roadTowerLayout). Every skyline
+    // material is fog: false, so the colours are kept dark to read as distant.
+    const ROAD_SKYLINE_GAP = 600 * K;       // towers sit this far beyond zFar
+    const ROAD_TOWER_POOL = 48;
+    const ROAD_WINDOW_POOL = 800;
+    const ROAD_NEON_POOL = 10;
+    const ROAD_TOWER_COLOR = 0x0b1016;
+    const ROAD_WIN_LIFT = 1.5 * K;          // windows sit this far in front of the face (depth precision)
+    // Window brightness: base * (0.5 + intensity) + mid * bands.mid, clamped.
+    const ROAD_WIN_BASE = 0.5, ROAD_WIN_MID = 0.25, ROAD_WIN_MAX = 0.85;
+    const ROAD_WIN_WARM_R = 1.0, ROAD_WIN_WARM_G = 0.85, ROAD_WIN_WARM_B = 0.6;
+    // Neon strips: palette picked by seed, additive, pulsing with treble.
+    const ROAD_NEON_PALETTE = [0xff3fb4, 0x3fe0ff, 0xffb23f, 0x2fd6b0];
+    const ROAD_NEON_BASE = 0.5, ROAD_NEON_TREBLE = 0.5, ROAD_NEON_MAX = 1.0;
+    // Sky plane behind the towers: ROAD_SKY_ABOVE above the ground and
+    // ROAD_SKY_BELOW under it (fills the gap between the fogged road end and
+    // the tower bases). Gradient from near-black at the top to a city glow at
+    // the horizon; its colour scales 0.8 -> 1.0 with song progress.
+    const ROAD_SKY_GAP = 100 * K;           // behind the tower line
+    const ROAD_SKY_W = 7000 * K;
+    const ROAD_SKY_ABOVE = 2800 * K;
+    const ROAD_SKY_BELOW = 150 * K;
+    const ROAD_SKY_GLOW_HEX = 0xd08a50;
 
     // Mix two 0xRRGGBB colours (t = 0 -> a, 1 -> b), no allocation.
     function _roadMixHex(a, b, t) {
@@ -3330,13 +3530,269 @@
         return (r << 16) | (g << 8) | bl;
     }
     // Asphalt = theme clear lifted slightly toward grey; ground = clear
-    // pushed toward black so the carriageway reads as the lighter surface.
-    // Called at build and from _applyBgTheme on a live background-theme switch.
+    // pushed toward black so the carriageway reads as the lighter surface,
+    // hill tops a little lighter again; the sky gradient runs from near-black
+    // to a warm city glow at the horizon. Called at build and from
+    // _applyBgTheme on a live background-theme switch. Rebuilds only the sky
+    // texture it owns (the old one is disposed).
     function _bgRoadApplyTheme(s, clearHex) {
         if (!s || !s.asphaltMat) return;
         const clear = typeof clearHex === 'number' ? clearHex : BG_THEMES.default.clear;
         s.asphaltMat.color.setHex(_roadMixHex(clear, 0x34343a, 0.25));
-        s.groundMat.color.setHex(_roadMixHex(clear, 0x000000, 0.35));
+        const ground = _roadMixHex(clear, 0x000000, 0.35);
+        // Vertex colours are linear; T.Color.setHex converts like material colours do.
+        const c = s.tmpColor;
+        c.setHex(ground);
+        s.groundLo[0] = c.r; s.groundLo[1] = c.g; s.groundLo[2] = c.b;
+        c.setHex(_roadMixHex(ground, ROAD_HILL_TOP_HEX, ROAD_HILL_TOP_LIFT));
+        s.groundHi[0] = c.r; s.groundHi[1] = c.g; s.groundHi[2] = c.b;
+        s.hillDirty = true;
+        if (s.skyMat) {
+            const old = s.skyTex;
+            s.skyTex = _roadSkyTexture(
+                _roadMixHex(clear, 0x000000, 0.8),
+                _roadMixHex(clear, ROAD_SKY_GLOW_HEX, 0.55),
+                _roadMixHex(clear, 0x000000, 0.55),
+                ROAD_SKY_ABOVE / (ROAD_SKY_ABOVE + ROAD_SKY_BELOW));
+            s.skyMat.map = s.skyTex;
+            s.skyMat.needsUpdate = true;
+            if (old) old.dispose();
+        }
+    }
+    function _roadCss(hex) {
+        return '#' + (hex & 0xffffff).toString(16).padStart(6, '0');
+    }
+    // Vertical sky gradient: `top` at the top of the plane, glow just above
+    // the horizon (at fraction `horizon` from the top), `low` below it.
+    function _roadSkyTexture(top, glow, low, horizon) {
+        const c = document.createElement('canvas');
+        c.width = 4; c.height = 256;
+        const x = c.getContext('2d');
+        const g = x.createLinearGradient(0, 0, 0, c.height);
+        g.addColorStop(0, _roadCss(top));
+        g.addColorStop(horizon * 0.55, _roadCss(_roadMixHex(top, glow, 0.2)));
+        g.addColorStop(horizon * 0.88, _roadCss(_roadMixHex(top, glow, 0.65)));
+        g.addColorStop(horizon, _roadCss(glow));
+        g.addColorStop(Math.min(1, horizon + (1 - horizon) * 0.3), _roadCss(_roadMixHex(glow, low, 0.6)));
+        g.addColorStop(1, _roadCss(low));
+        x.fillStyle = g;
+        x.fillRect(0, 0, c.width, c.height);
+        const tex = new T.CanvasTexture(c);
+        tex.colorSpace = T.SRGBColorSpace;
+        tex.wrapS = T.ClampToEdgeWrapping;
+        tex.wrapT = T.ClampToEdgeWrapping;
+        tex.generateMipmaps = false;
+        tex.minFilter = T.LinearFilter;
+        tex.magFilter = T.LinearFilter;
+        return tex;
+    }
+    // Motorway sign face: the section name, uppercase bold sans, white on
+    // green with a thin white border, shrunk to fit. Built once per name.
+    function _roadSignTexture(label) {
+        const W = ROAD_SIGN_TEX_W, H = ROAD_SIGN_TEX_H;
+        const c = document.createElement('canvas');
+        c.width = W; c.height = H;
+        const x = c.getContext('2d');
+        x.fillStyle = _roadCss(ROAD_SIGN_GREEN);
+        x.fillRect(0, 0, W, H);
+        x.strokeStyle = '#ffffff';
+        x.lineWidth = 5;
+        x.strokeRect(10, 10, W - 20, H - 20);
+        const maxW = W - 64;
+        let size = 70;
+        x.font = 'bold ' + size + 'px sans-serif';
+        const tw = x.measureText(label).width;
+        if (tw > maxW) {
+            size = Math.max(30, Math.floor(size * maxW / tw));
+            x.font = 'bold ' + size + 'px sans-serif';
+        }
+        x.fillStyle = '#ffffff';
+        x.textAlign = 'center';
+        x.textBaseline = 'middle';
+        x.fillText(label, W / 2, H / 2 + size * 0.05, maxW);
+        const tex = new T.CanvasTexture(c);
+        tex.colorSpace = T.SRGBColorSpace;
+        return tex;
+    }
+    function _roadSignLabel(sec) {
+        return sec && sec.name != null ? String(sec.name).trim().toUpperCase() : '';
+    }
+    // (Re)build the per-name sign texture cache when chart.sections changes
+    // identity (a new chart). Textures for names still in use are kept; the
+    // rest are disposed. signTexByIndex maps section index -> texture so the
+    // per-frame path never builds strings.
+    function _bgRoadSyncSignTextures(s, sections) {
+        s.signSections = sections;
+        const old = s.signTex;
+        const next = new Map();
+        const byIndex = [];
+        if (sections) {
+            for (let i = 0; i < sections.length; i++) {
+                const label = _roadSignLabel(sections[i]);
+                if (!label) { byIndex.push(null); continue; }
+                let tex = next.get(label);
+                if (!tex) {
+                    tex = old.get(label);
+                    if (tex) old.delete(label);
+                    else tex = _roadSignTexture(label);
+                    next.set(label, tex);
+                }
+                byIndex.push(tex);
+            }
+        }
+        // Panels still pointing at a texture about to be disposed: drop it
+        // (the slot is reassigned before it is drawn again).
+        for (const tex of old.values()) {
+            for (let i = 0; i < s.signMats.length; i++) {
+                if (s.signMats[i].map === tex) { s.signMats[i].map = null; s.signMats[i].needsUpdate = true; s.signs[i].visible = false; }
+            }
+            tex.dispose();
+        }
+        s.signTex = next;
+        s.signTexByIndex = byIndex;
+    }
+    // Per-frame gantries: pool groups moved to each visible section start.
+    function _bgRoadUpdateSigns(s, chart) {
+        const secs = chart ? chart.sections : null;
+        if (secs !== s.signSections) _bgRoadSyncSignTextures(s, secs);
+        let n = 0;
+        if (chart && chart.isReady && secs && secs.length > 0) {
+            n = _roadPlaceSigns(secs, chart.time, TS, BEHIND, AHEAD + 1,
+                chart.lowerBoundTime, s.signSlots, ROAD_SIGN_POOL);
+        }
+        for (let i = 0; i < ROAD_SIGN_POOL; i++) {
+            const g = s.signs[i];
+            const tex = i < n ? s.signTexByIndex[s.signSlots[i].index] : null;
+            if (!tex) {
+                if (g.visible) g.visible = false;
+                continue;
+            }
+            const m = s.signMats[i];
+            if (m.map !== tex) {
+                if (!m.map) m.needsUpdate = true;   // null -> texture changes the shader
+                m.map = tex;
+            }
+            g.position.z = s.signSlots[i].z;
+            if (!g.visible) g.visible = true;
+        }
+    }
+    // Per-frame hills: heights and colours written into the existing
+    // attributes; skipped when neither song time nor theme/seed changed.
+    function _bgRoadUpdateHills(s, time) {
+        const scroll = (Number.isFinite(time) ? time : 0) * TS;
+        if (!s.hillDirty && scroll === s.hillScroll) return;
+        s.hillDirty = false;
+        s.hillScroll = scroll;
+        const inv = 1 / ROAD_HILL_SCALE, seed = s.seed;
+        const lo = s.groundLo, hi = s.groundHi;
+        const dr = hi[0] - lo[0], dg = hi[1] - lo[1], db = hi[2] - lo[2];
+        for (let k = 0; k < s.hills.length; k++) {
+            const h = s.hills[k];
+            const p = h.pos.array, c = h.col.array;
+            const hx = h.hx, hz = h.hz, ramp = h.ramp;
+            for (let i = 0, j = 0; i < h.cnt; i++, j += 3) {
+                let f = 0;
+                const r = ramp[i];
+                if (r > 0) {
+                    const nv = _roadNoise2(hx[i] * inv, (hz[i] - scroll) * inv, seed);
+                    if (nv > 0) f = nv * r;
+                }
+                p[j + 1] = ROAD_HILL_H * f;
+                c[j] = lo[0] + dr * f;
+                c[j + 1] = lo[1] + dg * f;
+                c[j + 2] = lo[2] + db * f;
+            }
+            h.pos.needsUpdate = true;
+            h.col.needsUpdate = true;
+        }
+    }
+    // Lay out the towers, windows and neon for the current seed (once per
+    // song). Writes instance matrices / colours into the build-time pools.
+    function _bgRoadLayoutSkyline(s) {
+        const tb = s.towerBuf, wb = s.winBuf, seed = s.seed, d = s.dummy;
+        const y0 = s.groundY, zs = s.skylineZ;
+        const nt = _roadTowerLayout(seed, ROAD_TOWER_POOL, tb);
+        d.rotation.set(0, 0, 0);
+        for (let i = 0; i < nt; i++) {
+            d.position.set(tb.x[i] * K, y0, zs + tb.z[i] * K);
+            d.scale.set(tb.w[i] * K, tb.h[i] * K, tb.d[i] * K);
+            d.updateMatrix();
+            s.towers.setMatrixAt(i, d.matrix);
+        }
+        s.towers.count = nt;
+        s.towers.instanceMatrix.needsUpdate = true;
+        d.scale.set(1, 1, 1);
+        const nw = _roadWindowLayout(seed, tb, nt, wb, ROAD_WINDOW_POOL);
+        for (let i = 0; i < nw; i++) {
+            d.position.set(wb.x[i] * K, y0 + wb.y[i] * K, zs + wb.z[i] * K + ROAD_WIN_LIFT);
+            d.updateMatrix();
+            s.windows.setMatrixAt(i, d.matrix);
+        }
+        s.nWindows = nw;
+        s.windows.count = 0;
+        s.windows.instanceMatrix.needsUpdate = true;
+        let nn = 0;
+        for (let i = 0; i < ROAD_NEON_POOL && nt > 0; i++) {
+            const t = Math.min(nt - 1, Math.floor(_roadHash01(i, 11, seed) * nt));
+            const w = tb.w[t], h = tb.h[t];
+            const zf = zs + (tb.z[t] + tb.d[t] / 2) * K + ROAD_WIN_LIFT * 1.5;
+            if (_roadHash01(i, 12, seed) < 0.5) {
+                // Vertical strip down one edge of the face.
+                const side = _roadHash01(i, 14, seed) < 0.5 ? -1 : 1;
+                d.position.set((tb.x[t] + side * w * 0.42) * K, y0 + h * 0.55 * K, zf);
+                d.scale.set(2.5 * K, h * 0.5 * K, 1);
+            } else {
+                // Horizontal band near the roof.
+                d.position.set(tb.x[t] * K, y0 + (h - 6) * K, zf);
+                d.scale.set(w * 0.8 * K, 3 * K, 1);
+            }
+            d.updateMatrix();
+            s.neon.setMatrixAt(nn, d.matrix);
+            const pi = Math.min(ROAD_NEON_PALETTE.length - 1, Math.floor(_roadHash01(i, 13, seed) * ROAD_NEON_PALETTE.length));
+            s.tmpColor.setHex(ROAD_NEON_PALETTE[pi]);
+            s.neon.setColorAt(nn, s.tmpColor);
+            nn++;
+        }
+        d.position.set(0, 0, 0);
+        d.scale.set(1, 1, 1);
+        s.neon.count = nn;
+        s.neon.instanceMatrix.needsUpdate = true;
+        if (s.neon.instanceColor) s.neon.instanceColor.needsUpdate = true;
+    }
+    // Per-frame skyline: re-lay out on a new song, light windows by song
+    // progress, breathe windows with mids and neon with treble, warm the
+    // sky glow with progress.
+    function _bgRoadUpdateSkyline(s, bands, chart) {
+        const key = chart && chart.songKey != null ? chart.songKey : '';
+        if (key !== s.seedKey) {
+            s.seedKey = key;
+            s.seed = _roadHashStr(key);
+            s.hillDirty = true;
+            _bgRoadLayoutSkyline(s);
+        }
+        if (!s.orderStamped) {
+            // The mount stamps renderOrder -1 on every bg mesh after build;
+            // the sky and towers must draw before the depthWrite:false
+            // asphalt so the nearer road paints over them.
+            s.sky.renderOrder = -3;
+            s.towers.renderOrder = -2;
+            s.orderStamped = true;
+        }
+        const dur = chart && chart.duration > 0 ? chart.duration : 0;
+        let prog = dur > 0 && Number.isFinite(chart.time) ? chart.time / dur : 0;
+        prog = prog < 0 ? 0 : (prog > 1 ? 1 : prog);
+        const lit = _roadWindowCount(prog, s.nWindows);
+        if (s.windows.count !== lit) s.windows.count = lit;
+        const lift = 0.5 + s.intensity;
+        const mid = (bands && bands.mid) || 0;
+        const treble = (bands && bands.treble) || 0;
+        let b = ROAD_WIN_BASE * lift + ROAD_WIN_MID * mid;
+        b = b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b);
+        s.windowMat.color.setRGB(ROAD_WIN_WARM_R * b, ROAD_WIN_WARM_G * b, ROAD_WIN_WARM_B * b);
+        b = ROAD_NEON_BASE * lift + ROAD_NEON_TREBLE * treble;
+        b = b < 0 ? 0 : (b > ROAD_NEON_MAX ? ROAD_NEON_MAX : b);
+        s.neonMat.color.setScalar(b);
+        s.skyMat.color.setScalar(0.8 + 0.2 * prog);
     }
 
     // Per-frame lane drawing for the road style: every distinct fret
@@ -3390,10 +3846,11 @@
                 mesh.setMatrixAt(bright ? nBright++ : nDim++, d.matrix);
             }
         }
-        // Lane changes: one diagonal per edge, from the old lane's edge at
-        // the near end of a dash length to the new lane's edge at the far end.
+        // Lane changes: one diagonal per edge, centred on the jump z, from
+        // the old lane's edge at the near end to the new lane's edge at the
+        // far end, ROAD_CONNECTOR_LEN long in z.
         let nc = 0;
-        const half = ROAD_DASH_LEN / 2;
+        const half = ROAD_CONNECTOR_LEN / 2;
         for (let i = 0; i < buf.nJumps; i++) {
             const zj = buf.jz[i];
             for (let e = 0; e < 2; e++) {
@@ -3714,6 +4171,29 @@
                     dashesPerEdge: Math.ceil(len / ROAD_DASH_PERIOD) + 1,
                     shown: -1,
                     laneShown: -1,
+                    groundY,
+                    tmpColor: new T.Color(),
+                    // Hills: per-side attribute refs + per-vertex inputs;
+                    // ground colours (linear RGB) at height 0 and at the top.
+                    hills: [], hillDirty: true, hillScroll: NaN,
+                    groundLo: [0, 0, 0], groundHi: [0, 0, 0],
+                    // Per-song seed from chart.songKey (null = not seeded yet).
+                    seed: 0, seedKey: null,
+                    // Section gantries and the per-name sign texture cache.
+                    signs: [], signMats: [],
+                    signSlots: _roadMakeSignSlots(ROAD_SIGN_POOL),
+                    signTex: new Map(), signTexByIndex: [], signSections: undefined,
+                    // Skyline layout buffers (K units) and meshes.
+                    towerBuf: _roadMakeTowerBuf(ROAD_TOWER_POOL),
+                    winBuf: {
+                        x: new Float32Array(ROAD_WINDOW_POOL),
+                        y: new Float32Array(ROAD_WINDOW_POOL),
+                        z: new Float32Array(ROAD_WINDOW_POOL),
+                    },
+                    nWindows: 0, skylineZ: 0,
+                    towers: null, windows: null, neon: null, sky: null,
+                    windowMat: null, neonMat: null, skyMat: null, skyTex: null,
+                    orderStamped: false,
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -3725,17 +4205,38 @@
                 asphalt.position.set(0, roadY, zMid);
                 root.add(asphalt);
 
-                // Ground either side so the barriers don't float.
-                s.groundMat = mat(new T.MeshBasicMaterial({ color: 0x0a0f14, depthWrite: false }));
+                // Rolling ground either side (see _bgRoadUpdateHills): flat
+                // beside the road and lamp posts, low seeded hills further
+                // out. Heights and colours are rewritten in place per frame.
+                s.groundMat = mat(new T.MeshBasicMaterial({ color: 0xffffff, vertexColors: true }));
                 const groundW = halfW * (ROAD_GROUND_MUL - 1);
-                const groundGeo = geo(new T.PlaneGeometry(groundW, len));
+                const hillStart = s.postX + ROAD_HEAD_R + ROAD_HILL_CLEAR;
                 for (const side of [-1, 1]) {
-                    const g = new T.Mesh(groundGeo, s.groundMat);
-                    g.rotation.x = -Math.PI / 2;
-                    g.position.set(side * (halfW + groundW / 2), groundY, zMid);
-                    root.add(g);
+                    const g = geo(new T.PlaneGeometry(groundW, len, ROAD_HILL_SEG_X, ROAD_HILL_SEG_Z));
+                    g.rotateX(-Math.PI / 2);         // lie flat: position y is the height
+                    const xOff = side * (halfW + groundW / 2);
+                    const pos = g.attributes.position;
+                    pos.setUsage(T.DynamicDrawUsage);
+                    const cnt = pos.count;
+                    const col = new T.BufferAttribute(new Float32Array(cnt * 3), 3);
+                    col.setUsage(T.DynamicDrawUsage);
+                    g.setAttribute('color', col);
+                    // Root-frame x / z per vertex and the flat-to-hill ramp.
+                    const hx = new Float32Array(cnt), hz = new Float32Array(cnt), ramp = new Float32Array(cnt);
+                    for (let i = 0; i < cnt; i++) {
+                        const x = pos.getX(i) + xOff;
+                        hx[i] = x;
+                        hz[i] = pos.getZ(i) + zMid;
+                        let r = (Math.abs(x) - hillStart) / ROAD_HILL_RAMP;
+                        r = r < 0 ? 0 : (r > 1 ? 1 : r);
+                        ramp[i] = r * r * (3 - 2 * r);
+                    }
+                    const m = new T.Mesh(g, s.groundMat);
+                    m.position.set(xOff, groundY, zMid);
+                    m.frustumCulled = false;     // heights change every frame
+                    root.add(m);
+                    s.hills.push({ pos, col, hx, hz, ramp, cnt });
                 }
-                _bgRoadApplyTheme(s, settings ? settings.clearHex : undefined);
 
                 // Barriers at the carriageway edges.
                 const barrierMat = mat(new T.MeshBasicMaterial({ color: 0x6a6e76 }));
@@ -3798,10 +4299,84 @@
                     m.frustumCulled = false;
                     root.add(m);
                 }
+
+                // Section gantries: two posts on the barriers, a crossbar and
+                // a green name panel centred over the carriageway, above the
+                // bar-post tops. Pooled; update() moves each to a section
+                // start and swaps the panel's map. depthWrite: false so the
+                // notes always paint over a gantry passing overhead.
+                const gantryX = halfW + ROAD_SHOULDER_W / 2;
+                const panelW = halfW * 2 * ROAD_SIGN_W_FRAC;
+                const panelH = panelW / ROAD_SIGN_ASPECT;
+                const panelY = roadY + ROAD_POST_H * ROAD_BAR_H_MUL + ROAD_SIGN_CLEAR + panelH / 2;
+                const barY = panelY + panelH * 0.25;
+                const gPostH = barY - roadY + ROAD_GANTRY_W / 2;
+                const gantryMat = mat(new T.MeshBasicMaterial({ color: ROAD_GANTRY_COLOR, depthWrite: false }));
+                const gPostGeo = geo(new T.BoxGeometry(ROAD_GANTRY_W, gPostH, ROAD_GANTRY_W));
+                gPostGeo.translate(0, gPostH / 2, 0);
+                const gBarGeo = geo(new T.BoxGeometry(gantryX * 2 + ROAD_GANTRY_W, ROAD_GANTRY_W, ROAD_GANTRY_W));
+                const panelGeo = geo(new T.PlaneGeometry(panelW, panelH));
+                for (let i = 0; i < ROAD_SIGN_POOL; i++) {
+                    const g = new T.Group();
+                    for (const side of [-1, 1]) {
+                        const p = new T.Mesh(gPostGeo, gantryMat);
+                        p.position.set(side * gantryX, roadY, 0);
+                        g.add(p);
+                    }
+                    const bar = new T.Mesh(gBarGeo, gantryMat);
+                    bar.position.set(0, barY, -ROAD_GANTRY_W);
+                    g.add(bar);
+                    const pm = mat(new T.MeshBasicMaterial({ map: null, transparent: true, depthWrite: false }));
+                    const panel = new T.Mesh(panelGeo, pm);
+                    panel.position.set(0, panelY, 0);
+                    g.add(panel);
+                    g.visible = false;
+                    root.add(g);
+                    s.signs.push(g);
+                    s.signMats.push(pm);
+                }
+
+                // City skyline beyond the road's far end: towers, lit windows
+                // and neon strips (laid out per song from the seed in
+                // update()), and a gradient sky behind them. All fog: false
+                // and static in z — this is the horizon.
+                s.skylineZ = zFar - ROAD_SKYLINE_GAP;
+                const towerGeo = geo(new T.BoxGeometry(1, 1, 1));
+                towerGeo.translate(0, 0.5, 0);   // base at y=0; scale = w, h, d
+                const towerMat = mat(new T.MeshBasicMaterial({ color: ROAD_TOWER_COLOR, fog: false }));
+                s.towers = new T.InstancedMesh(towerGeo, towerMat, ROAD_TOWER_POOL);
+                const winGeo = geo(new T.PlaneGeometry(ROAD_WIN_W * K, ROAD_WIN_H * K));
+                s.windowMat = mat(new T.MeshBasicMaterial({
+                    color: 0xffffff, fog: false, transparent: true, opacity: 0.9, depthWrite: false,
+                }));
+                s.windows = new T.InstancedMesh(winGeo, s.windowMat, ROAD_WINDOW_POOL);
+                const neonGeo = geo(new T.PlaneGeometry(1, 1));
+                s.neonMat = mat(new T.MeshBasicMaterial({
+                    color: 0xffffff, fog: false, transparent: true, depthWrite: false,
+                    blending: T.AdditiveBlending,
+                }));
+                s.neon = new T.InstancedMesh(neonGeo, s.neonMat, ROAD_NEON_POOL);
+                s.tmpColor.setHex(0xffffff);
+                // Creates the instanceColor attribute once, here.
+                for (let i = 0; i < ROAD_NEON_POOL; i++) s.neon.setColorAt(i, s.tmpColor);
+                for (const m of [s.towers, s.windows, s.neon]) {
+                    m.count = 0;
+                    m.frustumCulled = false;
+                    root.add(m);
+                }
+                s.skyMat = mat(new T.MeshBasicMaterial({ color: 0xffffff, fog: false, depthWrite: false }));
+                s.sky = new T.Mesh(geo(new T.PlaneGeometry(ROAD_SKY_W, ROAD_SKY_ABOVE + ROAD_SKY_BELOW)), s.skyMat);
+                s.sky.position.set(0, groundY + (ROAD_SKY_ABOVE - ROAD_SKY_BELOW) / 2, s.skylineZ - ROAD_SKY_GAP);
+                s.sky.frustumCulled = false;
+                root.add(s.sky);
+                _bgRoadApplyTheme(s, settings ? settings.clearHex : undefined);
                 return s;
             },
             update(s, bands, dt, t, chart) {
                 if (!s || !s.posts) return;
+                _bgRoadUpdateSkyline(s, bands, chart);   // first: a new song re-seeds the hills too
+                _bgRoadUpdateHills(s, chart ? chart.time : 0);
+                _bgRoadUpdateSigns(s, chart);
                 let n = 0;
                 if (chart && chart.isReady && chart.beats && chart.beats.length > 0) {
                     n = _roadPlacePosts(chart.beats, chart.time, TS, BEHIND, AHEAD + 1,
@@ -3870,14 +4445,28 @@
                 if (!s) return;
                 s.root.parent?.remove(s.root);
                 for (const m of [s.posts, s.beatHeads, s.barHeads,
-                    s.laneDim, s.laneBright, s.connectors, s.seams]) m?.dispose?.();
+                    s.laneDim, s.laneBright, s.connectors, s.seams,
+                    s.towers, s.windows, s.neon]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
+                // Textures this style owns: the sign cache and the sky.
+                if (s.signTex) {
+                    for (const tex of s.signTex.values()) tex.dispose();
+                    s.signTex.clear();
+                }
+                s.signTexByIndex = [];
+                s.signSections = undefined;
+                if (s.skyTex) s.skyTex.dispose();
                 s.geos.length = 0;
                 s.mats.length = 0;
+                s.hills.length = 0;
+                s.signs.length = 0;
+                s.signMats.length = 0;
                 s.posts = s.beatHeads = s.barHeads = null;
                 s.laneDim = s.laneBright = s.connectors = s.seams = null;
+                s.towers = s.windows = s.neon = s.sky = null;
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
+                s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
             },
         },
         // Venue visualization — generated small-club raster bg plate
@@ -5393,6 +5982,7 @@
         const _bgChart = {
             time: 0, beats: null, sections: null, isReady: false, lowerBoundTime: null,
             anchors: null, xFret: null,   // road lanes: chart anchors + this instance's lefty-aware fret x
+            songKey: null, duration: 0,   // road: per-song seed + progress (windows, sky glow)
         };
 
         // Notedetect feedback (issue #9). Per-panel mark queues populated
@@ -16838,6 +17428,8 @@
                         _bgChart.lowerBoundTime = bundle.lowerBoundTime;
                         _bgChart.anchors = bundle.anchors;
                         _bgChart.xFret = xFret;
+                        _bgChart.songKey = _songKey;
+                        _bgChart.duration = bundle.songInfo ? bundle.songInfo.duration : 0;
                         try { style.update(bgState, bands, dt, nowMs / 1000, _bgChart); }
                         catch (e) { console.error('[3D-Hwy] bg update threw', _bgEffectiveStyleId(), e); }
                     }
