@@ -26,7 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as each section begins, fading as it nears the hit line so it never sits
   solid behind the notes, low hills seeded from the song roll past either
   side, and a city skyline sits at the end of the road, its windows lighting
-  up as the song progresses.
+  up as the song progresses. With note detection on, the road follows how you
+  play: a run of hits or a high multiplier warms the street lights from cool
+  white to amber and grows the light pools they throw on the sidewalk, and a
+  string of misses rolls fog banks in over the hills and the skyline, then
+  rain beside the road and a wet sheen on the asphalt, which clear as you
+  recover. Weather never covers the board or the notes, and free play stays a
+  clear night. A new "Night road quality" setting (Auto, Full, Lite) adds a
+  Lite level for weaker graphics; Auto switches to it if the frame rate stays
+  under 50 fps.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
   the first twelve songs in your saved Song Library sort, using the same cards
   as the Song Library page (play, favorite, save, menu, arrangement chips,

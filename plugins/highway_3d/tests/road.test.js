@@ -46,7 +46,14 @@ function load() {
         '\nthis._roadMakeTowerBuf = _roadMakeTowerBuf;' +
         '\nthis._roadTowerLayout = _roadTowerLayout;' +
         '\nthis._roadWindowLayout = _roadWindowLayout;' +
-        '\nthis._roadWindowCount = _roadWindowCount;', sandbox);
+        '\nthis._roadWindowCount = _roadWindowCount;' +
+        '\nthis.ROAD_MOOD_IDLE = ROAD_MOOD_IDLE;' +
+        '\nthis._roadMakeMood = _roadMakeMood;' +
+        '\nthis._roadResetMood = _roadResetMood;' +
+        '\nthis._roadMoodStep = _roadMoodStep;' +
+        '\nthis._roadSmooth = _roadSmooth;' +
+        '\nthis._roadMakeQuality = _roadMakeQuality;' +
+        '\nthis._roadQualityStep = _roadQualityStep;', sandbox);
     return sandbox;
 }
 
@@ -539,4 +546,137 @@ test('_roadPostPattern: no bar lines falls back to the beat index; skip <= 1 kee
     assert.equal(all.kept, all.n);
     assert.equal(r._roadPostPattern(null, 0, BEHIND, lowerBoundTime, 5, 3, []), 0);
     assert.equal(r._roadPostPattern(makeBeats(10), 0, BEHIND, lowerBoundTime, 0, 3, []), 0);
+});
+
+// --- step 3: playing mood and quality level ---------------------------------
+
+// Run the mood for `secs` at 60 fps; play(t) -> { hit, miss, mult }.
+function runMood(r, m, secs, play) {
+    const dt = 1 / 60;
+    for (let f = 0; f < Math.round(secs * 60); f++) {
+        const p = play ? play(f * dt) : {};
+        r._roadMoodStep(m, dt, !!p.hit, !!p.miss, p.mult || 1);
+    }
+    return m;
+}
+
+test('_roadMoodStep: free play (no verdicts) stays a calm clear night', () => {
+    const r = load();
+    const m = runMood(r, r._roadMakeMood(), 120);
+    assert.equal(m.heat, 0);
+    assert.equal(m.gloom, 0);
+});
+
+test('_roadMoodStep: a run of hits warms up, a high multiplier warms faster', () => {
+    const r = load();
+    const hits = (t) => ({ hit: (t * 4) % 1 < 0.4 });   // four notes a second, lit 0.1 s each
+    const run = runMood(r, r._roadMakeMood(), 8, hits);
+    assert.ok(run.heat > 0.2 && run.heat < 0.45, `8 s of clean play is warm, not hot (${run.heat})`);
+    const long = runMood(r, r._roadMakeMood(), 30, hits);
+    assert.ok(long.heat > 0.9, `30 s of clean play is hot (${long.heat})`);
+    const x4 = runMood(r, r._roadMakeMood(), 8, (t) => ({ ...hits(t), mult: 4 }));
+    assert.ok(x4.heat > 0.95, `a 4x multiplier is hot within seconds (${x4.heat})`);
+    assert.equal(x4.gloom, 0);
+});
+
+test('_roadMoodStep: a miss cools the heat; misses bring gloom that hits clear', () => {
+    const r = load();
+    const m = runMood(r, r._roadMakeMood(), 10, () => ({ hit: true, mult: 4 }));
+    runMood(r, m, 0.5, () => ({ miss: true }));
+    assert.ok(m.heat < 0.6, `heat drops fast on a miss (${m.heat})`);
+    assert.equal(m.run, 0);
+    runMood(r, m, 3, () => ({ miss: true }));
+    assert.ok(m.gloom > 0.9, `3.5 s of misses on screen is deep gloom (${m.gloom})`);
+    assert.ok(m.heat < 0.05);
+    runMood(r, m, 4, () => ({ hit: true }));
+    assert.ok(m.gloom < 0.1, `four seconds of hits clear it (${m.gloom})`);
+    const g = r._roadMakeMood();
+    runMood(r, g, 2, () => ({ miss: true }));
+    const before = g.gloom;
+    runMood(r, g, 5);
+    assert.ok(g.gloom < before && g.gloom > 0, 'gloom drains slowly on its own');
+});
+
+test('_roadMoodStep: after ROAD_MOOD_IDLE s without verdicts the heat settles', () => {
+    const r = load();
+    const m = runMood(r, r._roadMakeMood(), 30, () => ({ hit: true }));
+    assert.ok(m.heat > 0.9);
+    runMood(r, m, r.ROAD_MOOD_IDLE - 0.5);
+    assert.ok(m.heat > 0.9, 'a short gap between notes keeps the heat');
+    runMood(r, m, 5);
+    assert.ok(m.heat < 0.05, `stopping playing cools it (${m.heat})`);
+    assert.equal(m.run, 0);
+});
+
+test('_roadMoodStep: bad dt is ignored, big dt is clamped, values stay in 0..1', () => {
+    const r = load();
+    const m = r._roadMakeMood();
+    for (const dt of [0, -1, NaN, undefined]) r._roadMoodStep(m, dt, false, true, 1);
+    assert.deepEqual({ ...m }, { ...r._roadMakeMood() });
+    for (let i = 0; i < 100; i++) r._roadMoodStep(m, 5, false, true, 1);
+    assert.equal(m.gloom, 1);
+    for (let i = 0; i < 100; i++) r._roadMoodStep(m, 5, true, false, 99);
+    assert.ok(m.heat <= 1 && m.heat > 0.9);
+    assert.equal(m.gloom, 0);
+    r._roadResetMood(m);
+    assert.deepEqual({ ...m }, { ...r._roadMakeMood() });
+});
+
+test('_roadSmooth: 0 below, 1 above, monotonic between', () => {
+    const r = load();
+    assert.equal(r._roadSmooth(0.25, 0.75, 0), 0);
+    assert.equal(r._roadSmooth(0.25, 0.75, 1), 1);
+    assert.equal(r._roadSmooth(0.25, 0.75, 0.5), 0.5);
+    let prev = -1;
+    for (let x = 0; x <= 1.0001; x += 0.01) {
+        const v = r._roadSmooth(0.25, 0.75, x);
+        assert.ok(v >= prev);
+        prev = v;
+    }
+});
+
+// Feed the quality watcher `secs` of frames at `fps`.
+function runQuality(r, q, secs, fps) {
+    let switched = 0;
+    const dt = 1 / fps;
+    for (let f = 0; f < Math.round(secs * fps); f++) {
+        if (r._roadQualityStep(q, dt, 3, 50, 4)) switched++;
+    }
+    return switched;
+}
+
+test('_roadQualityStep: Auto latches Lite once frames stay under 50 fps', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    assert.equal(q.lite, false);
+    assert.equal(runQuality(r, q, 6.5, 40), 0, 'not before warm-up + hold');
+    assert.equal(runQuality(r, q, 2, 40), 1, 'switches exactly once');
+    assert.equal(q.lite, true);
+    assert.equal(runQuality(r, q, 30, 120), 0, 'Lite stays latched');
+    assert.equal(q.lite, true);
+});
+
+test('_roadQualityStep: steady 60 fps, short dips and clamped frames keep Full', () => {
+    const r = load();
+    const q = r._roadMakeQuality('auto');
+    assert.equal(runQuality(r, q, 20, 60), 0);
+    for (let i = 0; i < 5; i++) {
+        runQuality(r, q, 2, 40);                // two-second dips
+        runQuality(r, q, 3, 60);
+    }
+    assert.equal(q.lite, false, 'dips shorter than the hold do not switch');
+    for (let i = 0; i < 600; i++) r._roadQualityStep(q, 0.1, 3, 50, 4);   // tab hidden / paused
+    assert.equal(q.lite, false, 'clamped 0.1 s frames are ignored');
+});
+
+test('_roadQualityStep: Full and Lite are fixed; unknown modes mean Auto', () => {
+    const r = load();
+    const full = r._roadMakeQuality('full');
+    assert.equal(runQuality(r, full, 30, 20), 0);
+    assert.equal(full.lite, false);
+    const lite = r._roadMakeQuality('lite');
+    assert.equal(lite.lite, true);
+    assert.equal(r._roadQualityStep(lite, 1 / 60, 3, 50, 4), false);
+    assert.equal(r._roadMakeQuality('bogus').mode, 'auto');
+    assert.equal(r._roadMakeQuality(undefined).mode, 'auto');
 });

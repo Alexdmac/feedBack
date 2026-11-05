@@ -131,6 +131,23 @@
         </select>
     </div>
 
+    <!-- Night road quality (road style only). Lite drops the weather and the
+         busier scenery for weaker graphics; Auto switches to Lite by itself
+         when the frame rate stays low. -->
+    <div class="mt-3">
+        <label for="h3d-bg-road-quality" class="text-xs font-medium text-gray-400 mb-1 block">Night road quality</label>
+        <select id="h3d-bg-road-quality"
+            onchange="window.h3dBgSetRoadQuality && window.h3dBgSetRoadQuality(this.value)"
+            class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+            <option value="auto" selected>Auto</option>
+            <option value="full">Full</option>
+            <option value="lite">Lite</option>
+        </select>
+        <p class="text-[10px] text-gray-500 mt-1">
+            Night road only. Lite drops the rain, fog, light pools, city windows and scenery motion, and lights every other beat. Auto switches to Lite if the frame rate stays under 50 fps.
+        </p>
+    </div>
+
     <!-- Scene colors — TWO independent axes sharing one palette family:
          Background (clear + fog) and Highway (board surface + lit lane). Same
          id-set in both, so any background can mix with any highway; picking the
@@ -1523,6 +1540,13 @@
             }
             if (bgThemeSel) bgThemeSel.value = bgTheme;
             if (hwThemeSel) hwThemeSel.value = hwTheme;
+            // Night road quality: auto | full | lite (road style only).
+            const rqSel = document.getElementById('h3d-bg-road-quality');
+            if (rqSel) {
+                let rq = null;
+                try { rq = localStorage.getItem('h3d_bg_roadQuality'); } catch (_) { /* storage blocked */ }
+                rqSel.value = (rq === 'full' || rq === 'lite') ? rq : 'auto';
+            }
 
             if (fileInput) {
                 fileInput.addEventListener('change', function () {

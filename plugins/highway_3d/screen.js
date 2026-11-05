@@ -2398,7 +2398,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true };
+    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto' };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -2842,6 +2842,8 @@
         }
         if (key === 'fretNumberGhostScope')
             return FRET_NUMBER_GHOST_SCOPE_IDS.includes(val) ? val : BG_DEFAULTS.fretNumberGhostScope;
+        if (key === 'roadQuality')
+            return ['auto', 'full', 'lite'].includes(val) ? val : BG_DEFAULTS.roadQuality;
         if (key === 'nutColor' || key === 'headstockColor') {
             if (typeof val !== 'string') return BG_DEFAULTS[key];
             const t = val.trim();
@@ -2958,6 +2960,11 @@
     window.h3dBgSetVerdictMarks = (v) => _bgWriteGlobal('verdictMarks', !!v);
     window.h3dBgSetTimingFx     = (v) => _bgWriteGlobal('timingFx', !!v);
     window.h3dBgSetStreakFx     = (v) => _bgWriteGlobal('streakFx', !!v);
+    // Night road quality: 'auto' | 'full' | 'lite' (road background only).
+    window.h3dBgSetRoadQuality  = (v) => {
+        const s = String(v);
+        _bgWriteGlobal('roadQuality', ['auto', 'full', 'lite'].includes(s) ? s : BG_DEFAULTS.roadQuality);
+    };
     window.h3dBgSetBloom        = (v) => _bgWriteGlobal('bloom', !!v);
     window.h3dBgSetToneHudVisible   = (v) => _bgWriteGlobal('toneHudVisible', !!v);
     window.h3dBgSetToneHudPosition  = (v) => _bgWriteGlobal('toneHudPosition', v);
@@ -3462,6 +3469,80 @@
         const n = Math.floor(total * f + 1e-9);
         return n > total ? total : n;
     }
+    // Playing mood (step 3). m = { heat, gloom, run, quiet }. Per frame of
+    // moving song time: hit / miss = a lit / missed gem of THIS panel was on
+    // screen, mult = the scorer's multiplier (1 when there is none). Heat
+    // follows the multiplier or the run of clean play, whichever is higher,
+    // and drops on a miss; gloom builds while misses are on screen and
+    // clears on hits, slowly on its own. With no verdict for ROAD_MOOD_IDLE
+    // seconds (free play, no detector) heat settles to 0 and gloom drains.
+    const ROAD_MOOD_IDLE = 4;             // s without a verdict = not being judged
+    const ROAD_MOOD_RUN_FULL = 24;        // s of clean play for full heat on its own
+    const ROAD_MOOD_HEAT_UP = 1.5, ROAD_MOOD_HEAT_DOWN = 0.8;   // easing time constants (s)
+    const ROAD_MOOD_GLOOM_MISS = 0.35;    // gloom per second while a miss is on screen
+    const ROAD_MOOD_GLOOM_HIT = 0.3;      // cleared per second while a hit is on screen
+    const ROAD_MOOD_GLOOM_CALM = 0.08;    // cleared per second otherwise
+    function _roadMakeMood() {
+        return { heat: 0, gloom: 0, run: 0, quiet: ROAD_MOOD_IDLE };
+    }
+    function _roadResetMood(m) {
+        m.heat = 0; m.gloom = 0; m.run = 0; m.quiet = ROAD_MOOD_IDLE;
+        return m;
+    }
+    function _roadMoodStep(m, dt, hit, miss, mult) {
+        if (!m || !(dt > 0)) return m;
+        if (dt > 0.1) dt = 0.1;
+        if (miss) { m.run = 0; m.quiet = 0; }
+        else if (hit) m.quiet = 0;
+        else m.quiet += dt;
+        const judged = m.quiet < ROAD_MOOD_IDLE;
+        if (!judged) m.run = 0;
+        else if (!miss) m.run += dt;
+        let target = 0;
+        if (judged && !miss) {
+            const fromMult = mult > 1 ? (mult - 1) / 3 : 0;
+            const fromRun = m.run / ROAD_MOOD_RUN_FULL;
+            target = fromMult > fromRun ? fromMult : fromRun;
+            if (target > 1) target = 1;
+        }
+        const tau = target > m.heat ? ROAD_MOOD_HEAT_UP : ROAD_MOOD_HEAT_DOWN;
+        m.heat += (target - m.heat) * (1 - Math.exp(-dt / tau));
+        if (m.heat < 1e-4) m.heat = 0;
+        if (miss) m.gloom += ROAD_MOOD_GLOOM_MISS * dt;
+        else if (hit) m.gloom -= ROAD_MOOD_GLOOM_HIT * dt;
+        else m.gloom -= ROAD_MOOD_GLOOM_CALM * dt;
+        m.gloom = m.gloom < 0 ? 0 : (m.gloom > 1 ? 1 : m.gloom);
+        return m;
+    }
+    // 0 below a, 1 above b, smooth between.
+    function _roadSmooth(a, b, x) {
+        let u = (x - a) / (b - a);
+        u = u < 0 ? 0 : (u > 1 ? 1 : u);
+        return u * u * (3 - 2 * u);
+    }
+    // Night road quality. mode 'full' / 'lite' are fixed; 'auto' starts
+    // Full and latches Lite once steady frames stay under minFps for `hold`
+    // seconds after a `warmup`. Frames of 0.099 s or more (the host clamps
+    // dt at 0.1: tab switches, pauses, one-off hitches) are ignored, so a
+    // single stall never trips it. Returns true on the frame it switches.
+    function _roadMakeQuality(mode) {
+        const m = mode === 'full' || mode === 'lite' ? mode : 'auto';
+        return { mode: m, lite: m === 'lite', warm: 0, slow: 0, ema: 0 };
+    }
+    function _roadQualityStep(q, dt, warmup, minFps, hold) {
+        if (!q || q.mode !== 'auto' || q.lite) return false;
+        if (!(dt > 0) || dt >= 0.099) return false;
+        q.warm += dt;
+        q.ema = q.ema > 0 ? q.ema + (dt - q.ema) * 0.1 : dt;
+        if (q.warm < warmup) return false;
+        if (q.ema * minFps > 1) {
+            q.slow += dt;
+            if (q.slow >= hold) { q.lite = true; return true; }
+        } else {
+            q.slow = 0;
+        }
+        return false;
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -3496,7 +3577,11 @@
     const ROAD_HEAD_BAR_BASE = 0.62;
     const ROAD_HEAD_BASS = 0.6;
     const ROAD_HEAD_MAX = 0.85;
-    const ROAD_HEAD_WARM_R = 1.0, ROAD_HEAD_WARM_G = 0.86, ROAD_HEAD_WARM_B = 0.62;
+    // Lamp colour follows heat: cool LED white at rest, sodium amber at full
+    // heat, and a little brighter (step 3).
+    const ROAD_LAMP_COOL_R = 0.86, ROAD_LAMP_COOL_G = 0.92, ROAD_LAMP_COOL_B = 1.0;
+    const ROAD_LAMP_HOT_R = 1.0, ROAD_LAMP_HOT_G = 0.64, ROAD_LAMP_HOT_B = 0.28;
+    const ROAD_LAMP_HEAT_LIFT = 0.3;
     const ROAD_DASH_LEN = 30 * K;
     const ROAD_DASH_PERIOD = 60 * K;
     const ROAD_DASH_W = 1.2 * K;
@@ -3573,6 +3658,53 @@
     const ROAD_SKY_ABOVE = 2800 * K;
     const ROAD_SKY_BELOW = 150 * K;
     const ROAD_SKY_GLOW_HEX = 0xd08a50;
+    // Step 3: light and weather that follow the playing mood (_roadMoodStep).
+    // Light pools: a soft ellipse on the sidewalk under each lit post,
+    // reaching the road edge, additive, brighter and larger with heat.
+    const ROAD_POOL_RX = 20 * K, ROAD_POOL_RZ = 32 * K;   // ellipse half-axes
+    const ROAD_POOL_IN = 9 * K;               // pool centre this far in from the post, toward the road
+    const ROAD_POOL_BASE = 0.14, ROAD_POOL_HEAT = 0.3;   // strength at rest / extra at full heat
+    const ROAD_POOL_GROW = 0.35;              // this much larger at full heat
+    const ROAD_POOL_BAR_MUL = 1.2;            // bar-line lamps throw a stronger pool
+    const ROAD_POOL_WET_LEN = 0.9, ROAD_POOL_WET_STR = 0.6;   // rain stretches pools along the road and brightens them
+    // Fog banks: soft low cards across the far end (between the road's end
+    // and the skyline) and over the hills each side, scrolling with the
+    // song. They roll in as gloom passes FOG_START and are thickest at
+    // FOG_FULL. The scene fog that fades the notes is never touched.
+    const ROAD_FOG_HEX = 0x8a96a4;            // bank tint, mixed into the theme colour
+    const ROAD_FOG_START = 0.25, ROAD_FOG_FULL = 0.75;
+    const ROAD_FOG_MAX = 0.75;                // bank opacity at full gloom
+    const ROAD_FOG_FAR_N = 8;
+    const ROAD_FOG_FAR_W = 800 * K, ROAD_FOG_FAR_H = 200 * K;
+    const ROAD_FOG_SIDE_N = 8;                // per side
+    const ROAD_FOG_SIDE_W = 260 * K, ROAD_FOG_SIDE_H = 80 * K;
+    const ROAD_FOG_SIDE_SPREAD = 330 * K;     // banks sit this far out past the hill start
+    const ROAD_FOG_SINK = 220 * K;            // side banks sink into the hills over this distance near the camera
+    const ROAD_SKY_GLOOM_CUT = 0.35;          // sky glow dims this much in full fog
+    const ROAD_WIN_GLOOM_CUT = 0.6;           // windows and neon dim this much in full fog
+    // Rain: thin streaks beside the road (outside the carriageway, so never
+    // over the board on screen) and beyond its far end. They fall by wall
+    // clock (rain keeps falling when you pause) and drift toward you with
+    // the song like the rest of the scenery.
+    const ROAD_RAIN_POOL = 420;
+    const ROAD_RAIN_START = 0.55, ROAD_RAIN_FULL = 0.9;
+    const ROAD_RAIN_OPACITY = 0.4;
+    const ROAD_RAIN_FALL = 420 * K;           // fall speed, units per second
+    const ROAD_RAIN_H = 240 * K;              // drops recycle over this height above the ground
+    const ROAD_RAIN_W = 0.5 * K, ROAD_RAIN_LEN = 14 * K;
+    const ROAD_RAIN_FAR_W = 1.6 * K, ROAD_RAIN_FAR_LEN = 40 * K;
+    const ROAD_RAIN_CLEAR = 6 * K;            // side drops stay this far outside the carriageway
+    const ROAD_RAIN_SIDE_W = 420 * K;         // ...and spread this far out from there
+    const ROAD_RAIN_FAR_FRAC = 0.2;           // share of drops beyond the road's far end
+    const ROAD_RAIN_HEX = 0xa8b8cc;
+    // Wet asphalt: the carriageway shifts toward a cool sheen in the rain.
+    const ROAD_WET_HEX = 0x56677a, ROAD_WET_MIX = 0.25;
+    // Lite level (Settings > Night road quality). Auto switches after
+    // ROAD_AUTO_WARMUP s once frames stay under ROAD_AUTO_MIN_FPS for
+    // ROAD_AUTO_HOLD s. Lite drops pools, fog, rain, windows, neon,
+    // sidewalk joints and the hills' motion, and lights every other beat.
+    const ROAD_AUTO_MIN_FPS = 50, ROAD_AUTO_HOLD = 4, ROAD_AUTO_WARMUP = 3;
+    const ROAD_LITE_POST_SKIP = 2;
 
     // Mix two 0xRRGGBB colours (t = 0 -> a, 1 -> b), no allocation.
     function _roadMixHex(a, b, t) {
@@ -3592,7 +3724,14 @@
     function _bgRoadApplyTheme(s, clearHex) {
         if (!s || !s.asphaltMat) return;
         const clear = typeof clearHex === 'number' ? clearHex : BG_THEMES.default.clear;
-        s.asphaltMat.color.setHex(_roadMixHex(clear, 0x34343a, 0.25));
+        s.asphaltHex = _roadMixHex(clear, 0x34343a, 0.25);
+        s.asphaltMat.color.setHex(s.asphaltHex);
+        s.wetShown = -1;                     // re-apply the wet sheen next frame
+        if (s.fogMat) {
+            const fogHex = _roadMixHex(clear, ROAD_FOG_HEX, 0.5);
+            s.fogMat.color.setHex(fogHex);
+            s.fogSideMat.color.setHex(fogHex);
+        }
         const ground = _roadMixHex(clear, 0x000000, 0.35);
         // Vertex colours are linear; T.Color.setHex converts like material colours do.
         const c = s.tmpColor;
@@ -3676,6 +3815,125 @@
         const tex = new T.CanvasTexture(c);
         tex.colorSpace = T.SRGBColorSpace;
         return tex;
+    }
+    // Soft round light pool, white with an alpha falloff (additive).
+    function _roadPoolTexture() {
+        const c = document.createElement('canvas');
+        c.width = 64; c.height = 64;
+        const x = c.getContext('2d');
+        const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+        g.addColorStop(0, 'rgba(255,255,255,1)');
+        g.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+        g.addColorStop(0.7, 'rgba(255,255,255,0.15)');
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        x.fillStyle = g;
+        x.fillRect(0, 0, 64, 64);
+        const tex = new T.CanvasTexture(c);
+        tex.colorSpace = T.SRGBColorSpace;
+        return tex;
+    }
+    // Low fog bank: a few overlapping soft blobs, heavier at the bottom,
+    // fading to nothing at every edge.
+    function _roadFogTexture() {
+        const c = document.createElement('canvas');
+        c.width = 128; c.height = 64;
+        const x = c.getContext('2d');
+        // [centre x, centre y, radius] as fractions of the height; the
+        // card's own aspect stretches them into long low clouds.
+        const blobs = [[1.0, 0.62, 0.5], [0.55, 0.68, 0.4], [1.45, 0.66, 0.42],
+            [0.8, 0.5, 0.32], [1.22, 0.48, 0.34], [0.3, 0.72, 0.26], [1.72, 0.72, 0.26]];
+        for (const [bx, by, br] of blobs) {
+            const cx = bx * 64, cy = by * 64, r = br * 64;
+            const g = x.createRadialGradient(cx, cy, 0, cx, cy, r);
+            g.addColorStop(0, 'rgba(255,255,255,0.75)');
+            g.addColorStop(0.5, 'rgba(255,255,255,0.4)');
+            g.addColorStop(1, 'rgba(255,255,255,0)');
+            x.fillStyle = g;
+            x.fillRect(0, 0, 128, 64);
+        }
+        // Fade the top and bottom rows out so no edge shows.
+        x.globalCompositeOperation = 'destination-in';
+        const v = x.createLinearGradient(0, 0, 0, 64);
+        v.addColorStop(0, 'rgba(0,0,0,0)');
+        v.addColorStop(0.3, 'rgba(0,0,0,1)');
+        v.addColorStop(0.85, 'rgba(0,0,0,1)');
+        v.addColorStop(1, 'rgba(0,0,0,0)');
+        x.fillStyle = v;
+        x.fillRect(0, 0, 128, 64);
+        x.globalCompositeOperation = 'source-over';
+        const tex = new T.CanvasTexture(c);
+        tex.colorSpace = T.SRGBColorSpace;
+        return tex;
+    }
+    // Lite: hide everything Lite drops. Called once when Auto switches (or
+    // at build for a fixed Lite); update() keeps it that way.
+    function _bgRoadEnterLite(s, auto) {
+        if (!s || !s.posts) return;
+        for (const m of [s.joints, s.pools, s.fogFar, s.fogSide, s.rain, s.windows, s.neon]) {
+            if (m) m.count = 0;
+        }
+        s.hillDirty = true;                  // re-lay the hills once, at rest
+        if (auto) console.info('[3D-Hwy] night road: frame rate stayed under '
+            + ROAD_AUTO_MIN_FPS + ' fps, switching to Lite');
+    }
+    // Per-frame weather from the mood: fog banks (amount s.fogAmt), rain
+    // (s.rainAmt) and the wet asphalt. `t` is wall-clock seconds (rain fall).
+    function _bgRoadUpdateWeather(s, chart, t) {
+        const wet = s.rainAmt;
+        if (Math.abs(wet - s.wetShown) > 0.004 || (wet === 0 && s.wetShown !== 0)) {
+            s.wetShown = wet;
+            s.asphaltMat.color.setHex(_roadMixHex(s.asphaltHex, ROAD_WET_HEX, ROAD_WET_MIX * wet));
+        }
+        if (s.quality.lite) return;
+        const time = chart && Number.isFinite(chart.time) ? chart.time : 0;
+        // Fog banks.
+        const fog = s.fogAmt;
+        if (fog <= 0.002) {
+            s.fogFar.count = 0;
+            s.fogSide.count = 0;
+        } else {
+            s.fogMat.opacity = ROAD_FOG_MAX * fog;
+            s.fogSideMat.opacity = ROAD_FOG_MAX * fog;
+            s.fogFar.count = ROAD_FOG_FAR_N;
+            const d = s.dummy, len = s.zNear - s.zFar, scroll = time * TS;
+            const sinkFrom = s.zNear - ROAD_FOG_SINK;
+            for (let i = 0; i < s.fogSideN; i++) {
+                let z = s.fogSideZ[i] + scroll;
+                z = s.zFar + (((z - s.zFar) % len) + len) % len;
+                let sink = (s.zNear - z) / ROAD_FOG_SINK;   // 0 at zNear .. 1 at sinkFrom
+                sink = z < sinkFrom ? 1 : (sink < 0 ? 0 : sink);
+                d.position.set(s.fogSideX[i], s.groundY, z);
+                d.scale.set(s.fogSideW[i], s.fogSideH[i] * (0.4 + 0.6 * fog) * sink + 1e-4, 1);
+                d.updateMatrix();
+                s.fogSide.setMatrixAt(i, d.matrix);
+            }
+            d.scale.set(1, 1, 1);
+            s.fogSide.count = s.fogSideN;
+            s.fogSide.instanceMatrix.needsUpdate = true;
+        }
+        // Rain.
+        const rain = s.rainAmt;
+        const nr = Math.round(ROAD_RAIN_POOL * rain);   // rain thickens drop by drop
+        if (nr === 0) {
+            s.rain.count = 0;
+            return;
+        }
+        s.rainMat.opacity = ROAD_RAIN_OPACITY * (0.5 + 0.5 * rain);
+        const arr = s.rain.instanceMatrix.array;
+        const len = s.zNear - s.zFar, scroll = time * TS;
+        const fall = (Number.isFinite(t) ? t : 0) * ROAD_RAIN_FALL;
+        const y0 = s.groundY, H = ROAD_RAIN_H;
+        for (let i = 0; i < nr; i++) {
+            const o = i * 16;
+            const ph = s.rainPhase[i] + fall;
+            arr[o + 13] = y0 + H - (ph - Math.floor(ph / H) * H);
+            if (!s.rainFar[i]) {
+                let z = s.rainZ[i] + scroll;
+                arr[o + 14] = s.zFar + (((z - s.zFar) % len) + len) % len;
+            }
+        }
+        s.rain.count = nr;
+        s.rain.instanceMatrix.needsUpdate = true;
     }
     function _roadSignLabel(sec) {
         return sec && sec.name != null ? String(sec.name).trim().toUpperCase() : '';
@@ -3823,6 +4081,8 @@
             s.seed = _roadHashStr(key);
             s.hillDirty = true;
             _bgRoadLayoutSkyline(s);
+            _roadResetMood(s.mood);          // a new song starts on a clear night
+            if (s.quality.lite) s.neon.count = 0;
         }
         if (!s.orderStamped) {
             // The mount stamps renderOrder -1 on every bg mesh after build;
@@ -3847,18 +4107,19 @@
         const dur = chart && chart.duration > 0 ? chart.duration : 0;
         let prog = dur > 0 && Number.isFinite(chart.time) ? chart.time / dur : 0;
         prog = prog < 0 ? 0 : (prog > 1 ? 1 : prog);
-        const lit = _roadWindowCount(prog, s.nWindows);
+        const lit = s.quality.lite ? 0 : _roadWindowCount(prog, s.nWindows);
         if (s.windows.count !== lit) s.windows.count = lit;
         const lift = 0.5 + s.intensity;
         const mid = (bands && bands.mid) || 0;
         const treble = (bands && bands.treble) || 0;
+        const dim = 1 - ROAD_WIN_GLOOM_CUT * s.fogAmt;   // fog greys the city out
         let b = ROAD_WIN_BASE * lift + ROAD_WIN_MID * mid;
-        b = b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b);
+        b = (b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b)) * dim;
         s.windowMat.color.setRGB(ROAD_WIN_WARM_R * b, ROAD_WIN_WARM_G * b, ROAD_WIN_WARM_B * b);
         b = ROAD_NEON_BASE * lift + ROAD_NEON_TREBLE * treble;
-        b = b < 0 ? 0 : (b > ROAD_NEON_MAX ? ROAD_NEON_MAX : b);
+        b = (b < 0 ? 0 : (b > ROAD_NEON_MAX ? ROAD_NEON_MAX : b)) * dim;
         s.neonMat.color.setScalar(b);
-        s.skyMat.color.setScalar(0.8 + 0.2 * prog);
+        s.skyMat.color.setScalar((0.8 + 0.2 * prog) * (1 - ROAD_SKY_GLOOM_CUT * s.fogAmt));
     }
 
     // Per-frame lane drawing for the road style: every distinct fret
@@ -4293,6 +4554,23 @@
                     towers: null, windows: null, neon: null, sky: null,
                     windowMat: null, neonMat: null, skyMat: null, skyTex: null,
                     orderStamped: false,
+                    // Step 3: playing mood, quality level, light pools,
+                    // fog banks, rain and the wet asphalt.
+                    cam: settings ? settings.cam : null,
+                    mood: _roadMakeMood(), moodTime: NaN,
+                    quality: _roadMakeQuality(settings ? settings.roadQuality : undefined),
+                    fogAmt: 0, rainAmt: 0, wetShown: -1, asphaltHex: 0,
+                    pools: null, poolTex: null,
+                    fogFar: null, fogSide: null, fogMat: null, fogSideMat: null, fogTex: null,
+                    fogSideN: ROAD_FOG_SIDE_N * 2,
+                    fogSideX: new Float32Array(ROAD_FOG_SIDE_N * 2),
+                    fogSideZ: new Float32Array(ROAD_FOG_SIDE_N * 2),
+                    fogSideW: new Float32Array(ROAD_FOG_SIDE_N * 2),
+                    fogSideH: new Float32Array(ROAD_FOG_SIDE_N * 2),
+                    rain: null, rainMat: null,
+                    rainZ: new Float32Array(ROAD_RAIN_POOL),
+                    rainPhase: new Float32Array(ROAD_RAIN_POOL),
+                    rainFar: new Uint8Array(ROAD_RAIN_POOL),
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -4493,38 +4771,170 @@
                 s.sky.position.set(0, groundY + (ROAD_SKY_ABOVE - ROAD_SKY_BELOW) / 2, s.skylineZ - ROAD_SKY_GAP);
                 s.sky.frustumCulled = false;
                 root.add(s.sky);
+
+                // Light pools under the lit posts (placed with the posts in
+                // update()). Additive with per-instance colour = lamp colour x
+                // strength x distance fade, so far pools fade like the posts.
+                s.poolTex = _roadPoolTexture();
+                const poolMat = mat(new T.MeshBasicMaterial({
+                    map: s.poolTex, color: 0xffffff, transparent: true, depthWrite: false,
+                    fog: false, blending: T.AdditiveBlending,
+                }));
+                const poolGeo = geo(new T.PlaneGeometry(1, 1));
+                poolGeo.rotateX(-Math.PI / 2);
+                s.pools = new T.InstancedMesh(poolGeo, poolMat, ROAD_POST_POOL * 2);
+                s.pools.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                for (let i = 0; i < ROAD_POST_POOL * 2; i++) s.pools.setColorAt(i, s.tmpColor.setRGB(0, 0, 0));
+                s.pools.instanceColor.setUsage(T.DynamicDrawUsage);
+                s.pools.count = 0;
+                s.pools.frustumCulled = false;
+                root.add(s.pools);
+
+                // Fog banks: cards facing the camera, base sunk a little into
+                // the ground. Far banks are fixed between the road's end and
+                // the skyline (fog: false, like the skyline); side banks sit
+                // over the hills, scroll with the song and take the scene fog.
+                s.fogTex = _roadFogTexture();
+                s.fogMat = mat(new T.MeshBasicMaterial({
+                    map: s.fogTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, fog: false,
+                }));
+                s.fogSideMat = mat(new T.MeshBasicMaterial({
+                    map: s.fogTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false,
+                }));
+                const fogGeo = geo(new T.PlaneGeometry(1, 1));
+                fogGeo.translate(0, 0.35, 0);    // bottom 15% of the card below the ground line
+                s.fogFar = new T.InstancedMesh(fogGeo, s.fogMat, ROAD_FOG_FAR_N);
+                s.fogSide = new T.InstancedMesh(fogGeo, s.fogSideMat, s.fogSideN);
+                s.fogSide.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                {
+                    const d = s.dummy, gap = s.skylineZ - zFar;
+                    for (let i = 0; i < ROAD_FOG_FAR_N; i++) {
+                        const u = (i + 0.5) / ROAD_FOG_FAR_N;
+                        d.position.set((u - 0.5) * ROAD_FOG_FAR_W * 2.2 + (_roadHash01(i, 21, 5) - 0.5) * 120 * K,
+                            groundY, zFar + gap * (0.15 + 0.7 * _roadHash01(i, 22, 5)));
+                        d.scale.set(ROAD_FOG_FAR_W * (0.8 + 0.5 * _roadHash01(i, 23, 5)),
+                            ROAD_FOG_FAR_H * (0.7 + 0.6 * _roadHash01(i, 24, 5)), 1);
+                        d.updateMatrix();
+                        s.fogFar.setMatrixAt(i, d.matrix);
+                    }
+                    const fogX0 = hillStart + 40 * K;
+                    for (let i = 0; i < s.fogSideN; i++) {
+                        const side = i % 2 === 0 ? -1 : 1, k = i >> 1;
+                        s.fogSideX[i] = side * (fogX0 + ROAD_FOG_SIDE_SPREAD * _roadHash01(i, 31, 5));
+                        s.fogSideZ[i] = zFar + len * ((k + _roadHash01(i, 32, 5) * 0.8) / ROAD_FOG_SIDE_N);
+                        s.fogSideW[i] = ROAD_FOG_SIDE_W * (0.7 + 0.6 * _roadHash01(i, 33, 5));
+                        s.fogSideH[i] = ROAD_FOG_SIDE_H * (0.7 + 0.6 * _roadHash01(i, 34, 5));
+                    }
+                    d.position.set(0, 0, 0);
+                    d.scale.set(1, 1, 1);
+                }
+                for (const m of [s.fogFar, s.fogSide]) {
+                    m.count = 0;
+                    m.frustumCulled = false;
+                    root.add(m);
+                }
+
+                // Rain: thin vertical streaks; scale and x are fixed per drop,
+                // update() rewrites only the translation's y (and z for side
+                // drops, which drift with the song).
+                s.rainMat = mat(new T.MeshBasicMaterial({
+                    color: ROAD_RAIN_HEX, transparent: true, opacity: 0, depthWrite: false,
+                }));
+                const rainGeo = geo(new T.PlaneGeometry(1, 1));
+                s.rain = new T.InstancedMesh(rainGeo, s.rainMat, ROAD_RAIN_POOL);
+                s.rain.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                {
+                    const arr = s.rain.instanceMatrix.array;
+                    const xIn = halfW + ROAD_RAIN_CLEAR;
+                    for (let i = 0; i < ROAD_RAIN_POOL; i++) {
+                        const far = _roadHash01(i, 41, 9) < ROAD_RAIN_FAR_FRAC;
+                        const o = i * 16;
+                        for (let e = 0; e < 16; e++) arr[o + e] = 0;
+                        arr[o] = far ? ROAD_RAIN_FAR_W : ROAD_RAIN_W;
+                        arr[o + 5] = far ? ROAD_RAIN_FAR_LEN : ROAD_RAIN_LEN;
+                        arr[o + 10] = 1;
+                        arr[o + 15] = 1;
+                        if (far) {
+                            arr[o + 12] = (_roadHash01(i, 42, 9) - 0.5) * 1400 * K;
+                            arr[o + 14] = zFar - 30 * K - _roadHash01(i, 43, 9) * (zFar - s.skylineZ) * 0.85;
+                        } else {
+                            const side = _roadHash01(i, 44, 9) < 0.5 ? -1 : 1;
+                            arr[o + 12] = side * (xIn + ROAD_RAIN_SIDE_W * _roadHash01(i, 45, 9));
+                            s.rainZ[i] = zFar + len * _roadHash01(i, 46, 9);
+                            arr[o + 14] = s.rainZ[i];
+                        }
+                        s.rainFar[i] = far ? 1 : 0;
+                        s.rainPhase[i] = ROAD_RAIN_H * _roadHash01(i, 47, 9);
+                    }
+                }
+                s.rain.count = 0;
+                s.rain.frustumCulled = false;
+                root.add(s.rain);
+
                 _bgRoadApplyTheme(s, settings ? settings.clearHex : undefined);
+                if (s.quality.lite) _bgRoadEnterLite(s, false);
                 return s;
             },
             update(s, bands, dt, t, chart) {
                 if (!s || !s.posts) return;
+                if (_roadQualityStep(s.quality, dt, ROAD_AUTO_WARMUP, ROAD_AUTO_MIN_FPS, ROAD_AUTO_HOLD)) {
+                    _bgRoadEnterLite(s, true);
+                }
+                const lite = s.quality.lite;
+                // Mood moves only while song time does: a paused miss on
+                // screen must not keep piling up gloom.
+                const ctime = chart && Number.isFinite(chart.time) ? chart.time : NaN;
+                if (ctime === ctime && ctime !== s.moodTime) {
+                    _roadMoodStep(s.mood, dt, !!chart.hit, !!chart.miss, chart.mult > 1 ? chart.mult : 1);
+                }
+                s.moodTime = ctime;
+                s.fogAmt = _roadSmooth(ROAD_FOG_START, ROAD_FOG_FULL, s.mood.gloom);
+                s.rainAmt = _roadSmooth(ROAD_RAIN_START, ROAD_RAIN_FULL, s.mood.gloom);
                 _bgRoadUpdateSkyline(s, bands, chart);   // first: a new song re-seeds the hills too
-                _bgRoadUpdateHills(s, chart ? chart.time : 0);
+                _bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0));
                 _bgRoadUpdateSigns(s, chart);
+                _bgRoadUpdateWeather(s, chart, t);
                 let n = 0;
                 if (chart && chart.isReady && chart.beats && chart.beats.length > 0) {
                     n = _roadPlacePosts(chart.beats, chart.time, TS, BEHIND, AHEAD + 1,
                         chart.lowerBoundTime, s.slots, ROAD_POST_POOL);
                 }
                 _bgRoadUpdateLanes(s, chart);
-                _bgRoadUpdateSidewalks(s, chart);
+                if (!lite) _bgRoadUpdateSidewalks(s, chart);
                 if (n > 0) {
                     _roadPostPattern(chart.beats, chart.time, BEHIND, chart.lowerBoundTime,
-                        n, ROAD_POST_SKIP_EVERY, s.postKeep);
+                        n, lite ? ROAD_LITE_POST_SKIP : ROAD_POST_SKIP_EVERY, s.postKeep);
                 }
                 if (n === 0) {
                     if (s.shown !== 0) {
                         s.posts.count = 0; s.beatHeads.count = 0; s.barHeads.count = 0;
-                        s.seams.count = 0;
+                        s.seams.count = 0; s.pools.count = 0;
                         s.shown = 0;
                     }
                     return;
                 }
+                // Lamp colour by heat (cool LED white -> sodium amber).
+                const heat = s.mood.heat;
+                const lr = ROAD_LAMP_COOL_R + (ROAD_LAMP_HOT_R - ROAD_LAMP_COOL_R) * heat;
+                const lg = ROAD_LAMP_COOL_G + (ROAD_LAMP_HOT_G - ROAD_LAMP_COOL_G) * heat;
+                const lb = ROAD_LAMP_COOL_B + (ROAD_LAMP_HOT_B - ROAD_LAMP_COOL_B) * heat;
                 const d = s.dummy;
                 const x = s.postX, y0 = s.baseY;
-                let np = 0, nBeat = 0, nBar = 0;
+                // Pools: strength fades with distance from the camera over
+                // the scene-fog range, so they vanish with the posts.
+                const pools = lite ? null : s.pools;
+                const camZ = s.cam && s.cam.position ? s.cam.position.z : s.zNear * 0.5;
+                const fogNear = FOG_START * 0.8, fogSpan = FOG_END * 1.2 - fogNear;
+                const wet = s.rainAmt;
+                const poolStr = (ROAD_POOL_BASE + ROAD_POOL_HEAT * heat) * (0.5 + s.intensity)
+                    * (1 + ROAD_POOL_WET_STR * wet);
+                const poolGrow = 1 + ROAD_POOL_GROW * heat;
+                const poolLen = poolGrow * (1 + ROAD_POOL_WET_LEN * wet);
+                const poolX = x - ROAD_POOL_IN, poolY = s.jointY + 0.1 * K;
+                const c = s.tmpColor;
+                let np = 0, nBeat = 0, nBar = 0, nPool = 0;
                 for (let i = 0; i < n; i++) {
-                    if (!s.postKeep[i]) continue;   // every third beat in the bar: no light
+                    if (!s.postKeep[i]) continue;   // skipped beat in the bar: no light
                     const slot = s.slots[i];
                     const h = slot.isBar ? ROAD_POST_H * ROAD_BAR_H_MUL : ROAD_POST_H;
                     const hs = slot.isBar ? ROAD_BAR_HEAD_MUL : 1;
@@ -4538,6 +4948,29 @@
                         d.scale.set(hs, hs, hs);
                         d.updateMatrix();
                         heads.setMatrixAt(slot.isBar ? nBar++ : nBeat++, d.matrix);
+                    }
+                    if (pools) {
+                        let f = 1 - (camZ - slot.z - fogNear) / fogSpan;
+                        f = f < 0 ? 0 : (f > 1 ? 1 : f);
+                        const a = poolStr * f * (slot.isBar ? ROAD_POOL_BAR_MUL : 1);
+                        if (a > 0.003) {
+                            c.setRGB(lr * a, lg * a, lb * a);
+                            for (let side = -1; side <= 1; side += 2) {
+                                d.position.set(side * poolX, poolY, slot.z);
+                                d.scale.set(ROAD_POOL_RX * 2 * poolGrow, 1, ROAD_POOL_RZ * 2 * poolLen);
+                                d.updateMatrix();
+                                pools.setMatrixAt(nPool, d.matrix);
+                                pools.setColorAt(nPool, c);
+                                nPool++;
+                            }
+                        }
+                    }
+                }
+                if (pools) {
+                    pools.count = nPool;
+                    if (nPool) {
+                        pools.instanceMatrix.needsUpdate = true;
+                        pools.instanceColor.needsUpdate = true;
                     }
                 }
                 s.posts.count = np; s.beatHeads.count = nBeat; s.barHeads.count = nBar;
@@ -4564,19 +4997,22 @@
                 // term drops out without a separate flag.
                 const bass = (bands && bands.bass) || 0;
                 const lift = 0.5 + s.intensity;
-                let b = ROAD_HEAD_BEAT_BASE * lift + ROAD_HEAD_BASS * bass;
-                b = b < 0 ? 0 : (b > ROAD_HEAD_MAX ? ROAD_HEAD_MAX : b);
-                s.beatHeadMat.color.setRGB(ROAD_HEAD_WARM_R * b, ROAD_HEAD_WARM_G * b, ROAD_HEAD_WARM_B * b);
-                b = ROAD_HEAD_BAR_BASE * lift + ROAD_HEAD_BASS * bass;
-                b = b < 0 ? 0 : (b > ROAD_HEAD_MAX ? ROAD_HEAD_MAX : b);
-                s.barHeadMat.color.setRGB(ROAD_HEAD_WARM_R * b, ROAD_HEAD_WARM_G * b, ROAD_HEAD_WARM_B * b);
+                const hb = ROAD_LAMP_HEAT_LIFT * heat;
+                const cap = ROAD_HEAD_MAX + hb * 0.5;
+                let b = ROAD_HEAD_BEAT_BASE * lift + ROAD_HEAD_BASS * bass + hb;
+                b = b < 0 ? 0 : (b > cap ? cap : b);
+                s.beatHeadMat.color.setRGB(lr * b, lg * b, lb * b);
+                b = ROAD_HEAD_BAR_BASE * lift + ROAD_HEAD_BASS * bass + hb;
+                b = b < 0 ? 0 : (b > cap ? cap : b);
+                s.barHeadMat.color.setRGB(lr * b, lg * b, lb * b);
             },
             teardown(s) {
                 if (!s) return;
                 s.root.parent?.remove(s.root);
                 for (const m of [s.posts, s.beatHeads, s.barHeads,
                     s.laneDim, s.laneBright, s.connectors, s.seams, s.joints,
-                    s.towers, s.windows, s.neon]) m?.dispose?.();
+                    s.towers, s.windows, s.neon,
+                    s.pools, s.fogFar, s.fogSide, s.rain]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
                 // Textures this style owns: one per gantry, and the sky.
@@ -4585,6 +5021,8 @@
                 s.gantryMats.length = 0;
                 s.signSections = undefined;
                 if (s.skyTex) s.skyTex.dispose();
+                if (s.poolTex) s.poolTex.dispose();
+                if (s.fogTex) s.fogTex.dispose();
                 s.geos.length = 0;
                 s.mats.length = 0;
                 s.hills.length = 0;
@@ -4595,6 +5033,8 @@
                 s.towers = s.windows = s.neon = s.sky = null;
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
+                s.pools = s.fogFar = s.fogSide = s.rain = null;
+                s.fogMat = s.fogSideMat = s.rainMat = s.poolTex = s.fogTex = null;
             },
         },
         // Venue visualization — generated small-club raster bg plate
@@ -5983,6 +6423,7 @@
         let bgGroup = null, bgStage = null, bgState = null;
         let bgMountedStyleId = null;
         let bgStyleId = 'particles', bgIntensity = 0.5, bgReactive = true;
+        let bgRoadQuality = 'auto';
         // Active scene color theme (background + highway surface). Read in
         // _bgLoadSettings, applied by _applyBgTheme (clear + fog + board plane).
         let bgThemeId = 'default';   // BACKGROUND axis (clear + fog)
@@ -6113,7 +6554,11 @@
             time: 0, beats: null, sections: null, isReady: false, lowerBoundTime: null,
             anchors: null, xFret: null,   // road lanes: chart anchors + this instance's lefty-aware fret x
             songKey: null, duration: 0,   // road: per-song seed + progress (windows, sky glow)
+            hit: false, miss: false, mult: 1,   // road mood: this panel's verdicts this frame + multiplier
         };
+        // Road mood inputs, set while this panel draws its gems (per-panel
+        // note-state verdicts) and from this panel's scorer fx events.
+        let _bgHitSeen = false, _bgMissSeen = false, _bgMult = 1;
 
         // Notedetect feedback (issue #9). Per-panel mark queues populated
         // by two event sources: (a) legacy `notedetect:hit` /
@@ -6290,6 +6735,8 @@
             // on window and on its instanceRoot; whichever arrives first wins.
             if (d === _fxLastFxDetail) return;
             _fxLastFxDetail = d;
+            if (d.fxType === 'multiplier' && Number.isFinite(d.mult)) _bgMult = d.mult;   // road heat
+            else if (d.fxType === 'streakBreak') _bgMult = 1;
             const nowMs = performance.now();
             if (d.fxType === 'milestone') {
                 _fxSpawnBurst(nowMs);
@@ -9778,6 +10225,13 @@
                     _bgRebuild();
                     return;
                 }
+                if (changedKey === 'roadQuality') {
+                    // Quality is baked in at build (Lite hides layers, Auto's
+                    // frame-rate watch starts over), so rebuild the road.
+                    _bgLoadSettings();
+                    if (bgMountedStyleId === 'road') _bgRebuild();
+                    return;
+                }
                 if (changedKey === 'venueInstrumentPov') {
                     if (_bgEffectiveStyleId() === 'venue' && bgState) {
                         _venueSwapPlateIfNeeded(bgState);
@@ -9912,6 +10366,7 @@
             bgStyleId = _bgReadSetting(panelKey, 'style');
             bgIntensity = _bgReadSetting(panelKey, 'intensity');
             bgReactive = _bgReadSetting(panelKey, 'reactive');
+            bgRoadQuality = _bgReadSetting(panelKey, 'roadQuality');
             // Per-render opt-out (captured from the mount bundle in init): force
             // the reactive background off for THIS instance, overriding the shared
             // setting without writing it back. Re-applied here so it sticks across
@@ -10290,6 +10745,7 @@
                     boardWidth: _mountBoard.width,
                     clearHex: _bgBackgroundColors(bgThemeId).clear,
                     intensity: bgIntensity,
+                    roadQuality: bgRoadQuality,
                     palette: activePalette,
                     customImageDataUrl: bgCustomImageDataUrl,
                     customVideoName: bgCustomVideoName,
@@ -15828,8 +16284,11 @@
                         _ndOutline = mMissOutline;
                         _ndFaceMat = mMissEdgeArrays;
                         _streakHits = 0;            // #7 break the streak (heat eases down)
+                        _bgMissSeen = true;         // road mood
+                        _bgMult = 1;
                         if (_verdictMarks) _ndLabels.push({ x, y: y + NH * 1.7, z: noteZ + 0.02, labels: [{ text: '✗', color: '#ff5a7a' }] });  // #6
                     } else if (_ndGood) {
+                        _bgHitSeen = true;          // road mood
                         // Rim flashes in the string's own colour, wire-fashion
                         // (intensity applied per string in the flash pass).
                         _ndOutline = mRimFlash[s] ?? mHitBright[s] ?? mGlow[s];
@@ -17567,9 +18026,15 @@
                             _bgSongInfoRef = bsi;
                             _bgSongKey = bsi ? String(bsi.artist || '') + '\0' + String(bsi.title || '')
                                 + '\0' + String(bsi.arrangement_index ?? '') : '';
+                            _bgMult = 1;
                         }
                         _bgChart.songKey = _bgSongKey;
                         _bgChart.duration = bundle.songInfo ? bundle.songInfo.duration : 0;
+                        _bgChart.hit = _bgHitSeen;
+                        _bgChart.miss = _bgMissSeen;
+                        _bgChart.mult = _bgMult;
+                        _bgHitSeen = false;
+                        _bgMissSeen = false;
                         try { style.update(bgState, bands, dt, nowMs / 1000, _bgChart); }
                         catch (e) { console.error('[3D-Hwy] bg update threw', _bgEffectiveStyleId(), e); }
                     }
