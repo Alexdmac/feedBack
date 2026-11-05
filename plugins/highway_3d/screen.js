@@ -16170,6 +16170,14 @@
                 if (now >= susEnd) _susVerdictLatch.delete(_sk);
             }
 
+            // Night road mood: note this panel's verdict here, before the
+            // linger / body gates below. A scorer's verdict lands ~0.4 s
+            // after the strike, when most gems are already past their
+            // 0.1 s linger and skip the body block, so a write inside it
+            // almost never fired and the road's weather never moved.
+            if (_ndState === 'miss') { _bgMissSeen = true; _bgMult = 1; }
+            else if (_ndGood) _bgHitSeen = true;
+
             const _showHit = (_ndState === 'miss') ? false
                 : (_ndState ? _ndGood
                 : (hit || (n.f > 0 && inGhostWin)));
@@ -16284,11 +16292,8 @@
                         _ndOutline = mMissOutline;
                         _ndFaceMat = mMissEdgeArrays;
                         _streakHits = 0;            // #7 break the streak (heat eases down)
-                        _bgMissSeen = true;         // road mood
-                        _bgMult = 1;
                         if (_verdictMarks) _ndLabels.push({ x, y: y + NH * 1.7, z: noteZ + 0.02, labels: [{ text: '✗', color: '#ff5a7a' }] });  // #6
                     } else if (_ndGood) {
-                        _bgHitSeen = true;          // road mood
                         // Rim flashes in the string's own colour, wire-fashion
                         // (intensity applied per string in the flash pass).
                         _ndOutline = mRimFlash[s] ?? mHitBright[s] ?? mGlow[s];

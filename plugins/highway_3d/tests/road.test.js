@@ -680,3 +680,32 @@ test('_roadQualityStep: Full and Lite are fixed; unknown modes mean Auto', () =>
     assert.equal(r._roadMakeQuality('bogus').mode, 'auto');
     assert.equal(r._roadMakeQuality(undefined).mode, 'auto');
 });
+
+// --- renderer wiring: verdicts must reach the road's mood ------------------
+
+test('drawNote records the road mood before the linger / body gates', () => {
+    // A scorer's verdict lands ~0.4 s after the strike, when most gems are
+    // past their 0.1 s linger and skip the body block. The first version
+    // wrote the mood flags inside that block, so they almost never fired and
+    // the weather never moved in a real song. Pin the write to the verdict
+    // resolution, ahead of every gate that depends on _overLinger.
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const fn = src.indexOf('        function drawNote(');
+    assert.ok(fn > 0, 'drawNote not found');
+    const end = src.indexOf('\n        function ', fn + 10);
+    const body = src.slice(fn, end);
+    const write = body.indexOf("if (_ndState === 'miss') { _bgMissSeen = true;");
+    assert.ok(write > 0, 'mood write missing from drawNote');
+    assert.equal(src.split('_bgMissSeen = true').length, 2, 'one miss write only');
+    assert.match(body.slice(write, write + 120), /else if \(_ndGood\) _bgHitSeen = true;/);
+    const latch = body.indexOf('if (now >= susEnd) _susVerdictLatch.delete(_sk);');
+    assert.ok(latch > 0 && latch < write, 'write comes after the sustain latch has resolved the verdict');
+    const gate = body.indexOf('if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {');
+    assert.ok(gate > write, 'write comes before the linger-gated body block');
+    // Nothing between the verdict probe and the write may return early.
+    const probe = body.indexOf('if (_ndGetNoteState) {');
+    assert.ok(probe > 0 && probe < write);
+    assert.equal(/\breturn\b/.test(body.slice(probe, write)), false, 'no early return between probe and write');
+    // The chart object hands the flags to the style each frame, then clears them.
+    assert.match(src, /_bgChart\.hit = _bgHitSeen;\n\s*_bgChart\.miss = _bgMissSeen;\n\s*_bgChart\.mult = _bgMult;\n\s*_bgHitSeen = false;\n\s*_bgMissSeen = false;/);
+});
