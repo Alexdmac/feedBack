@@ -79,8 +79,18 @@ const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-12, `${msg}: ${a} vs 
 // Geometry lives in Float32 buffers: compare to ~7 significant digits.
 const nearF = (a, b, msg) => assert.ok(Math.abs(a - b) <= 1e-6 * Math.abs(b), `${msg}: ${a} vs ${b}`);
 
-test('with nothing stored the sizes are today\'s look (100%)', () => {
+test('with nothing stored the neck starts at the default, 160%', () => {
+    // Alex asked for the bigger neck as the default (2026-11-06).
     const { api, window } = loadSizes();
+    assert.equal(api.m, 1.6);
+    near(api.S_GAP, 4 * K * 1.6, 'string gap');
+    near(api.NW, 5 * K * 1.6, 'gem width'); near(api.NH, 3 * K * 1.6, 'gem height');
+    near(api.STR_THICK, 0.25 * K * 2.2, 'string thickness');
+    assert.equal(window.h3dGetNeckSize(), 1.6);
+});
+
+test('a stored 100% is the original look', () => {
+    const { api, window } = loadSizes('1');
     assert.equal(api.m, 1);
     near(api.S_GAP, 4 * K, 'string gap');
     near(api.NW, 5 * K, 'gem width'); near(api.NH, 3 * K, 'gem height'); near(api.ND, 0.25 * K, 'gem depth');
@@ -102,13 +112,14 @@ test('a stored size scales the gaps, gems and strings together', () => {
 });
 
 test('stored values are clamped to 100-160% in whole percent', () => {
-    for (const [stored, want] of [['5', 1.6], ['0.5', 1], ['abc', 1], ['', 1], ['1.234', 1.23], ['1.6', 1.6], ['-2', 1]]) {
+    // Out of range clamps; nothing usable (junk, empty) falls back to the default.
+    for (const [stored, want] of [['5', 1.6], ['0.5', 1], ['abc', 1.6], ['', 1.6], ['1.234', 1.23], ['1.6', 1.6], ['-2', 1], ['1', 1]]) {
         assert.equal(loadSizes(stored).api.m, want, `stored ${JSON.stringify(stored)}`);
     }
     const { api } = loadSizes();
-    assert.equal(api.clamp(null), 1);
-    assert.equal(api.clamp(undefined), 1);
-    assert.equal(api.clamp(NaN), 1);
+    assert.equal(api.clamp(null), 1.6);
+    assert.equal(api.clamp(undefined), 1.6);
+    assert.equal(api.clamp(NaN), 1.6);
     assert.equal(api.clamp(1.449999), 1.45);
 });
 
@@ -126,11 +137,15 @@ test('h3dSetNeckSize persists the clamped value and broadcasts once', () => {
     window.h3dSetNeckSize(9);
     assert.equal(storage.get('highway_3d.neckSize'), '1.6');
     assert.equal(api.m, 1.6);
-    window.h3dSetNeckSize('nonsense');
+    window.h3dSetNeckSize(1);
     assert.equal(storage.get('highway_3d.neckSize'), '1');
     assert.equal(api.m, 1);
     near(api.S_GAP, 4 * K, 'back to 100%');
-    assert.deepEqual(emitted, ['neckSize', 'neckSize', 'neckSize']);
+    // Junk resets to the default rather than storing junk.
+    window.h3dSetNeckSize('nonsense');
+    assert.equal(storage.get('highway_3d.neckSize'), '1.6');
+    assert.equal(api.m, 1.6);
+    assert.deepEqual(emitted, ['neckSize', 'neckSize', 'neckSize', 'neckSize']);
 });
 
 test('the setter applies live, never via a page reload', () => {
@@ -219,6 +234,8 @@ test('Settings shows a 100-160% Neck size slider wired to the setter', () => {
     assert.ok(input, 'Neck size slider missing from settings.html');
     assert.match(input[0], /min="100"/);
     assert.match(input[0], /max="160"/);
+    assert.match(input[0], /value="160"/, 'the slider starts at the default');
     assert.match(input[0], /window\.h3dSetNeckSize\(this\.value \/ 100\)/);
-    assert.match(html, /id="h3d-neck-size-label">100%</);
+    assert.match(html, /id="h3d-neck-size-label">160%</);
+    assert.match(html, /let pct = 160;/, 'Settings falls back to the default when nothing is stored');
 });

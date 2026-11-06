@@ -581,9 +581,10 @@ test('the Neck size slider is never greyed out (it is the fretboard, not the bac
     }
 });
 
-test('a host without the neck-size getter shows 100%', () => {
+test('a host without the neck-size getter shows the default, 160%', () => {
     const { api, sandbox } = load();
     delete sandbox.window.h3dGetNeckSize;
     api._pcAcquire();
-    assert.equal(api.neck.value, '100');
+    assert.equal(api.neck.value, '160');
+    assert.equal(api.neckLabel.textContent, 'Neck size 160%');
 });

@@ -1114,12 +1114,14 @@
     // Fret wires only grow with the gaps, so they stay thinner than the
     // strings they cross. Stored as a plain number under
     // 'highway_3d.neckSize' (like fretSpacing, device-wide: every panel).
-    const NECK_SIZE_MIN = 1, NECK_SIZE_MAX = 1.6;
+    // The default is the biggest size (Alex, 2026-11-06: "make the string
+    // size default"); 100% is the original, smaller look.
+    const NECK_SIZE_MIN = 1, NECK_SIZE_MAX = 1.6, NECK_SIZE_DEFAULT = 1.6;
     const NECK_STR_EXTRA = 2;     // strings: 1 + 2*(m-1) -> 2.2x at 160%
     let _h3dNeckSize = 1;
     function _h3dClampNeckSize(v) {
         const n = (v === null || v === undefined || v === '') ? NaN : Number(v);
-        if (!Number.isFinite(n)) return NECK_SIZE_MIN;
+        if (!Number.isFinite(n)) return NECK_SIZE_DEFAULT;   // nothing stored (or junk)
         // Whole percent, so a stored "1.3000000001" and the slider's 1.3
         // are the same size and never trigger a no-op rebuild.
         return Math.min(NECK_SIZE_MAX, Math.max(NECK_SIZE_MIN, Math.round(n * 100) / 100));
@@ -3593,20 +3595,41 @@
     // share off it; each miss adds a dose of gloom, each hit clears some,
     // and it drains slowly on its own. Nothing judged for ROAD_MOOD_IDLE
     // seconds (free play, no detector): heat settles to 0, gloom drains.
+    //
+    // Two layers. heatR / gloomR are the mood the notes call for and move at
+    // once with each verdict; heat / gloom are what the road SHOWS (lamps,
+    // city lights, fog, rain), easing toward them over seconds so the weather
+    // builds and clears instead of flipping with each note (Alex, 2026-11-06:
+    // "the transition from good to bad is too fast, the weather changes in a
+    // flash"). Getting worse is the slower way. Everything outside this step
+    // reads the shown pair; both ease only while the song plays.
     const ROAD_MOOD_IDLE = 4;             // s without a verdict = not being judged
     const ROAD_MOOD_RUN_FULL = 24;        // s of clean play for full heat on its own
     const ROAD_MOOD_HEAT_UP = 1.5, ROAD_MOOD_HEAT_DOWN = 0.8;   // easing time constants (s)
     const ROAD_MOOD_HEAT_MISS_CUT = 0.35; // each miss takes this share of the heat at once
-    const ROAD_MOOD_GLOOM_MISS = 0.13;    // gloom per missed note (about 5 in a row brings rain)
+    const ROAD_MOOD_GLOOM_MISS = 0.12;    // gloom per missed note (a run of 5+ heads for rain)
     const ROAD_MOOD_GLOOM_HIT = 0.07;     // cleared per hit note
     const ROAD_MOOD_GLOOM_DRAIN = 0.04;   // cleared per second of play regardless
     const ROAD_MOOD_MAX_EVENTS = 16;      // per step (a frame after a stall)
+    // Shown mood easing time constants (s, to 63% of the way): gloom rising
+    // and heat falling take WORSEN, gloom clearing and heat rising take MEND.
+    // Every note missed (2-3 a second): fog after about 3-4 s, rain after
+    // about 6-7 (it was 1 s and 2 s). Two misses in three: fog after about
+    // 6 s, rain after about 10. Half missed: a little fog, no rain.
+    const ROAD_MOOD_WORSEN_S = 5;
+    const ROAD_MOOD_MEND_S = 1.5;
     function _roadMakeMood() {
-        return { heat: 0, gloom: 0, run: 0, quiet: ROAD_MOOD_IDLE };
+        return { heat: 0, gloom: 0, heatR: 0, gloomR: 0, run: 0, quiet: ROAD_MOOD_IDLE };
     }
     function _roadResetMood(m) {
-        m.heat = 0; m.gloom = 0; m.run = 0; m.quiet = ROAD_MOOD_IDLE;
+        m.heat = 0; m.gloom = 0; m.heatR = 0; m.gloomR = 0; m.run = 0; m.quiet = ROAD_MOOD_IDLE;
         return m;
+    }
+    // Ease a shown value toward its target; `worse` picks the slow constant.
+    function _roadMoodEase(v, target, dt, worse) {
+        const tau = worse ? ROAD_MOOD_WORSEN_S : ROAD_MOOD_MEND_S;
+        v += (target - v) * (1 - Math.exp(-dt / tau));
+        return Math.abs(target - v) < 1e-4 ? target : v;
     }
     function _roadMoodStep(m, dt, hits, misses, mult) {
         if (!m) return m;
@@ -3615,9 +3638,11 @@
         let nh = hits > 0 ? +hits : 0, nm = misses > 0 ? +misses : 0;
         if (nh > ROAD_MOOD_MAX_EVENTS) nh = ROAD_MOOD_MAX_EVENTS;
         if (nm > ROAD_MOOD_MAX_EVENTS) nm = ROAD_MOOD_MAX_EVENTS;
+        if (!Number.isFinite(m.heatR)) m.heatR = Number.isFinite(m.heat) ? m.heat : 0;
+        if (!Number.isFinite(m.gloomR)) m.gloomR = Number.isFinite(m.gloom) ? m.gloom : 0;
         if (nm > 0) {
             m.run = 0; m.quiet = 0;
-            m.heat *= Math.pow(1 - ROAD_MOOD_HEAT_MISS_CUT, nm);
+            m.heatR *= Math.pow(1 - ROAD_MOOD_HEAT_MISS_CUT, nm);
         } else if (nh > 0) {
             m.quiet = 0;
         } else {
@@ -3634,12 +3659,17 @@
             if (target > 1) target = 1;
         }
         if (dt > 0) {
-            const tau = target > m.heat ? ROAD_MOOD_HEAT_UP : ROAD_MOOD_HEAT_DOWN;
-            m.heat += (target - m.heat) * (1 - Math.exp(-dt / tau));
+            const tau = target > m.heatR ? ROAD_MOOD_HEAT_UP : ROAD_MOOD_HEAT_DOWN;
+            m.heatR += (target - m.heatR) * (1 - Math.exp(-dt / tau));
         }
-        if (m.heat < 1e-4) m.heat = 0;
-        m.gloom += ROAD_MOOD_GLOOM_MISS * nm - ROAD_MOOD_GLOOM_HIT * nh - ROAD_MOOD_GLOOM_DRAIN * dt;
-        m.gloom = m.gloom < 0 ? 0 : (m.gloom > 1 ? 1 : m.gloom);
+        if (m.heatR < 1e-4) m.heatR = 0;
+        m.gloomR += ROAD_MOOD_GLOOM_MISS * nm - ROAD_MOOD_GLOOM_HIT * nh - ROAD_MOOD_GLOOM_DRAIN * dt;
+        m.gloomR = m.gloomR < 0 ? 0 : (m.gloomR > 1 ? 1 : m.gloomR);
+        // What the road shows follows over seconds (frozen while paused).
+        if (dt > 0) {
+            m.heat = _roadMoodEase(m.heat, m.heatR, dt, m.heatR < m.heat);
+            m.gloom = _roadMoodEase(m.gloom, m.gloomR, dt, m.gloomR > m.gloom);
+        }
         return m;
     }
     // 0 below a, 1 above b, smooth between.
@@ -5429,6 +5459,10 @@
         const m = s.mood;
         if (m.heat < s.finLift) m.heat = s.finLift;
         m.gloom = Math.max(0, m.gloom - fdt / ROAD_FIN_CLEAR_S);
+        // The targets too, or the shown mood would ease back toward them.
+        if (!(m.heatR >= s.finLift)) m.heatR = s.finLift;
+        m.gloomR = Math.max(0, (Number.isFinite(m.gloomR) ? m.gloomR : 0) - fdt / ROAD_FIN_CLEAR_S);
+        if (m.gloomR > m.gloom) m.gloomR = m.gloom;
         const n = chart.finN > 0 ? chart.finN | 0 : 0;
         if (s.finLaunched < 0) {
             s.finLaunched = age > 0 ? _roadFinaleDue(age, n) : 0;
@@ -7650,13 +7684,16 @@
     // Neck size slider + its label (the label shows the percentage).
     let _pcNeck = null, _pcNeckLabel = null;
     // Neck size as a whole percent, read through the public getter so this
-    // block has no hard dependency on the module variable (100 if absent).
+    // block has no hard dependency on the module variable (the default if absent).
+    function _pcNeckDefaultPct() {
+        return Math.round((typeof NECK_SIZE_DEFAULT === 'number' ? NECK_SIZE_DEFAULT : 1.6) * 100);
+    }
     function _pcNeckPct() {
         try {
             const g = window.h3dGetNeckSize;
-            const m = typeof g === 'function' ? Number(g()) : 1;
-            return Math.round((Number.isFinite(m) ? m : 1) * 100);
-        } catch (_) { return 100; }
+            const m = typeof g === 'function' ? Number(g()) : NaN;
+            return Number.isFinite(m) ? Math.round(m * 100) : _pcNeckDefaultPct();
+        } catch (_) { return _pcNeckDefaultPct(); }
     }
 
     // The player chrome exposes this slot once it has initialised. A host

@@ -636,36 +636,90 @@ test('_roadMoodStep: a run of hits warms up, a high multiplier warms faster', ()
     assert.equal(x4.gloom, 0);
 });
 
-test('_roadMoodStep: each miss cuts the heat; a few misses in a row bring the weather', () => {
+test('_roadMoodStep: each miss cuts the heat and adds gloom at once, underneath', () => {
     const r = load();
     const m = runMood(r, r._roadMakeMood(), 10, hitsAt(4, 4));
-    const hot = m.heat;
+    const hot = m.heatR;
     r._roadMoodStep(m, 1 / 60, 0, 1, 1);
-    assert.ok(m.heat < hot * 0.7, `one miss knocks the heat down at once (${hot} -> ${m.heat})`);
+    assert.ok(m.heatR < hot * 0.7, `one miss knocks the heat target down at once (${hot} -> ${m.heatR})`);
     assert.equal(m.run, 0);
-    assert.ok(Math.abs(m.gloom - 0.13) < 1e-3, `one miss is one dose of gloom (${m.gloom})`);
-    // Four more misses, one every 0.25 s: five in a row is rain (gloom >= 0.55).
+    assert.ok(Math.abs(m.gloomR - 0.12) < 1e-3, `one miss is one dose of gloom (${m.gloomR})`);
+    // Four more misses, one every 0.25 s: five in a row calls for rain...
     runMood(r, m, 1, missesAt(4));
-    assert.ok(m.gloom >= 0.55 && m.gloom < 0.7, `five misses in a row bring rain (${m.gloom})`);
-    assert.ok(m.heat < 0.15, `and leave no heat (${m.heat})`);
-    // Three misses: fog (from gloom 0.25), no rain.
-    const three = r._roadMakeMood();
-    runMood(r, three, 0.75, missesAt(4));
-    assert.ok(three.gloom > 0.3 && three.gloom < 0.55, `three misses: fog, no rain (${three.gloom})`);
+    assert.ok(m.gloomR >= 0.55 && m.gloomR < 0.7, `five misses in a row call for rain (${m.gloomR})`);
+    assert.ok(m.heatR < 0.15, `and no heat (${m.heatR})`);
+    // ...but the road shows neither fog (from 0.25) nor a cold city yet.
+    assert.ok(m.gloom < 0.25, `no weather after one second (${m.gloom})`);
+    assert.ok(m.heat > 0.6, `the lamps are still warm (${m.heat})`);
+});
+
+test('_roadMoodStep: the weather builds over seconds, not in a flash (Alex 2026-11-06)', () => {
+    // Every note missed, three a second, after a hot run: fog after 2.5-5 s,
+    // rain after 5-8.5 s (it was 1 s and 1.7 s). The shown gloom rises
+    // smoothly, never jumping with a single note.
+    const r = load();
+    for (const rate of [2, 3]) {
+        const m = runMood(r, r._roadMakeMood(), 10, hitsAt(4, 4));
+        let fog = null, rain = null, prev = m.gloom, maxJump = 0;
+        const dt = 1 / 60;
+        for (let f = 0; f < 20 * 60; f++) {
+            const t = f * dt;
+            r._roadMoodStep(m, dt, 0, ticks(t, t + dt, rate), 1);
+            maxJump = Math.max(maxJump, m.gloom - prev); prev = m.gloom;
+            if (fog == null && m.gloom > 0.25) fog = t + dt;
+            if (rain == null && m.gloom > 0.55) rain = t + dt;
+        }
+        assert.ok(fog >= 2.5 && fog <= 5, `fog after ${fog} s at ${rate} misses/s`);
+        assert.ok(rain >= 5 && rain <= 8.5, `rain after ${rain} s at ${rate} misses/s`);
+        assert.ok(maxJump < 0.01, `no step jumps (largest ${maxJump} in one frame)`);
+        assert.ok(m.gloom > 0.9, `a long bad run still ends in heavy rain (${m.gloom})`);
+    }
+    // Two notes in three missed: rain within 15 s; half missed: some fog, no rain.
+    const mixed = (missFrac) => {
+        const m = r._roadMakeMood();
+        let acc = 0, rain = null;
+        const dt = 1 / 60;
+        for (let f = 0; f < 20 * 60; f++) {
+            const t = f * dt, n = ticks(t, t + dt, 2.5);
+            let h = 0, mi = 0;
+            for (let i = 0; i < n; i++) { acc += missFrac; if (acc >= 1) { acc -= 1; mi++; } else h++; }
+            r._roadMoodStep(m, dt, h, mi, 1);
+            if (rain == null && m.gloom > 0.55) rain = t + dt;
+        }
+        return { m, rain };
+    };
+    const twoThirds = mixed(2 / 3);
+    assert.ok(twoThirds.rain > 7 && twoThirds.rain < 15, `two in three missed: rain after ${twoThirds.rain} s`);
+    const half = mixed(0.5);
+    assert.equal(half.rain, null, 'half missed brings no rain');
+    assert.ok(half.m.gloom > 0.25, `but some fog (${half.m.gloom})`);
+});
+
+test('_roadMoodStep: the cold sets in slowly too', () => {
+    // A hot run then misses: the shown heat (lamps, lit city) eases down over
+    // seconds while the target drops at once.
+    const r = load();
+    const m = runMood(r, r._roadMakeMood(), 10, hitsAt(4, 4));
+    runMood(r, m, 1, missesAt(3));
+    assert.ok(m.heatR < 0.15, `target cold after three misses (${m.heatR})`);
+    assert.ok(m.heat > 0.7, `shown still warm a second later (${m.heat})`);
+    runMood(r, m, 10, missesAt(3));
+    assert.ok(m.heat < 0.15, `cold after ten more seconds of misses (${m.heat})`);
 });
 
 test('_roadMoodStep: hits clear the gloom; it also drains slowly on its own', () => {
     const r = load();
     const m = r._roadMakeMood();
-    runMood(r, m, 2, missesAt(4));           // eight misses: deep gloom
-    assert.ok(m.gloom > 0.9, `eight misses is deep gloom (${m.gloom})`);
-    runMood(r, m, 3.5, hitsAt(4));           // fourteen hits
+    runMood(r, m, 15, missesAt(3));          // fifteen seconds of misses: deep gloom
+    assert.ok(m.gloom > 0.9, `a long bad run is deep gloom (${m.gloom})`);
+    runMood(r, m, 6, hitsAt(4));             // six seconds of hits
     assert.ok(m.gloom < 0.1, `a few seconds of hits clear it (${m.gloom})`);
     const g = r._roadMakeMood();
     r._roadMoodStep(g, 1 / 60, 0, 3, 1);
-    const before = g.gloom;
+    const before = g.gloomR;
     runMood(r, g, 5);
-    assert.ok(g.gloom < before && g.gloom > 0, 'gloom drains slowly on its own');
+    assert.ok(g.gloomR < before && g.gloomR > 0, 'gloom drains slowly on its own');
+    assert.ok(Math.abs(g.gloom - g.gloomR) < 0.12, `the shown gloom follows it (${g.gloom} vs ${g.gloomR})`);
 });
 
 test('_roadMoodStep: the same playing gives the same mood at 30, 60 and 240 fps', () => {
@@ -692,9 +746,13 @@ test('_roadMoodStep: paused (dt 0), notes still count but the clocks stand still
     assert.equal(m.heat, heat, 'heat holds while paused');
     assert.equal(m.quiet, quiet, 'not "idle" just because the song is paused');
     assert.equal(m.run, run);
+    const shown = m.gloom;
     r._roadMoodStep(m, 0, 0, 1, 1);           // a verdict landing right after the pause
-    assert.ok(m.gloom > 0.1, 'a miss judged while paused still counts');
+    assert.ok(m.gloomR > 0.1, 'a miss judged while paused still counts');
     assert.equal(m.run, 0);
+    assert.equal(m.gloom, shown, 'the weather waits for play to resume');
+    runMood(r, m, 1);
+    assert.ok(m.gloom > shown, 'and then follows');
 });
 
 test('_roadMoodStep: after ROAD_MOOD_IDLE s without verdicts the heat settles', () => {
@@ -703,7 +761,7 @@ test('_roadMoodStep: after ROAD_MOOD_IDLE s without verdicts the heat settles', 
     assert.ok(m.heat > 0.9);
     runMood(r, m, r.ROAD_MOOD_IDLE - 0.5);
     assert.ok(m.heat > 0.9, 'a short gap between notes keeps the heat');
-    runMood(r, m, 5);
+    runMood(r, m, 18);
     assert.ok(m.heat < 0.05, `stopping playing cools it (${m.heat})`);
     assert.equal(m.run, 0);
 });
@@ -717,8 +775,11 @@ test('_roadMoodStep: bad dt and counts are safe, big steps are clamped, values s
     assert.equal(m.gloom, 0);
     assert.ok(Number.isFinite(m.heat) && Number.isFinite(m.run) && Number.isFinite(m.quiet));
     r._roadMoodStep(m, 5, 0, 1e6, 1);
-    assert.equal(m.gloom, 1, 'a flood of misses saturates, no overflow');
-    for (let i = 0; i < 100; i++) r._roadMoodStep(m, 5, 1e6, 0, 99);
+    assert.equal(m.gloomR, 1, 'a flood of misses saturates, no overflow');
+    assert.ok(m.gloom > 0 && m.gloom < 0.1, `a 5 s step is clamped, so the weather barely moves (${m.gloom})`);
+    for (let i = 0; i < 300; i++) r._roadMoodStep(m, 5, 0, 1e6, 1);
+    assert.ok(m.gloom > 0.99 && m.gloom <= 1, `it gets there, never past 1 (${m.gloom})`);
+    for (let i = 0; i < 200; i++) r._roadMoodStep(m, 5, 1e6, 0, 99);
     assert.ok(m.heat <= 1 && m.heat > 0.9);
     assert.equal(m.gloom, 0);
     r._roadResetMood(m);
@@ -1782,7 +1843,7 @@ function loadFinale() {
         + fnText('    function _bgRoadFwFitX(') + '\n'
         + fnText('    function _bgRoadLaunchFinaleRocket(') + '\n'
         + fnText('    function _bgRoadUpdateFinale(') + '\n'
-        + 'this.update = _bgRoadUpdateFinale; this.makeMood = _roadMakeMood;'
+        + 'this.update = _bgRoadUpdateFinale; this.makeMood = _roadMakeMood; this.moodStep = _roadMoodStep;'
         + 'this.makeBuf = () => _fwMakeBuf(ROAD_FW_POOL, ROAD_FW_ROCKETS);', sandbox);
     return sandbox;
 }
@@ -1802,6 +1863,33 @@ function finaleRun(f, s, chart, secs, fps, playing = true) {
         if (playing || chart.ended) chart.finAge += dt;
     }
 }
+
+test('_bgRoadUpdateFinale: the weather it clears stays cleared under the eased mood', () => {
+    // The road shows an eased mood that follows heatR / gloomR. The finale
+    // must clear those targets too, or the shown fog and cold would creep
+    // back between its frames. Second case: the rain was still rolling in
+    // (shown 0.3, target 1) when the last note passed.
+    const f = loadFinale();
+    // [shown, target, from when (s) the shown fog has been drained]
+    for (const [gloom, gloomR, from] of [[1, 1, 2.5], [0.3, 1, 1]]) {
+        const s = finaleRoad(f);
+        Object.assign(s.mood, { heat: 0.1, gloom, heatR: 0, gloomR });
+        const chart = { finAge: 0, finN: 6, finClean: false, ended: false, beats: null };
+        const dt = 1 / 60;
+        let maxBack = 0, minHeat = 1;
+        for (let i = 0; i < 6 * 60; i++) {
+            f.moodStep(s.mood, dt, 0, 0, 1);       // same order as the road's update
+            if (i > from * 60) maxBack = Math.max(maxBack, s.mood.gloom);
+            if (i > 2.5 * 60) minHeat = Math.min(minHeat, s.mood.heat);   // lifted by 1.5 s
+            f.update(s, chart, true, false, dt);
+            chart.finAge += dt;
+        }
+        assert.equal(s.mood.gloom, 0, `clear (from ${gloom})`);
+        assert.equal(s.mood.gloomR, 0, 'and the target with it');
+        assert.equal(maxBack, 0, `no fog creeping back between frames (from ${gloom})`);
+        assert.ok(minHeat > 0.999, `the lamps stay amber between frames (${minHeat})`);
+    }
+});
 
 test('_bgRoadUpdateFinale: wakes the city, clears the weather and fires the volley on schedule', () => {
     const f = loadFinale();

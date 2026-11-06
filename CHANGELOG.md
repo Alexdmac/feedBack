@@ -31,7 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   white to amber and grows the light pools they throw on the sidewalk, and a
   string of misses rolls fog banks in over the hills and the skyline, then
   rain beside the road and a wet sheen on the asphalt, which clear as you
-  recover. The city follows too: a bad streak switches its windows and neon
+  recover. The weather builds and clears over seconds rather than with each
+  note: a run of nothing but misses brings fog after about 3 to 4 seconds and
+  rain after about 6 to 7. The city follows too: a bad streak switches its windows and neon
   off, and good playing lights every window and flashes the neon on the beat.
   Weather never covers the board or the notes, and free play stays a clear
   night. A new "Night road quality" setting (Auto, Full, Lite) adds a
@@ -97,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   easier to read. The strings thicken faster than the rest (2.2x at 160%), the
   notes, their sustains and labels grow with the string gaps, and the board and
   the background stay where they are. It applies live to every 3D Highway panel
-  and is remembered on this device; 100% is the standard look.
+  and is remembered on this device. It starts at 160%; 100% is the original,
+  smaller look.
 - **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
   (Off, 120, 60, 30) that draws the highway at most that many times a second,
   to save power and heat or leave the graphics card free for other apps. Off
