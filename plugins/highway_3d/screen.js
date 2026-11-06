@@ -3816,6 +3816,13 @@
         return sh;
     }
 
+    // Does the simulation step this frame? Only with something alive, and
+    // only while the song plays or after it has ended (the host keeps
+    // calling at ~10 fps with a real dt while paused, and a paused song
+    // must freeze its fireworks).
+    function _fwShouldStep(live, playing, ended) {
+        return live > 0 && (!!playing || !!ended);
+    }
     function _fwMakeBuf(n, rockets) {
         const rk = [];
         for (let i = 0; i < rockets; i++) {
@@ -3938,10 +3945,15 @@
         }
         return made;
     }
-    // Advance every rocket and point by dt. Points below floorY die (the
-    // hard floor keeps falling sparks out of the board band whatever the
-    // camera does). Returns how many rockets burst this step.
-    function _fwStep(b, dt, floorY) {
+    // Advance every rocket and point by dt. A point dies below floorY and
+    // fades out over `band` above it, so a shell low in the sky loses its
+    // bottom softly; a point coming nearer than zMax dies too. With the
+    // floor at the ground and zMax at the board's far end no spark can
+    // reach the board on screen (anything above the ground beyond the
+    // board projects above its far edge, for any camera over the board).
+    // A rocket's own trail (sparkles from near the ground) is spared both.
+    // Returns how many rockets burst this step.
+    function _fwStep(b, dt, floorY, band, zMax) {
         if (!(dt > 0)) return 0;
         let bursts = 0;
         for (let k = 0; k < b.rk.length; k++) {
@@ -3962,13 +3974,19 @@
             b.pos[j + 1] = _fwPathY(r.y0, r.y1, u);
             b.pos[j + 2] = r.z0 + (r.z1 - r.z0) * u;
             if (r.shell && r.shell.trail) {
+                // A long step owes several sparkles: each goes where the
+                // head was when it fell due, already that old, with its
+                // own drift, so a slow frame doesn't stack them on one spot.
                 r.emit -= dt;
-                while (r.emit <= 0) {
+                for (let sub = 0; r.emit <= 0; sub++) {
+                    const lag = -r.emit;
                     r.emit += ROAD_FW_TRAIL_DT;
-                    const q = _roadHash01(k * 977 + (r.age * 1000 | 0), 63, r.seed) - 0.5;
-                    _fwPut(b, ROAD_FW_KIND_SPARKLE, b.pos[j], b.pos[j + 1], b.pos[j + 2],
-                        q * 20 * r.scale, -10 * r.scale, 0,
+                    const ue = r.age - lag > 0 ? (r.age - lag) / r.rise : 0;
+                    const q = _roadHash01(k * 977 + (r.age * 1000 | 0) + 131 * sub, 63, r.seed) - 0.5;
+                    const p = _fwPut(b, ROAD_FW_KIND_SPARKLE, r.x0 + (r.x1 - r.x0) * ue, _fwPathY(r.y0, r.y1, ue),
+                        r.z0 + (r.z1 - r.z0) * ue, q * 20 * r.scale, -10 * r.scale, 0,
                         0.9, 0.6, 0.3, ROAD_FW_TRAIL_SIZE * r.scale, ROAD_FW_TRAIL_LIFE, 3, 30 * r.scale);
+                    if (p >= 0) b.age[p] = lag < ROAD_FW_TRAIL_LIFE ? lag : 0;
                 }
             }
         }
@@ -3985,7 +4003,15 @@
             const damp = Math.exp(-b.drag[i] * dt);
             b.vel[j] *= damp; b.vel[j + 1] = b.vel[j + 1] * damp - b.grav[i] * dt; b.vel[j + 2] *= damp;
             b.pos[j] += b.vel[j] * dt; b.pos[j + 1] += b.vel[j + 1] * dt; b.pos[j + 2] += b.vel[j + 2] * dt;
-            if (b.pos[j + 1] < floorY && kd !== ROAD_FW_KIND_SPARKLE) { _fwKill(b, i); continue; }
+            let low = 1;
+            if (kd !== ROAD_FW_KIND_SPARKLE) {
+                const y = b.pos[j + 1];
+                if (y < floorY || b.pos[j + 2] > zMax) { _fwKill(b, i); continue; }
+                if (band > 0 && y < floorY + band) {
+                    const v = (y - floorY) / band;
+                    low = v * v * (3 - 2 * v);
+                }
+            }
             const u = a / lf;
             let fade, sz;
             if (kd === ROAD_FW_KIND_TRAIL || kd === ROAD_FW_KIND_SPARKLE) {
@@ -3995,13 +4021,17 @@
                 fade = (a < 0.06 ? 1.5 : 1) * Math.pow(1 - u, kd === ROAD_FW_KIND_WILLOW ? 1.2 : 1.6);
                 sz = 1 - 0.4 * u;
             }
+            fade *= low;
             let cr = b.base[j], cg = b.base[j + 1], cb = b.base[j + 2];
             if (kd === ROAD_FW_KIND_WILLOW) {
                 const w = u < 0.5 ? u * 2 : 1;      // toward gold as it hangs
                 cr += (ROAD_FW_GOLD_R - cr) * w; cg += (ROAD_FW_GOLD_G - cg) * w; cb += (ROAD_FW_GOLD_B - cb) * w;
                 b.emit[i] -= dt;
                 if (b.emit[i] <= 0 && (i & 1) === 0) {
-                    b.emit[i] = ROAD_FW_WILLOW_DT;
+                    // Keep the overshoot (the spacing stays ROAD_FW_WILLOW_DT
+                    // at any frame rate), one point a step at most.
+                    b.emit[i] += ROAD_FW_WILLOW_DT;
+                    if (b.emit[i] < 0) b.emit[i] = 0;
                     const t = _fwPut(b, ROAD_FW_KIND_TRAIL, b.pos[j], b.pos[j + 1], b.pos[j + 2], 0, 0, 0,
                         cr * fade * 0.5, cg * fade * 0.5, cb * fade * 0.5, b.size0[i] * 0.6, ROAD_FW_TRAIL_LIFE, 4, b.grav[i] * 0.3);
                     if (t + 1 > top) top = t + 1;
@@ -4433,15 +4463,19 @@
     // rocket leaves the hill strip ahead and bursts over the city, between
     // the road's end and the skyline, at a height picked from the live
     // camera so the burst sits in the sky above the towers.
-    const ROAD_FW_NDC_Y = 0.58, ROAD_FW_NDC_SPREAD = 0.14;   // burst centre, screen height (-1..1)
-    const ROAD_FW_Y_MIN = 220 * K, ROAD_FW_Y_MAX = 1100 * K, ROAD_FW_Y_DEFAULT = 420 * K;
+    const ROAD_FW_NDC_Y = 0.66, ROAD_FW_NDC_SPREAD = 0.1, ROAD_FW_NDC_X = 0.6;   // burst centre on screen (-1..1)
+    const ROAD_FW_Y_MIN = 150 * K, ROAD_FW_Y_MAX = 1100 * K, ROAD_FW_Y_DEFAULT = 420 * K;
+    const ROAD_FW_REACH_MIN = 60 * K, ROAD_FW_REACH_MAX = 360 * K;   // burst out from the launch line
+    // The sparks' floor: just above the ground, fading out over the band
+    // above it (see _fwStep); and no nearer than the board's far end.
+    const ROAD_FW_FLOOR_LIFT = 10 * K, ROAD_FW_FLOOR_BAND = 70 * K;
     const ROAD_FW_FLASH_S = 0.3;              // sky and window lift after each burst
     const ROAD_FW_FLASH_SKY = 0.22, ROAD_FW_FLASH_WIN = 0.3;
     // Arrival finale (schedule and sizes in the placement block). Bursts
     // spread over the skyline, launched from the city itself.
     const ROAD_FIN_X_MIN = 80 * K, ROAD_FIN_X_MAX = 760 * K;   // burst x either side of the road's line
     const ROAD_FIN_Z_BURST = 20 * K, ROAD_FIN_Z_LAUNCH = 70 * K;   // in front of the skyline's base
-    const ROAD_FIN_NDC_Y = 0.55, ROAD_FIN_NDC_SPREAD = 0.22, ROAD_FIN_NDC_BIG = 0.62;
+    const ROAD_FIN_NDC_Y = 0.55, ROAD_FIN_NDC_SPREAD = 0.22, ROAD_FIN_NDC_BIG = 0.62, ROAD_FIN_NDC_X = 0.7;
     const ROAD_FIN_SIZE = 1.35;           // finale shells open wider than milestone ones
     const ROAD_FIN_LIFT_S = 1.5;          // s for the city to wake up fully
     const ROAD_FIN_CLEAR_S = 2;           // s for full gloom (fog, rain) to drain away
@@ -4828,17 +4862,42 @@
         }
         return (lo + hi) / 2;
     }
+    // How far (0..1) along [lo, hi] (|x| on `side`) a burst at (y, z) may
+    // sit with its centre within `limit` of the screen's half width for the
+    // live camera: 1 when even hi fits (a wide view), 0 when even lo
+    // doesn't. Narrow panes (a portrait window, side-by-side panels) pull
+    // the bursts in. Bisection, once per rocket.
+    function _bgRoadFwFitX(s, side, lo, hi, y, z, limit) {
+        const cam = s.cam, v = s.fwV;
+        if (!cam || !cam.projectionMatrix || !cam.matrixWorldInverse || !s.root || !(hi > lo)) return 1;
+        const m = s.root.matrixWorld;
+        const out = (f) => Math.abs(v.set(side * (lo + (hi - lo) * f), y, z).applyMatrix4(m).project(cam).x) > limit;
+        if (!out(1)) return 1;
+        if (out(0)) return 0;
+        let a = 0, b = 1;
+        for (let i = 0; i < 12; i++) {
+            const mid = (a + b) / 2;
+            if (out(mid)) b = mid; else a = mid;
+        }
+        return a;
+    }
     // One rocket for a streak milestone: off the hill strip ahead of you,
     // alternating sides, up and out (always leaning away from the road, so
-    // it never crosses the board on screen) to a burst over the city.
+    // it never crosses the board on screen) to a burst over the city. The
+    // burst is fitted to the live view: its height to a screen height, and
+    // in a narrow view its distance out, scaled toward the launch line.
     function _bgRoadLaunchRocket(s, streak, mult, c1, c2, lite) {
         const n = ++s.fwCount;
         const seed = (s.seed ^ Math.imul(n, 0x9e3779b1)) | 0;
         const side = (n & 1) ? 1 : -1;
         const x0abs = s.postX + (40 + 80 * _roadHash01(n, 71, seed)) * K;
-        const x1 = side * (x0abs + (60 + 300 * _roadHash01(n, 72, seed)) * K);
+        const reach = ROAD_FW_REACH_MIN + (ROAD_FW_REACH_MAX - ROAD_FW_REACH_MIN) * _roadHash01(n, 72, seed);
         const z1 = s.zFar + (s.skylineZ - s.zFar) * (0.35 + 0.3 * _roadHash01(n, 73, seed));
-        const y1 = _bgRoadFwBurstY(s, x1, z1, ROAD_FW_NDC_Y + ROAD_FW_NDC_SPREAD * _roadHash01(n, 74, seed));
+        const target = ROAD_FW_NDC_Y + ROAD_FW_NDC_SPREAD * _roadHash01(n, 74, seed);
+        let y1 = _bgRoadFwBurstY(s, side * (x0abs + reach), z1, target);
+        const f = _bgRoadFwFitX(s, side, x0abs, x0abs + ROAD_FW_REACH_MAX, y1, z1, ROAD_FW_NDC_X);
+        const x1 = side * (x0abs + reach * f);
+        if (f < 1) y1 = _bgRoadFwBurstY(s, x1, z1, target);
         // Speeds and sizes scale with the burst's distance, so every burst
         // looks about the same size on screen.
         let sc = 1;
@@ -4875,10 +4934,10 @@
             }
             s.fwDirty = true;
         }
-        const moving = fb.live > 0 && (playing || !!(chart && chart.ended));
+        const moving = _fwShouldStep(fb.live, playing, !!(chart && chart.ended));
         s.fwMoving = moving;
         if (moving) {
-            if (_fwStep(fb, dt, s.fwFloorY) > 0) s.fwFlash = 1;
+            if (_fwStep(fb, dt, s.fwFloorY, ROAD_FW_FLOOR_BAND, s.fwZMax) > 0) s.fwFlash = 1;
             else if (s.fwFlash > 0) s.fwFlash = Math.max(0, s.fwFlash - dt / ROAD_FW_FLASH_S);
             s.fwDirty = true;
         } else if (fb.live === 0) {
@@ -5099,10 +5158,15 @@
         const n = ++s.fwCount;
         const seed = (s.seed ^ Math.imul(n * 31 + i + 1, 0x9e3779b1)) | 0;
         const side = (i & 1) ? 1 : -1;
-        const x1 = big ? 0 : side * (ROAD_FIN_X_MIN + (ROAD_FIN_X_MAX - ROAD_FIN_X_MIN) * _roadHash01(i, 91, seed));
+        const xr = big ? 0 : ROAD_FIN_X_MIN + (ROAD_FIN_X_MAX - ROAD_FIN_X_MIN) * _roadHash01(i, 91, seed);
         const z1 = s.skylineZ + ROAD_FIN_Z_BURST;
         const target = big ? ROAD_FIN_NDC_BIG : ROAD_FIN_NDC_Y + ROAD_FIN_NDC_SPREAD * _roadHash01(i, 92, seed);
-        const y1 = _bgRoadFwBurstY(s, x1, z1, target);
+        let y1 = _bgRoadFwBurstY(s, side * xr, z1, target);
+        // A narrow view squeezes the volley toward the middle (the climb is
+        // all beyond the road, so any x is safe).
+        const f = big ? 1 : _bgRoadFwFitX(s, side, 0, ROAD_FIN_X_MAX, y1, z1, ROAD_FIN_NDC_X);
+        const x1 = side * xr * f;
+        if (f < 1) y1 = _bgRoadFwBurstY(s, x1, z1, target);
         const x0 = x1 + side * 40 * K * (_roadHash01(i, 93, seed) - 0.5);
         let sc = 1;
         const cam = s.cam;
@@ -5885,7 +5949,8 @@
                     // cloud's attributes (see _bgRoadUpdateFireworks).
                     fw: null, fwBuf: _fwMakeBuf(ROAD_FW_POOL, ROAD_FW_ROCKETS),
                     fwKey: null, fwCount: 0, fwFlash: 0, fwMoving: false, fwDirty: false,
-                    fwFloorY: 0, fwV: new T.Vector3(), fwVp: new T.Vector4(),
+                    fwFloorY: groundY + ROAD_FW_FLOOR_LIFT, fwZMax: -AHEAD * TS,
+                    fwV: new T.Vector3(), fwVp: new T.Vector4(),
                     // Arrival finale: rockets of the volley launched (-1 =
                     // not seen yet), the big willow, how awake the city is,
                     // and the remembered heat that sizes the volley.
@@ -6127,7 +6192,6 @@
                 const panelH = panelW / ROAD_SIGN_ASPECT;
                 const panelY = s.baseY + ROAD_POST_H * ROAD_BAR_H_MUL + ROAD_SIGN_CLEAR + panelH / 2;
                 const barY = panelY + panelH * 0.25;
-                s.fwFloorY = panelY + panelH / 2;   // fireworks never fall below the sign tops
                 const gPostH = barY - roadY + ROAD_GANTRY_W / 2;
                 const gPostGeo = geo(new T.BoxGeometry(ROAD_GANTRY_W, gPostH, ROAD_GANTRY_W));
                 gPostGeo.translate(0, gPostH / 2, 0);

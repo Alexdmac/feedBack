@@ -14,8 +14,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { pathToFileURL } = require('node:url');
 
 const SCREEN_JS = path.join(__dirname, '..', 'screen.js');
+const THREE_JS = path.join(__dirname, '..', '..', '..', 'static', 'vendor', 'three', 'three.module.min.js');
 const START = '    // --- road placement (sliced by tests/road.test.js) ---';
 const END = '    // --- end road placement ---';
 
@@ -66,6 +68,7 @@ function load() {
         '\nthis._fwMakeBuf = _fwMakeBuf;' +
         '\nthis._fwLaunch = _fwLaunch;' +
         '\nthis._fwStep = _fwStep;' +
+        '\nthis._fwShouldStep = _fwShouldStep;' +
         '\nthis._fwClear = _fwClear;' +
         '\nthis._fwPathY = _fwPathY;' +
         '\nthis.ROAD_FW_POOL = ROAD_FW_POOL;' +
@@ -1263,6 +1266,307 @@ test('_fwStep: the floor kills falling sparks but spares the rocket trail near t
     for (let i = 0; i < b.n; i++) if (b.kind[i] === 0) assert.equal(b.size[i], 0);
 });
 
+// Steps a and c side by side; returns per-point kill info for a: which
+// points died before their life ran out, and how bright they were the
+// step before.
+function fwTwin(r, a, c, secs, fps, floorA, bandA, zA, floorC, bandC, zC, each) {
+    const dt = 1 / fps;
+    const prevKind = new Int8Array(a.n), prevAge = new Float32Array(a.n), prevLum = new Float32Array(a.n);
+    const early = [];
+    for (let t = 0; t < secs - 1e-9; t += dt) {
+        for (let i = 0; i < a.n; i++) {
+            prevKind[i] = a.kind[i]; prevAge[i] = a.age[i];
+            prevLum[i] = a.col[i * 3] + a.col[i * 3 + 1] + a.col[i * 3 + 2];
+        }
+        r._fwStep(a, dt, floorA, bandA, zA);
+        r._fwStep(c, dt, floorC, bandC, zC);
+        for (let i = 0; i < a.n; i++) {
+            const k = prevKind[i];
+            if (k === 0 || k === 1 || k === r.ROAD_FW_KIND_SPARKLE) continue;
+            const died = a.kind[i] === 0 || a.age[i] < prevAge[i];
+            if (died && prevAge[i] + dt < a.life[i] - 1e-6) {
+                const base = a.base[i * 3] + a.base[i * 3 + 1] + a.base[i * 3 + 2];
+                early.push(base > 0 ? prevLum[i] / base : 0);
+            }
+        }
+        if (each) each(t);
+    }
+    return early;
+}
+
+test('_fwStep: the floor really kills sparks, softly: faded out over the band before they die', () => {
+    const r = load();
+    // A twin with no floor shows the sparks do fall past it.
+    const a = r._fwMakeBuf(512, 6), c = r._fwMakeBuf(512, 6);
+    launch(r, a, 50, 4, false, 3);
+    launch(r, c, 50, 4, false, 3);
+    let below = 0, fewer = false;
+    const early = fwTwin(r, a, c, 4, 60, 250, 70, Infinity, -1e9, 0, Infinity, () => {
+        for (let i = 0; i < c.n; i++) {
+            if (c.kind[i] === 0 || c.kind[i] === 1 || c.kind[i] === r.ROAD_FW_KIND_SPARKLE) continue;
+            if (c.pos[i * 3 + 1] < 250) below++;
+        }
+        if (a.live < c.live) fewer = true;
+        for (let i = 0; i < a.n; i++) {
+            if (a.kind[i] === 0 || a.kind[i] === 1 || a.kind[i] === r.ROAD_FW_KIND_SPARKLE) continue;
+            assert.ok(a.pos[i * 3 + 1] >= 250, `point ${i} below the floor`);
+        }
+    });
+    assert.ok(below > 100, `without a floor the sparks fall past it (${below} point-frames)`);
+    assert.ok(fewer, 'the floor took some');
+    assert.ok(early.length > 10, `sparks died at the floor (${early.length})`);
+    // With the band each was already (nearly) dark when it died...
+    const worst = Math.max(...early);
+    assert.ok(worst < 0.1, `a spark died at ${worst.toFixed(3)} of its colour`);
+    // ...without it they are cut off bright.
+    const h = r._fwMakeBuf(512, 6), h2 = r._fwMakeBuf(512, 6);
+    launch(r, h, 50, 4, false, 3);
+    launch(r, h2, 50, 4, false, 3);
+    const hard = fwTwin(r, h, h2, 4, 60, 250, 0, Infinity, -1e9, 0, Infinity);
+    assert.ok(Math.max(...hard) > 0.3, 'a hard floor cuts sparks off bright');
+});
+
+test('_fwStep: sparks coming nearer than zMax die; the rocket and its trail are spared', () => {
+    const r = load();
+    // The burst is at z -1200 and the launch at z -400: zMax -1100 lies
+    // between them.
+    const a = r._fwMakeBuf(512, 6), c = r._fwMakeBuf(512, 6);
+    launch(r, a, 50, 4, false, 3);
+    launch(r, c, 50, 4, false, 3);
+    let near = 0, trail = 0;
+    fwTwin(r, a, c, 3, 60, -1e9, 0, -1100, -1e9, 0, Infinity, (t) => {
+        for (let i = 0; i < c.n; i++) {
+            if (c.kind[i] === 0 || c.kind[i] === r.ROAD_FW_KIND_SPARKLE || c.kind[i] === 1) continue;
+            if (c.pos[i * 3 + 2] > -1100) near++;
+        }
+        for (let i = 0; i < a.n; i++) {
+            const k = a.kind[i];
+            if (k === 0) continue;
+            if (k === r.ROAD_FW_KIND_SPARKLE || k === 1) { if (a.pos[i * 3 + 2] > -1100) trail++; continue; }
+            assert.ok(a.pos[i * 3 + 2] <= -1100, `point ${i} nearer than zMax`);
+        }
+    });
+    assert.ok(near > 50, `without the guard sparks come nearer (${near} point-frames)`);
+    assert.ok(trail > 20, `the climb nearer than zMax is still drawn (${trail})`);
+});
+
+test('_fwShouldStep: steps only with something alive, while playing or after the end', () => {
+    const r = load();
+    assert.equal(r._fwShouldStep(0, true, false), false);
+    assert.equal(r._fwShouldStep(0, false, true), false);
+    assert.equal(r._fwShouldStep(5, true, false), true);
+    assert.equal(r._fwShouldStep(5, false, true), true);
+    assert.equal(r._fwShouldStep(5, false, false), false, 'paused');
+    assert.equal(r._fwShouldStep(5, undefined, undefined), false);
+});
+
+// _bgRoadUpdateFireworks with a stand-in geometry: the host keeps calling
+// it while paused (~10 fps, real dt), so the gate must hold.
+function loadFwUpdate() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const block = src.slice(src.indexOf(START), src.indexOf(END));
+    const consts = src.match(/\n    const ROAD_FW_FLOOR_LIFT[^\n]*\n    const ROAD_FW_FLASH_S[^\n]*\n/);
+    assert.ok(consts, 'firework floor constants not found');
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + consts[0]
+        + 'function _bgRoadLaunchRocket() {}\n'
+        + sliceFn(src, '    function _bgRoadUpdateFireworks(') + '\n'
+        + 'this.update = _bgRoadUpdateFireworks; this.launch = _fwLaunch; this.shell = _fwShellFor;'
+        + 'this.makeBuf = () => _fwMakeBuf(512, 6);', sandbox);
+    return sandbox;
+}
+
+test('_bgRoadUpdateFireworks: a paused song freezes its rockets though dt keeps coming; after the end they run', () => {
+    const f = loadFwUpdate();
+    const nop = { needsUpdate: false };
+    const s = {
+        fwBuf: f.makeBuf(), fwKey: 'a', fwFlash: 0, fwDirty: false, fwMoving: false,
+        fwFloorY: -1e9, fwZMax: Infinity,
+        fw: { geometry: { setDrawRange() {}, attributes: { position: nop, aColor: nop, aSize: nop } } },
+    };
+    const chart = { songKey: 'a', back: false, ended: false, fwN: 0, fwQ: null };
+    f.launch(s.fwBuf, 200, 0, -400, 300, 400, -1200, 1, f.shell(50, 4, false), 1, 0.2, 0.6, 0.1, 0.9, 1, 7);
+    for (let i = 0; i < 30; i++) f.update(s, chart, true, false, 1 / 60);
+    assert.equal(s.fwMoving, true);
+    const before = Array.from(s.fwBuf.pos);
+    for (let i = 0; i < 20; i++) f.update(s, chart, false, false, 0.1);
+    assert.equal(s.fwMoving, false, 'paused');
+    assert.deepEqual(Array.from(s.fwBuf.pos), before, 'nothing moved in 2 s of paused frames');
+    chart.ended = true;
+    for (let i = 0; i < 6; i++) f.update(s, chart, false, false, 0.1);
+    assert.equal(s.fwMoving, true, 'the song has ended');
+    assert.notDeepEqual(Array.from(s.fwBuf.pos), before);
+    chart.ended = false;
+    chart.songKey = 'b';
+    f.update(s, chart, true, false, 1 / 60);
+    assert.equal(s.fwBuf.live, 0, 'a new song clears them');
+    assert.equal(s.fwMoving, false);
+});
+
+test('fireworks floor wiring: the floor at the ground, no nearer than the board\'s far end', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    assert.match(src, /fwFloorY: groundY \+ ROAD_FW_FLOOR_LIFT, fwZMax: -AHEAD \* TS,/);
+    assert.match(src, /if \(moving\) \{\n\s*if \(_fwStep\(fb, dt, s\.fwFloorY, ROAD_FW_FLOOR_BAND, s\.fwZMax\) > 0\)/);
+    assert.equal(src.split('_fwStep(fb,').length, 2, 'one step call');
+    assert.match(src, /const ROAD_FW_FLOOR_LIFT = 10 \* K, ROAD_FW_FLOOR_BAND = 70 \* K;/);
+});
+
+// Trail points that appeared in the last step (new kind, or a slot reused).
+function countNew(b, kind, prevKind, prevAge) {
+    let n = 0;
+    for (let i = 0; i < b.n; i++) if (b.kind[i] === kind && (prevKind[i] !== kind || b.age[i] < prevAge[i])) n++;
+    return n;
+}
+function fwEmitted(r, b, secs, fps, kind, hitchAt) {
+    const prevKind = new Int8Array(b.n), prevAge = new Float32Array(b.n);
+    let n = 0;
+    const dt = 1 / fps;
+    let hitched = false;
+    for (let t = 0; t < secs - 1e-9;) {
+        const step = hitchAt != null && !hitched && t >= hitchAt ? 0.1 : dt;
+        if (step !== dt) hitched = true;
+        prevKind.set(b.kind); prevAge.set(b.age);
+        r._fwStep(b, step, -1e9);
+        n += countNew(b, kind, prevKind, prevAge);
+        t += step;
+    }
+    return n;
+}
+
+test('_fwStep: willow trails keep their spacing at any frame rate', () => {
+    const r = load();
+    const counts = [30, 50, 60, 144, 240].map((fps) => {
+        const b = r._fwMakeBuf(r.ROAD_FW_POOL, 6);
+        launch(r, b, 100, 4, false, 9);
+        return [fps, fwEmitted(r, b, 4, fps, 3)];
+    });
+    const ref = counts[2][1];
+    assert.ok(ref > 500, `a willow drops trail points (${ref})`);
+    for (const [fps, n] of counts) {
+        assert.ok(Math.abs(n - ref) / ref < 0.04, `${fps} fps: ${n} trail points vs ${ref} at 60`);
+    }
+});
+
+test('_fwStep: a slow frame spreads the rocket trail along the climb instead of stacking it', () => {
+    const r = load();
+    const SP = r.ROAD_FW_KIND_SPARKLE;
+    const counts = [];
+    for (const [fps, hitch] of [[20, null], [30, null], [60, null], [144, null], [60, 0.3]]) {
+        const b = r._fwMakeBuf(512, 6);
+        launch(r, b, 25, 3, false, 4);
+        const prevKind = new Int8Array(b.n), prevAge = new Float32Array(b.n);
+        const dt = 1 / fps;
+        let n = 0, multi = 0, hitched = false;
+        for (let t = 0; t < 0.8 - 1e-9;) {
+            const step = hitch != null && !hitched && t >= hitch ? 0.1 : dt;
+            if (step !== dt) hitched = true;
+            prevKind.set(b.kind); prevAge.set(b.age);
+            r._fwStep(b, step, -1e9);
+            t += step;
+            // The sparkles this step owed: each on its own spot along the
+            // climb, each with its own drift.
+            const fresh = [];
+            for (let i = 0; i < b.n; i++) if (b.kind[i] === SP && (prevKind[i] !== SP || b.age[i] < prevAge[i])) fresh.push(i);
+            n += fresh.length;
+            if (fresh.length > 1) multi++;
+            const tag = `${fps} fps${hitch ? ' with a 0.1 s hitch' : ''}`;
+            for (let x = 0; x < fresh.length; x++) {
+                for (let y = x + 1; y < fresh.length; y++) {
+                    const i = fresh[x] * 3, j = fresh[y] * 3;
+                    const d = Math.hypot(b.pos[i] - b.pos[j], b.pos[i + 1] - b.pos[j + 1], b.pos[i + 2] - b.pos[j + 2]);
+                    // The head covers ~27 units of z per ROAD_FW_TRAIL_DT here.
+                    assert.ok(d > 5, `${tag}: sparkles ${fresh[x]} and ${fresh[y]} stacked (${d.toFixed(2)} apart)`);
+                    assert.ok(Math.abs(b.vel[i] - b.vel[j]) > 1e-6, `${tag}: sparkles ${fresh[x]} and ${fresh[y]} drift together`);
+                }
+            }
+        }
+        if (fps <= 30 || hitch) assert.ok(multi > 0, `${fps} fps: some steps owe several sparkles`);
+        counts.push(n);
+    }
+    // About one per ROAD_FW_TRAIL_DT of climb, whatever the frame rate.
+    for (const n of counts) assert.ok(Math.abs(n - counts[2]) <= 2, `trail sparkles ${counts.join(', ')}`);
+});
+
+// The launch functions with the real three.js camera maths: does every
+// burst land where the view can see it?
+function loadLaunch() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const block = src.slice(src.indexOf(START), src.indexOf(END));
+    const fwConsts = src.match(/\n    const ROAD_FW_NDC_Y[^\n]*\n    const ROAD_FW_Y_MIN[^\n]*\n    const ROAD_FW_REACH_MIN[^\n]*\n/);
+    assert.ok(fwConsts, 'firework camera constants not found');
+    const consts = src.match(/\n    const ROAD_FIN_X_MIN[\s\S]*?const ROAD_FIN_HOLD_MAX = 4;[^\n]*\n/);
+    assert.ok(consts, 'finale constants not found');
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + fwConsts[0] + consts[0]
+        + sliceFn(src, '    function _bgRoadFwBurstY(') + '\n'
+        + sliceFn(src, '    function _bgRoadFwFitX(') + '\n'
+        + sliceFn(src, '    function _bgRoadLaunchRocket(') + '\n'
+        + sliceFn(src, '    function _bgRoadLaunchFinaleRocket(') + '\n'
+        + 'this.rocket = _bgRoadLaunchRocket; this.finale = _bgRoadLaunchFinaleRocket; this.clear = _fwClear;'
+        + 'this.makeBuf = () => _fwMakeBuf(ROAD_FW_POOL, ROAD_FW_ROCKETS);', sandbox);
+    return sandbox;
+}
+async function launchView(f, aspect) {
+    const T = await import(pathToFileURL(THREE_JS).href);
+    const K = 0.0075, TS = 230 * K;
+    const cam = new T.PerspectiveCamera(70, aspect, 0.01, 670 * K * 3);
+    cam.position.set(0, 120 * K, 110 * K);
+    cam.lookAt(0, 0, -230 * K);
+    cam.updateMatrixWorld();
+    const root = new T.Group();
+    root.updateMatrixWorld();
+    const s = {
+        cam, root, fwV: new T.Vector3(), tmpColor: new T.Color(), fwBuf: f.makeBuf(), fwCount: 0, seed: 5,
+        postX: 160 * K, groundY: 0, zFar: -4 * TS, skylineZ: -4 * TS - 600 * K,
+    };
+    const ndc = (x, y, z) => new T.Vector3(x, y, z).applyMatrix4(root.matrixWorld).project(cam);
+    // Each launch's burst point, read off the rocket and cleared again.
+    const burst = (fire) => {
+        fire();
+        const r = s.fwBuf.rk[0];
+        const out = { x: r.x1, y: r.y1, z: r.z1, x0: r.x0, p: ndc(r.x1, r.y1, r.z1) };
+        f.clear(s.fwBuf);
+        return out;
+    };
+    return { s, burst };
+}
+
+test('rocket bursts fit the view: a narrow pane pulls them in, a wide one lets them spread', async () => {
+    const f = loadLaunch();
+    const runs = {};
+    for (const aspect of [0.6, 16 / 9]) {
+        const { s, burst } = await launchView(f, aspect);
+        const ms = [], fin = [];
+        for (let i = 0; i < 24; i++) ms.push(burst(() => f.rocket(s, 50, 4, 0x00f0ff, 0xff2ec4, false)));
+        for (let i = 0; i < 12; i++) fin.push(burst(() => f.finale(s, i, i === 11, null, false)));
+        runs[aspect] = { ms, fin };
+        for (const b of ms) {
+            assert.ok(Math.abs(b.p.x) <= 0.6 + 1e-3, `aspect ${aspect.toFixed(2)}: milestone at x ${b.p.x.toFixed(3)}`);
+            assert.ok(b.p.y >= 0.66 - 0.01 && b.p.y <= 0.76 + 0.01, `aspect ${aspect.toFixed(2)}: milestone at y ${b.p.y.toFixed(3)}`);
+            // Still out from the launch line, away from the road.
+            assert.ok(Math.sign(b.x) === Math.sign(b.x0) && Math.abs(b.x) >= Math.abs(b.x0) - 1e-9);
+        }
+        for (const b of fin) {
+            assert.ok(Math.abs(b.p.x) <= 0.7 + 1e-3, `aspect ${aspect.toFixed(2)}: finale at x ${b.p.x.toFixed(3)}`);
+            assert.ok(b.p.y > 0.4 && b.p.y < 0.9, `aspect ${aspect.toFixed(2)}: finale at y ${b.p.y.toFixed(3)}`);
+        }
+    }
+    const narrow = runs[0.6], wide = runs[16 / 9];
+    // Same seeds, so the same picks: the narrow pane only ever pulls in.
+    let pulled = 0;
+    narrow.ms.forEach((b, i) => {
+        assert.ok(Math.abs(b.x) <= Math.abs(wide.ms[i].x) + 1e-9);
+        if (Math.abs(b.x) < Math.abs(wide.ms[i].x) - 1e-6) pulled++;
+    });
+    assert.ok(pulled >= 6, `the narrow pane pulled ${pulled} of 24 milestone bursts in`);
+    const spread = (list) => Math.max(...list.map((b) => Math.abs(b.x)));
+    assert.ok(spread(wide.ms) > spread(narrow.ms) * 1.3, 'milestones spread wider at 16:9');
+    assert.ok(spread(wide.fin) > spread(narrow.fin) * 1.3, 'the finale spreads wider at 16:9');
+    assert.ok(Math.abs(wide.fin[11].x) < 1e-9, 'the big willow goes up the middle');
+});
+
 test('_fwStep: paused (dt 0) freezes everything; the same seed gives the same burst', () => {
     const r = load();
     const a = r._fwMakeBuf(512, 6), c = r._fwMakeBuf(512, 6);
@@ -1426,6 +1730,19 @@ test('the pool holds a hot finale with its big willow and a milestone on top, at
     }
 });
 
+// One function's text out of screen.js, by its signature line.
+function sliceFn(src, sig) {
+    const a = src.indexOf(sig);
+    assert.ok(a > 0, `${sig} not found`);
+    const open = src.indexOf('{', a);
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}' && --depth === 0) return src.slice(a, i + 1);
+    }
+    throw new Error('unbalanced');
+}
+
 // _bgRoadUpdateFinale runs outside the pure block (it launches through the
 // camera helpers), so it is sliced on its own with stand-ins for THREE.
 function loadFinale() {
@@ -1450,6 +1767,7 @@ function loadFinale() {
     vm.createContext(sandbox);
     vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + fwConsts[0] + consts[0]
         + fnText('    function _bgRoadFwBurstY(') + '\n'
+        + fnText('    function _bgRoadFwFitX(') + '\n'
         + fnText('    function _bgRoadLaunchFinaleRocket(') + '\n'
         + fnText('    function _bgRoadUpdateFinale(') + '\n'
         + 'this.update = _bgRoadUpdateFinale; this.makeMood = _roadMakeMood;'

@@ -52,8 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   200. On the night road it replaces the 2D milestone burst; with Streak
   feedback off, the 2D burst stays as before. Lite quality fires a smaller
   shell. Fireworks freeze on pause, vanish when you rewind, and a rocket
-  launched on the last note still bursts after the song ends. Free play has
-  no fireworks.
+  launched on the last note still bursts after the song ends. Bursts are
+  placed for the current view, so a narrow window or panel pulls them in
+  toward the middle, and sparks fade out softly near the ground instead of
+  being cut off. Free play has no fireworks.
 - **City finale on the night road (3D Highway).** When the last note passes
   the hit line (or the song ends, for a chart whose last note is right at the
   end), the city wakes up: every window lights, the neon flashes on the beat,
