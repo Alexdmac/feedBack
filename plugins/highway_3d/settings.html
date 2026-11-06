@@ -148,6 +148,17 @@
         </p>
     </div>
 
+    <!-- Night road arrival finale (road style only). -->
+    <div class="mt-3 flex items-start justify-between gap-3">
+        <label for="h3d-bg-road-finale" class="text-xs font-medium text-gray-400">
+            Night road finale
+            <span class="block text-[10px] text-gray-500 font-normal">When the last note passes, the city lights up and a volley of fireworks goes up over it. In free play the player stays open up to 4 s after the song so you see it.</span>
+        </label>
+        <input type="checkbox" id="h3d-bg-road-finale" checked
+            onchange="window.h3dBgSetFinale && window.h3dBgSetFinale(this.checked)"
+            class="accent-accent mt-0.5">
+    </div>
+
     <!-- Scene colors — TWO independent axes sharing one palette family:
          Background (clear + fog) and Highway (board surface + lit lane). Same
          id-set in both, so any background can mix with any highway; picking the
@@ -1546,6 +1557,12 @@
                 let rq = null;
                 try { rq = localStorage.getItem('h3d_bg_roadQuality'); } catch (_) { /* storage blocked */ }
                 rqSel.value = (rq === 'full' || rq === 'lite') ? rq : 'auto';
+            }
+            const finChk = document.getElementById('h3d-bg-road-finale');
+            if (finChk) {
+                let fv = null;
+                try { fv = localStorage.getItem('h3d_bg_finale'); } catch (_) { /* storage blocked */ }
+                finChk.checked = fv == null ? true : !(fv === 'false' || fv === '0');
             }
 
             if (fileInput) {

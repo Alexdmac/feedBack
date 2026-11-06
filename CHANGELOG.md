@@ -54,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shell. Fireworks freeze on pause, vanish when you rewind, and a rocket
   launched on the last note still bursts after the song ends. Free play has
   no fireworks.
+- **City finale on the night road (3D Highway).** When the last note passes
+  the hit line (or the song ends, for a chart whose last note is right at the
+  end), the city wakes up: every window lights, the neon flashes on the beat,
+  the sky glow warms, the street lights turn amber, and fog and rain clear in
+  about 2 seconds. A volley of fireworks goes up over the skyline for about
+  6 seconds: 6 rockets in free play, 5 to 8 with note detection depending on
+  how hot your run was, and a big gold willow to close a run with no misses.
+  Lite fires 3 rockets. Pause freezes it; seeking back before the last note
+  (Restart, a loop) resets it, and it fires again next time round. In free
+  play, with exit-at-end on, the player stays open up to 4 seconds after the
+  song so the volley is seen; with note detection, its summary keeps the exit
+  as before. A new "Night road finale" setting (on by default) turns it off.
 - **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
   (Off, 120, 60, 30) that draws the highway at most that many times a second,
   to save power and heat or leave the graphics card free for other apps. Off

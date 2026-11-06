@@ -2398,7 +2398,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto' };
+    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto', finale: true };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -2808,7 +2808,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom']);
+    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'finale']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -2908,6 +2908,28 @@
         _h3dSyncFront();
     } catch (_) { /* no DOM (tests) */ }
 
+    // Night road finale, free play: one exit hold at a time across panels
+    // (see _bgFinaleHold). The player-screen and overlay tests mirror core's
+    // auto-exit (static/js/session.js); they run once when the song ends and
+    // once at release, never per frame.
+    let _h3dFinHoldPending = false;
+    function _h3dPlayerActive() {
+        try {
+            const el = document.getElementById('player');
+            return !!(el && el.classList.contains('active'));
+        } catch (_) { return false; }
+    }
+    function _h3dOverlayUp() {
+        let nodes;
+        try { nodes = document.querySelectorAll('[role="dialog"][aria-modal="true"], .fixed.inset-0'); } catch (_) { return false; }
+        for (const el of nodes) {
+            if (!el || el.id === 'player') continue;
+            if (el.classList && el.classList.contains('hidden')) continue;
+            if (el.getClientRects && el.getClientRects().length > 0) return true;
+        }
+        return false;
+    }
+
     // Pub-sub so settings.html can update live across all panel instances.
     const _bgListeners = new Set();
     function _bgSubscribe(fn) { _bgListeners.add(fn); }
@@ -2987,6 +3009,8 @@
         _bgWriteGlobal('roadQuality', ['auto', 'full', 'lite'].includes(s) ? s : BG_DEFAULTS.roadQuality);
     };
     window.h3dBgSetBloom        = (v) => _bgWriteGlobal('bloom', !!v);
+    // Night road arrival finale (road background only).
+    window.h3dBgSetFinale       = (v) => _bgWriteGlobal('finale', !!v);
     window.h3dBgSetToneHudVisible   = (v) => _bgWriteGlobal('toneHudVisible', !!v);
     window.h3dBgSetToneHudPosition  = (v) => _bgWriteGlobal('toneHudPosition', v);
     window.h3dBgSetToneHudSize      = (v) => _bgWriteGlobal('toneHudSize', v);
@@ -3755,7 +3779,7 @@
     // see _bgRoadUpdateFireworks), positions are road-root coordinates.
     // Speeds and sizes are in K units: each rocket carries its own `scale`
     // (world units per K unit, sized for its distance from the camera).
-    const ROAD_FW_POOL = 512;
+    const ROAD_FW_POOL = 1536;            // a finale volley with willows needs the room
     const ROAD_FW_ROCKETS = 6;
     const ROAD_FW_RISE = 0.9;              // s from the ground to the burst
     const ROAD_FW_AHEAD = 2.0;             // s ahead of the hit line the rocket leaves the ground
@@ -3989,6 +4013,95 @@
         b.top = b.top > n ? b.top : top;
         return bursts;
     }
+
+    // Arrival finale (step 2): when the last note crosses the hit line the
+    // city wakes up and a volley goes up over the skyline. n rockets spread
+    // over ROAD_FIN_SPREAD s from the trigger, then, after a clean judged
+    // run, one big willow. The trigger and the volley's size live on the
+    // renderer instance; the road launches the rockets from this schedule.
+    const ROAD_FIN_FIRST = 0.15, ROAD_FIN_SPREAD = 4.85, ROAD_FIN_BIG_AT = 5.9;   // s after the trigger
+    const ROAD_FIN_TAIL = 3.9;            // s after the last launch until its sparks are gone (rise + longest shell)
+    const ROAD_FIN_SUS_CAP = 1.5;         // a held last note counts this long at most
+    const ROAD_FIN_N_MIN = 5, ROAD_FIN_N_MAX = 8, ROAD_FIN_N_FREE = 6, ROAD_FIN_N_LITE = 3;
+    const ROAD_FIN_HEAT_HOLD = 10;        // s of play the remembered heat takes to drain
+    // When the last note ends: its onset plus its sustain (capped), the
+    // latest over notes and chords (a chord's sustain = its longest note's),
+    // clamped to half a second before the song's declared end. NaN = no
+    // notes (the finale then waits for the song to end).
+    function _roadLastNoteT(notes, chords, duration) {
+        let last = -Infinity;
+        if (notes && notes.length > 0) {
+            for (let i = 0; i < notes.length; i++) {
+                const n = notes[i];
+                if (!n || !Number.isFinite(n.t)) continue;
+                let sus = Number.isFinite(n.sus) && n.sus > 0 ? n.sus : 0;
+                if (sus > ROAD_FIN_SUS_CAP) sus = ROAD_FIN_SUS_CAP;
+                if (n.t + sus > last) last = n.t + sus;
+            }
+        }
+        if (chords && chords.length > 0) {
+            for (let i = 0; i < chords.length; i++) {
+                const c = chords[i];
+                if (!c || !Number.isFinite(c.t)) continue;
+                let sus = 0;
+                const cn = c.notes;
+                if (cn && cn.length > 0) {
+                    for (let j = 0; j < cn.length; j++) {
+                        const v = cn[j] ? cn[j].sus : 0;
+                        if (Number.isFinite(v) && v > sus) sus = v;
+                    }
+                }
+                if (sus > ROAD_FIN_SUS_CAP) sus = ROAD_FIN_SUS_CAP;
+                if (c.t + sus > last) last = c.t + sus;
+            }
+        }
+        if (!Number.isFinite(last)) return NaN;
+        if (Number.isFinite(duration) && duration > 0.5 && last > duration - 0.5) last = duration - 0.5;
+        return last;
+    }
+    // How many rockets: 3 in Lite, 6 in free play, 5 to 8 by how hot the
+    // run was (the best heat of about the last ROAD_FIN_HEAT_HOLD s, less
+    // the gloom).
+    function _roadFinaleCount(heat, gloom, judged, lite) {
+        if (lite) return ROAD_FIN_N_LITE;
+        if (!judged) return ROAD_FIN_N_FREE;
+        let h = (Number.isFinite(heat) ? heat : 0) - (Number.isFinite(gloom) ? gloom : 0);
+        h = h < 0 ? 0 : (h > 1 ? 1 : h);
+        return Math.round(ROAD_FIN_N_MIN + (ROAD_FIN_N_MAX - ROAD_FIN_N_MIN) * h);
+    }
+    // Launch time of rocket i of n (s after the trigger); i >= n is the big
+    // willow. Even spacing with a little swing, always in order.
+    function _roadFinaleAt(i, n) {
+        if (i >= n) return ROAD_FIN_BIG_AT;
+        if (n <= 1 || i <= 0) return ROAD_FIN_FIRST;
+        const step = ROAD_FIN_SPREAD / (n - 1);
+        const swing = i < n - 1 ? (_roadHash01(i, 81, n) - 0.5) * 0.5 * step : 0;
+        return ROAD_FIN_FIRST + i * step + swing;
+    }
+    // Rockets of the n already due at `age` (a road mounted mid-volley skips them).
+    function _roadFinaleDue(age, n) {
+        let k = 0;
+        while (k < n && _roadFinaleAt(k, n) <= age) k++;
+        return k;
+    }
+    // When the volley is over (its last sparks gone), s after the trigger.
+    function _roadFinaleEnd(n, big) {
+        const last = big ? ROAD_FIN_BIG_AT : (n > 0 ? _roadFinaleAt(n - 1, n) : 0);
+        return last + ROAD_FW_RISE + ROAD_FIN_TAIL;
+    }
+    // Finale shells cycle two-colour peony, willow with a core, and a
+    // single-colour shell; the big one is a slow double willow. Lite: the
+    // small Lite shell.
+    function _fwFinaleShell(i, big, lite) {
+        if (lite) return _fwShellFor(25, 4, true);
+        if (big) {
+            const sh = _fwShellFor(200, 4, false);
+            sh.n = 140; sh.speed = 1.45; sh.life = 3.0; sh.bright = 1.05;
+            return sh;
+        }
+        const k = ((i % 3) + 3) % 3;
+        return k === 0 ? _fwShellFor(50, 4, false) : (k === 1 ? _fwShellFor(100, 4, false) : _fwShellFor(25, 3, false));
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -4177,6 +4290,18 @@
     const ROAD_FW_Y_MIN = 220 * K, ROAD_FW_Y_MAX = 1100 * K, ROAD_FW_Y_DEFAULT = 420 * K;
     const ROAD_FW_FLASH_S = 0.3;              // sky and window lift after each burst
     const ROAD_FW_FLASH_SKY = 0.22, ROAD_FW_FLASH_WIN = 0.3;
+    // Arrival finale (schedule and sizes in the placement block). Bursts
+    // spread over the skyline, launched from the city itself.
+    const ROAD_FIN_X_MIN = 80 * K, ROAD_FIN_X_MAX = 760 * K;   // burst x either side of the road's line
+    const ROAD_FIN_Z_BURST = 20 * K, ROAD_FIN_Z_LAUNCH = 70 * K;   // in front of the skyline's base
+    const ROAD_FIN_NDC_Y = 0.55, ROAD_FIN_NDC_SPREAD = 0.22, ROAD_FIN_NDC_BIG = 0.62;
+    const ROAD_FIN_SIZE = 1.35;           // finale shells open wider than milestone ones
+    const ROAD_FIN_LIFT_S = 1.5;          // s for the city to wake up fully
+    const ROAD_FIN_CLEAR_S = 2;           // s for full gloom (fog, rain) to drain away
+    const ROAD_FIN_WIN_LIFT = 0.25, ROAD_FIN_SKY_LIFT = 0.35;
+    const ROAD_FIN_BIG_C1 = 0xfff1d0, ROAD_FIN_BIG_C2 = 0xffc860;
+    const ROAD_FIN_HOLD_MIN = 1.5;        // core's own auto-exit grace (AUTO_EXIT_GRACE_MS)
+    const ROAD_FIN_HOLD_MAX = 4;          // free play: s the player may stay open after the song ends
     // Soft round additive points sized in pixels from the live viewport
     // (uScale, set in onBeforeRender). Size 0 = a dead slot, moved off screen.
     const ROAD_FW_VERT = [
@@ -4580,6 +4705,82 @@
             g.attributes.aSize.needsUpdate = true;
         }
     }
+    // One finale rocket: launched from the city in front of the skyline,
+    // straight up to a burst over it; sides alternate, out from the road's
+    // line. The big willow goes up the middle.
+    function _bgRoadLaunchFinaleRocket(s, i, big, chart, lite) {
+        const n = ++s.fwCount;
+        const seed = (s.seed ^ Math.imul(n * 31 + i + 1, 0x9e3779b1)) | 0;
+        const side = (i & 1) ? 1 : -1;
+        const x1 = big ? 0 : side * (ROAD_FIN_X_MIN + (ROAD_FIN_X_MAX - ROAD_FIN_X_MIN) * _roadHash01(i, 91, seed));
+        const z1 = s.skylineZ + ROAD_FIN_Z_BURST;
+        const target = big ? ROAD_FIN_NDC_BIG : ROAD_FIN_NDC_Y + ROAD_FIN_NDC_SPREAD * _roadHash01(i, 92, seed);
+        const y1 = _bgRoadFwBurstY(s, x1, z1, target);
+        const x0 = x1 + side * 40 * K * (_roadHash01(i, 93, seed) - 0.5);
+        let sc = 1;
+        const cam = s.cam;
+        if (cam && cam.position && s.root) {
+            const w = s.fwV.set(x1, y1, z1).applyMatrix4(s.root.matrixWorld);
+            sc = w.distanceTo(cam.position) / (ROAD_FW_REF_DIST * K);
+            sc = sc < 0.6 ? 0.6 : (sc > 2 ? 2 : sc);
+        }
+        sc *= ROAD_FIN_SIZE;
+        const k = i % 3;
+        let c1 = chart && Number.isFinite(chart.finC1) ? chart.finC1 : 0x00f0ff;
+        let c2 = chart && Number.isFinite(chart.finC2) ? chart.finC2 : 0xff2ec4;
+        if (big) { c1 = ROAD_FIN_BIG_C1; c2 = ROAD_FIN_BIG_C2; }
+        else if (k === 2) { const t = c1; c1 = c2; c2 = t; }
+        const c = s.tmpColor;
+        c.setHex(c1); const r1 = c.r, g1 = c.g, b1 = c.b;
+        c.setHex(c2);
+        _fwLaunch(s.fwBuf, x0, s.groundY, s.skylineZ + ROAD_FIN_Z_LAUNCH, x1, y1, z1, K * sc,
+            _fwFinaleShell(i, big, lite), r1, g1, b1, c.r, c.g, c.b, seed);
+        s.fwDirty = true;
+    }
+    // Per frame, before fog and rain are derived from the mood: while the
+    // finale runs (chart.finAge >= 0) the city wakes up over
+    // ROAD_FIN_LIFT_S (every window, neon, sky glow; heat held up so the
+    // lamps go amber), the gloom drains over ROAD_FIN_CLEAR_S, and the
+    // volley's rockets launch on schedule. Its clock is the finale's own
+    // (wall time while playing or after the song ended, frozen on pause).
+    // A road first seeing a finale already under way (a remount) skips the
+    // rockets that were due, so a volley is never fired twice.
+    function _bgRoadUpdateFinale(s, chart, playing, lite, dt) {
+        const age = chart && chart.finAge >= 0 ? chart.finAge : -1;
+        if (age < 0) {
+            s.finLaunched = -1; s.finBigDone = false; s.finLift = 0; s.finLive = false;
+            return;
+        }
+        const fdt = (playing || chart.ended) && dt > 0 ? dt : 0;
+        s.finLift = Math.min(1, s.finLift + fdt / ROAD_FIN_LIFT_S);
+        const m = s.mood;
+        if (m.heat < s.finLift) m.heat = s.finLift;
+        m.gloom = Math.max(0, m.gloom - fdt / ROAD_FIN_CLEAR_S);
+        const n = chart.finN > 0 ? chart.finN | 0 : 0;
+        if (s.finLaunched < 0) {
+            s.finLaunched = age > 0 ? _roadFinaleDue(age, n) : 0;
+            s.finBigDone = age > ROAD_FIN_BIG_AT;
+        }
+        while (s.finLaunched < n && _roadFinaleAt(s.finLaunched, n) <= age) {
+            _bgRoadLaunchFinaleRocket(s, s.finLaunched, false, chart, lite);
+            s.finLaunched++;
+        }
+        if (!s.finBigDone && age >= ROAD_FIN_BIG_AT) {
+            s.finBigDone = true;
+            if (chart.finClean && !lite) _bgRoadLaunchFinaleRocket(s, n, true, chart, lite);
+        }
+        // Live = still running and moving (paused, nothing moves).
+        s.finLive = (playing || !!chart.ended) && age < _roadFinaleEnd(n, true);
+        // After the song ends the beats stop; the neon keeps pulsing at the
+        // song's last beat spacing while the volley lasts.
+        const bt = chart.beats;
+        let iv = 0.5;
+        if (bt && bt.length >= 2) {
+            const d = bt[bt.length - 1].time - bt[bt.length - 2].time;
+            if (Number.isFinite(d)) iv = d < 0.3 ? 0.3 : (d > 1.2 ? 1.2 : d);
+        }
+        s.finBeatIv = iv;
+    }
     function _bgRoadUpdateSigns(s, chart) {
         const secs = chart ? chart.sections : null;
         if (secs !== s.signSections) {
@@ -4746,9 +4947,13 @@
         prog = prog < 0 ? 0 : (prog > 1 ? 1 : prog);
         // Windows lit: progress, then the playing mood on top (bad streak
         // switches the city off, good playing lights it all).
-        const heat = s.mood.heat, dark = _roadCityDark(s.mood.gloom);
+        // The arrival finale (finLift 0..1) lights every window and holds
+        // the dark off.
+        const fin = s.finLift > 0 ? s.finLift : 0;
+        const heat = s.mood.heat, dark = _roadCityDark(s.mood.gloom) * (1 - fin);
+        const litFrac = Math.max(_roadCityLit(prog, heat, s.mood.gloom), fin);
         const lit = s.quality.lite ? 0
-            : Math.min(s.nWindows, Math.floor(s.nWindows * _roadCityLit(prog, heat, s.mood.gloom) + 1e-9));
+            : Math.min(s.nWindows, Math.floor(s.nWindows * litFrac + 1e-9));
         if (s.windows.count !== lit) s.windows.count = lit;
         const lift = 0.5 + s.intensity;
         const mid = (bands && bands.mid) || 0;
@@ -4756,11 +4961,14 @@
         const dim = 1 - ROAD_WIN_GLOOM_CUT * s.fogAmt;   // fog greys the city out
         let b = ROAD_WIN_BASE * lift + ROAD_WIN_MID * mid;
         b = (b < 0 ? 0 : (b > ROAD_WIN_MAX ? ROAD_WIN_MAX : b)) * dim * (1 + ROAD_WIN_HEAT_LIFT * heat)
-            * (1 + ROAD_FW_FLASH_WIN * s.fwFlash);
+            * (1 + ROAD_FW_FLASH_WIN * s.fwFlash) * (1 + ROAD_FIN_WIN_LIFT * fin);
         s.windowMat.color.setRGB(ROAD_WIN_WARM_R * b, ROAD_WIN_WARM_G * b, ROAD_WIN_WARM_B * b);
         // Neon: off as the city goes dark; when hot it flashes on the beat.
         let pulse = 0;
-        if (heat > 0.01 && chart && chart.beats && chart.beats.length > 0
+        if (fin > 0 && s.finLive && chart && chart.ended && chart.finAge >= 0) {
+            const since = chart.finAge % s.finBeatIv;
+            if (since < ROAD_NEON_PULSE_S) pulse = 1 - since / ROAD_NEON_PULSE_S;
+        } else if (heat > 0.01 && chart && chart.beats && chart.beats.length > 0
                 && typeof chart.lowerBoundTime === 'function' && Number.isFinite(chart.time)) {
             const i = chart.lowerBoundTime(chart.beats, chart.time + 1e-6) - 1;   // last beat at or before now
             if (i >= 0 && i < chart.beats.length) {
@@ -4773,7 +4981,8 @@
             * (1 + ROAD_NEON_HEAT_PULSE * heat * pulse);
         s.neonMat.color.setScalar(b);
         s.skyMat.color.setScalar((0.8 + 0.2 * prog) * (1 - ROAD_SKY_GLOOM_CUT * s.fogAmt)
-            * (1 - ROAD_SKY_DARK_CUT * dark) * (1 + ROAD_SKY_HEAT_LIFT * heat) * (1 + ROAD_FW_FLASH_SKY * s.fwFlash));
+            * (1 - ROAD_SKY_DARK_CUT * dark) * (1 + ROAD_SKY_HEAT_LIFT * heat) * (1 + ROAD_FW_FLASH_SKY * s.fwFlash)
+            * (1 + ROAD_FIN_SKY_LIFT * fin));
     }
 
     // Per-frame lane drawing for the road style: every distinct fret
@@ -5230,6 +5439,11 @@
                     fw: null, fwBuf: _fwMakeBuf(ROAD_FW_POOL, ROAD_FW_ROCKETS),
                     fwKey: null, fwCount: 0, fwFlash: 0, fwMoving: false, fwDirty: false,
                     fwFloorY: 0, fwV: new T.Vector3(), fwVp: new T.Vector4(),
+                    // Arrival finale: rockets of the volley launched (-1 =
+                    // not seen yet), the big willow, how awake the city is,
+                    // and the remembered heat that sizes the volley.
+                    finLaunched: -1, finBigDone: false, finLift: 0, finLive: false, finBeatIv: 0.5,
+                    finHeat: 0,
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -5591,10 +5805,14 @@
                 const lite = s.quality.lite;   // read after the step: a switch lands this frame
                 // Mood: a jump back to the song's start begins a clear night;
                 // the clocks only run while playing, judged notes always count.
-                if (chart && chart.restart) _roadResetMood(s.mood);
+                if (chart && chart.restart) { _roadResetMood(s.mood); s.finHeat = 0; }
                 if (chart) {
                     _roadMoodStep(s.mood, playing ? dt : 0, chart.hits, chart.misses, chart.mult > 1 ? chart.mult : 1);
                 }
+                // The best heat of about the last ROAD_FIN_HEAT_HOLD s of play
+                // (sizes the finale; a long last note lets the heat sag).
+                if (playing) s.finHeat = Math.max(s.mood.heat, s.finHeat - dt / ROAD_FIN_HEAT_HOLD);
+                _bgRoadUpdateFinale(s, chart, playing, lite, dt);   // overrides the mood: before fog and rain
                 s.fogAmt = _roadSmooth(ROAD_FOG_START, ROAD_FOG_FULL, s.mood.gloom);
                 s.rainAmt = _roadSmooth(ROAD_RAIN_START, ROAD_RAIN_FULL, s.mood.gloom);
                 _bgRoadUpdateFireworks(s, chart, playing, lite, dt);   // before the skyline: it reads the burst flash
@@ -7213,6 +7431,7 @@
         let _verdictMarks       = BG_DEFAULTS.verdictMarks;
         let _timingFx           = BG_DEFAULTS.timingFx;
         let _streakFx           = BG_DEFAULTS.streakFx;
+        let _bgFinOn            = BG_DEFAULTS.finale;
         let _bloom              = BG_DEFAULTS.bloom;
         let _composer = null, _bloomPass = null, _bloomLoad = null, _bloomW = 0, _bloomH = 0;
         let _sparkPts = null, _sparkPos = null, _sparkCol = null, _sparkVel = null, _sparkLife = null;
@@ -7276,6 +7495,9 @@
             // ended, and the milestones queued since the last frame
             // (fwQ holds streak, mult, accent, accent2 per rocket).
             back: false, ended: false, fwN: 0, fwQ: null,
+            // Arrival finale: its clock (s since the trigger, -1 = none), how
+            // many rockets, whether the run was clean (big willow), colours.
+            finAge: -1, finN: 0, finClean: false, finC1: 0x00f0ff, finC2: 0xff2ec4,
         };
         // Road mood inputs. drawNote counts each judged note once: keys are
         // round(t * 1e4) * 16 + string (15 = the whole chord), the value
@@ -7288,6 +7510,15 @@
         // on a backward seek or a new song).
         const _bgFwQ = new Float64Array(16);
         let _bgFwN = 0, _bgEnded = false, _bgWasPlaying = false, _bgOnEnded = null;
+        // Night road arrival finale, kept here (not in the road state) so a
+        // road remount mid-volley (a lefty flip) never fires it twice: when
+        // the current chart arrays' last note ends, whether the finale fired
+        // on this pass through the song, its clock (s, -1 = none), its size
+        // and colours, and this song's judged notes (a clean run earns the
+        // big willow).
+        let _bgNotesRef = null, _bgChordsRef = null, _bgDurRef = NaN, _bgLastNoteT = NaN;
+        let _bgFinFired = false, _bgFinAge = -1, _bgFinN = 0, _bgFinC1 = 0x00f0ff, _bgFinC2 = 0xff2ec4;
+        let _bgSongHits = 0, _bgSongMisses = 0;
         const _bgVerdictSeen = new Map();
         let _bgPruneBefore = 0;
         const _bgPruneVerdict = (v, k) => { if (k < _bgPruneBefore) _bgVerdictSeen.delete(k); };
@@ -7480,6 +7711,39 @@
         function _fxHexInt(str, fallback) {
             const v = typeof str === 'string' && /^#[0-9a-f]{6}$/i.test(str) ? parseInt(str.slice(1), 16) : NaN;
             return Number.isFinite(v) ? v : fallback;
+        }
+        // Free play only (no scorer: note detection shows its own summary
+        // and owns the exit): keep the player open after the song ends until
+        // the finale's volley is over, at most ROAD_FIN_HOLD_MAX s, when
+        // core would otherwise leave after its 1.5 s grace. Only with
+        // exit-at-end on, nothing queued next and no results overlay up.
+        // Taken here, inside our own song:ended handler, because core's
+        // handler (which runs first) resets every hold when the song ends.
+        function _bgFinaleHold() {
+            if (!_bgFinOn || bgMountedStyleId !== 'road' || !bgState || _ndHasProvider || _h3dFinHoldPending) return;
+            const fbk = window.feedBack;
+            if (!fbk || typeof fbk.holdAutoExit !== 'function') return;
+            // Not fired yet: the song's end fires it on the next frame.
+            const lite = !!(bgState.quality && bgState.quality.lite);
+            const n = _bgFinFired ? _bgFinN : _roadFinaleCount(0, 0, false, lite);
+            const left = _roadFinaleEnd(n, false) - (_bgFinFired && _bgFinAge > 0 ? _bgFinAge : 0);
+            if (!(left > ROAD_FIN_HOLD_MIN)) return;   // core's own grace covers it
+            let exitOn = true;
+            try { exitOn = localStorage.getItem('autoplayExit') !== '0'; } catch (_) { exitOn = true; }
+            if (!exitOn) return;
+            const q = fbk.playQueue;
+            if (q && typeof q.hasNext === 'function' && q.hasNext()) return;
+            if (!_h3dPlayerActive() || _h3dOverlayUp()) return;
+            let release = null;
+            try { release = fbk.holdAutoExit(); } catch (_) { release = null; }
+            if (typeof release !== 'function') return;
+            _h3dFinHoldPending = true;
+            setTimeout(() => {
+                _h3dFinHoldPending = false;
+                // Left already, or a results screen took over: not ours to close.
+                if (!_h3dPlayerActive() || _h3dOverlayUp()) return;
+                release();
+            }, Math.min(ROAD_FIN_HOLD_MAX, left) * 1000);
         }
         function _bgQueueRocket(streak, mult) {
             if (_bgFwN >= 4) return;
@@ -11122,7 +11386,7 @@
                 _fxOnSkin = (e) => _fxResolvePalette(e && e.detail && e.detail.skin);
                 window.feedBack.on('notedetect:skin', _fxOnSkin);
                 // The night road keeps its rockets flying after the song ends.
-                _bgOnEnded = () => { _bgEnded = true; };
+                _bgOnEnded = () => { _bgEnded = true; _bgFinaleHold(); };
                 window.feedBack.on('song:ended', _bgOnEnded);
             }
 
@@ -11210,6 +11474,7 @@
             _verdictMarks        = _bgReadSetting(panelKey, 'verdictMarks');
             _timingFx            = _bgReadSetting(panelKey, 'timingFx');
             _streakFx            = _bgReadSetting(panelKey, 'streakFx');
+            _bgFinOn             = _bgReadSetting(panelKey, 'finale');
             _bloom               = _bgReadSetting(panelKey, 'bloom');
             _applyCinematic();
             fpsVisible           = _bgReadSetting(panelKey, 'fpsVisible');
@@ -18707,6 +18972,8 @@
                 if (bgMountedStyleId === 'road' && bgState && bgState.rain && bgState.rain.count > 0) return true;
                 // ...and fireworks still flying after the song ends.
                 if (bgMountedStyleId === 'road' && bgState && bgState.fwMoving) return true;
+                // ...and the finale's city waking up and its volley.
+                if (bgMountedStyleId === 'road' && bgState && bgState.finLive) return true;
                 for (const v of _venueCrowdVideos) {
                     if (v && !v.paused && !v.ended && v.readyState >= 2) return true;
                 }
@@ -18834,6 +19101,10 @@
                             _bgVerdictSeen.clear();
                             _bgEnded = false;
                             _bgFwN = 0;
+                            _bgFinFired = false;
+                            _bgFinAge = -1;
+                            _bgSongHits = 0;
+                            _bgSongMisses = 0;
                         }
                         _bgChart.songKey = _bgSongKey;
                         _bgChart.duration = bundle.songInfo ? bundle.songInfo.duration : 0;
@@ -18865,6 +19136,40 @@
                         const _bgPlay = bundle.isPlaying === undefined ? true : !!bundle.isPlaying;
                         if (_bgBack || (_bgPlay && !_bgWasPlaying)) _bgEnded = false;
                         _bgWasPlaying = _bgPlay;
+                        // Arrival finale: when the last note crosses the hit
+                        // line (or the song ends first), once per pass.
+                        // Recomputed when the chart arrays change (mastery
+                        // slider, chart transform) without re-arming; a seek
+                        // back before the last note re-arms it (Restart,
+                        // a loop's wrap); a new song clears it. Seeking past
+                        // the last note while paused fires on the first
+                        // playing frame.
+                        if (bundle.notes !== _bgNotesRef || bundle.chords !== _bgChordsRef
+                                || _bgChart.duration !== _bgDurRef) {
+                            _bgNotesRef = bundle.notes;
+                            _bgChordsRef = bundle.chords;
+                            _bgDurRef = _bgChart.duration;
+                            _bgLastNoteT = _roadLastNoteT(bundle.notes, bundle.chords, _bgDurRef);
+                        }
+                        if (_bgBack && !(_bgT >= _bgLastNoteT)) { _bgFinFired = false; _bgFinAge = -1; }
+                        if (_bgChart.restart) { _bgSongHits = 0; _bgSongMisses = 0; }
+                        _bgSongHits += _bgHits;
+                        _bgSongMisses += _bgMisses;
+                        if (_bgFinAge >= 0 && (_bgPlay || _bgEnded)) _bgFinAge += dt;
+                        if (!_bgFinFired && _bgFinOn && style === BG_STYLES.road && bundle.isReady
+                                && (_bgEnded || (_bgPlay && _bgT >= _bgLastNoteT))) {
+                            _bgFinFired = true;
+                            _bgFinAge = 0;
+                            _bgFinN = _roadFinaleCount(bgState.finHeat, bgState.mood ? bgState.mood.gloom : 0,
+                                _bgSongHits + _bgSongMisses > 0, !!(bgState.quality && bgState.quality.lite));
+                            _bgFinC1 = _fxHexInt(_fxPalette.accent, 0x00f0ff);
+                            _bgFinC2 = _fxHexInt(_fxPalette.accent2, 0xff2ec4);
+                        }
+                        _bgChart.finAge = _bgFinOn ? _bgFinAge : -1;
+                        _bgChart.finN = _bgFinN;
+                        _bgChart.finClean = _bgSongHits > 0 && _bgSongMisses === 0;
+                        _bgChart.finC1 = _bgFinC1;
+                        _bgChart.finC2 = _bgFinC2;
                         _bgChart.back = _bgBack;
                         _bgChart.ended = _bgEnded;
                         _bgChart.fwN = _bgFwN;

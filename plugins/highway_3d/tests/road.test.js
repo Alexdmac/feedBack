@@ -67,7 +67,18 @@ function load() {
         '\nthis._fwLaunch = _fwLaunch;' +
         '\nthis._fwStep = _fwStep;' +
         '\nthis._fwClear = _fwClear;' +
-        '\nthis._fwPathY = _fwPathY;', sandbox);
+        '\nthis._fwPathY = _fwPathY;' +
+        '\nthis.ROAD_FW_POOL = ROAD_FW_POOL;' +
+        '\nthis.ROAD_FW_ROCKETS = ROAD_FW_ROCKETS;' +
+        '\nthis.ROAD_FIN_FIRST = ROAD_FIN_FIRST;' +
+        '\nthis.ROAD_FIN_SPREAD = ROAD_FIN_SPREAD;' +
+        '\nthis.ROAD_FIN_BIG_AT = ROAD_FIN_BIG_AT;' +
+        '\nthis._roadLastNoteT = _roadLastNoteT;' +
+        '\nthis._roadFinaleCount = _roadFinaleCount;' +
+        '\nthis._roadFinaleAt = _roadFinaleAt;' +
+        '\nthis._roadFinaleDue = _roadFinaleDue;' +
+        '\nthis._roadFinaleEnd = _roadFinaleEnd;' +
+        '\nthis._fwFinaleShell = _fwFinaleShell;', sandbox);
     return sandbox;
 }
 
@@ -1282,7 +1293,7 @@ test('road wiring: milestones become rockets on the night road, which fly on aft
     assert.match(src, /_bgChart\.back = _bgBack;\n\s*_bgChart\.ended = _bgEnded;\n\s*_bgChart\.fwN = _bgFwN;\n\s*_bgChart\.fwQ = _bgFwQ;\n\s*_bgChart\.hits = _bgHits;/);
     assert.match(src, /catch \(e\) \{ console\.error\('\[3D-Hwy\] bg update threw', _bgEffectiveStyleId\(\), e\); \}\n\s*_bgFwN = 0;/);
     assert.match(src, /if \(_bgBack \|\| \(_bgPlay && !_bgWasPlaying\)\) _bgEnded = false;/);
-    assert.match(src, /_bgOnEnded = \(\) => \{ _bgEnded = true; \};\n\s*window\.feedBack\.on\('song:ended', _bgOnEnded\);/);
+    assert.match(src, /_bgOnEnded = \(\) => \{ _bgEnded = true; _bgFinaleHold\(\); \};\n\s*window\.feedBack\.on\('song:ended', _bgOnEnded\);/);
     assert.match(src, /window\.feedBack\.off\('song:ended', _bgOnEnded\)/);
     // The road runs the fireworks before the skyline (burst flash) and
     // before the no-beats early return.
@@ -1297,4 +1308,252 @@ test('road wiring: milestones become rockets on the night road, which fly on aft
     assert.doesNotMatch(build, /s\.fw\.visible = false/);
     // Frames keep coming while rockets fly after the song ends.
     assert.match(src, /needsContinuousFrames\(\) \{[\s\S]{0,900}?bgMountedStyleId === 'road' && bgState && bgState\.fwMoving\) return true;/);
+});
+
+// --- arrival finale ---------------------------------------------------------
+
+test('_roadLastNoteT: last onset plus its sustain (capped), over notes and chords, clamped to the song end', () => {
+    const r = load();
+    assert.ok(Number.isNaN(r._roadLastNoteT([], [], 100)), 'no notes');
+    assert.ok(Number.isNaN(r._roadLastNoteT(null, undefined, 0)));
+    assert.equal(r._roadLastNoteT([{ t: 10 }, { t: 50, sus: 0.4 }], [], 0), 50.4);
+    // A long hold counts 1.5 s at most; an earlier long note can still be last.
+    assert.equal(r._roadLastNoteT([{ t: 50, sus: 9 }], [], 0), 51.5);
+    assert.equal(r._roadLastNoteT([{ t: 49.9, sus: 1 }, { t: 50 }], [], 0), 50.9);
+    // A chord's sustain is its longest note's.
+    assert.equal(r._roadLastNoteT([{ t: 40 }], [{ t: 45, notes: [{ sus: 0.2 }, { sus: 0.7 }] }], 0), 45.7);
+    assert.equal(r._roadLastNoteT([{ t: 46 }], [{ t: 45, notes: [{ sus: 0.2 }] }], 0), 46);
+    // Unsorted input and bad entries are fine.
+    assert.equal(r._roadLastNoteT([{ t: 60 }, null, { t: NaN }, { t: 20, sus: -3 }], [{ t: 'x' }, {}], 0), 60);
+    // Clamped to half a second before the declared end, so it always fires first.
+    assert.equal(r._roadLastNoteT([{ t: 99.8, sus: 1 }], [], 100), 99.5);
+    assert.equal(r._roadLastNoteT([{ t: 80 }], [], 100), 80);
+});
+
+test('_roadFinaleCount: 3 in Lite, 6 in free play, 5 to 8 by how hot the run was', () => {
+    const r = load();
+    assert.equal(r._roadFinaleCount(1, 0, true, true), 3);
+    assert.equal(r._roadFinaleCount(1, 0, false, false), 6);
+    assert.equal(r._roadFinaleCount(0, 0, true, false), 5);
+    assert.equal(r._roadFinaleCount(1, 0, true, false), 8);
+    assert.equal(r._roadFinaleCount(1, 1, true, false), 5, 'gloom takes it back');
+    let prev = 0;
+    for (let h = 0; h <= 1.0001; h += 0.05) {
+        const n = r._roadFinaleCount(h, 0, true, false);
+        assert.ok(n >= prev && n >= 5 && n <= 8, `heat ${h}`);
+        prev = n;
+    }
+    for (const bad of [NaN, undefined, null, -2, 9]) {
+        const n = r._roadFinaleCount(bad, bad, true, false);
+        assert.ok(n >= 5 && n <= 8, `bad ${bad} -> ${n}`);
+    }
+});
+
+test('_roadFinaleAt / _roadFinaleDue / _roadFinaleEnd: an ordered volley over ~5 s, the big willow after it', () => {
+    const r = load();
+    for (const n of [1, 3, 5, 6, 8]) {
+        let prev = -1;
+        for (let i = 0; i < n; i++) {
+            const t = r._roadFinaleAt(i, n);
+            assert.ok(t > prev, `n ${n}: rocket ${i} after the one before`);
+            assert.ok(t >= r.ROAD_FIN_FIRST - 1e-9 && t <= r.ROAD_FIN_FIRST + r.ROAD_FIN_SPREAD + 1e-9);
+            prev = t;
+        }
+        assert.ok(r._roadFinaleAt(n, n) > prev, 'the big one comes last');
+        assert.equal(r._roadFinaleAt(n, n), r.ROAD_FIN_BIG_AT);
+        assert.equal(r._roadFinaleDue(0, n), 0);
+        assert.equal(r._roadFinaleDue(100, n), n);
+        assert.equal(r._roadFinaleDue(r._roadFinaleAt(n - 1, n), n), n, 'due at its own time');
+        assert.ok(r._roadFinaleEnd(n, true) > r._roadFinaleEnd(n, false));
+    }
+    assert.equal(r._roadFinaleAt(0, 6), r.ROAD_FIN_FIRST);
+    assert.ok(Math.abs(r._roadFinaleAt(5, 6) - (r.ROAD_FIN_FIRST + r.ROAD_FIN_SPREAD)) < 1e-9);
+    assert.ok(r._roadFinaleEnd(6, false) < 11, 'over in about 10 s');
+});
+
+test('_fwFinaleShell: peony, willow and single shells in turn; a slow double willow for the big one; Lite trims', () => {
+    const r = load();
+    const a = r._fwFinaleShell(0, false, false), b = r._fwFinaleShell(1, false, false), c = r._fwFinaleShell(2, false, false);
+    assert.equal(a.colors, 1);
+    assert.ok(b.willow && b.core);
+    assert.ok(!c.willow && c.colors === 0);
+    assert.equal(r._fwFinaleShell(3, false, false).n, a.n, 'it cycles');
+    const big = r._fwFinaleShell(6, true, false);
+    assert.ok(big.willow && big.inner && big.core && big.n > b.n && big.life > b.life);
+    const lite = r._fwFinaleShell(1, true, true);
+    assert.equal(lite.n, 24);
+    assert.ok(!lite.willow && !lite.inner && !lite.trail);
+});
+
+test('the pool holds a hot finale with its big willow and a milestone on top, at 30 and 144 fps', () => {
+    const r = load();
+    for (const fps of [30, 144]) {
+        const b = r._fwMakeBuf(r.ROAD_FW_POOL, r.ROAD_FW_ROCKETS);
+        const n = r._roadFinaleCount(1, 0, true, false);
+        let next = 0, peak = 0, failed = 0;
+        const dt = 1 / fps;
+        // A 100 streak milestone right at the trigger, then the volley.
+        if (launch(r, b, 100, 4, false) < 0) failed++;
+        for (let t = 0; t < r._roadFinaleEnd(n, true) + 0.5; t += dt) {
+            while (next <= n && r._roadFinaleAt(next, n) <= t) {
+                const sh = r._fwFinaleShell(next, next === n, false);
+                if (r._fwLaunch(b, next * 30, 0, -1500, next * 30, 400, -1500, 1, sh, 1, 0.3, 0.6, 0.2, 0.8, 1, next + 1) < 0) failed++;
+                next++;
+            }
+            r._fwStep(b, dt, -1e9);
+            if (b.live > peak) peak = b.live;
+        }
+        assert.equal(failed, 0, `${fps} fps: every rocket found a slot`);
+        assert.ok(peak < r.ROAD_FW_POOL, `${fps} fps: peak ${peak} of ${r.ROAD_FW_POOL} points`);
+        assert.equal(b.live, 0, `${fps} fps: all gone by the end`);
+    }
+});
+
+// _bgRoadUpdateFinale runs outside the pure block (it launches through the
+// camera helpers), so it is sliced on its own with stand-ins for THREE.
+function loadFinale() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const fnText = (sig) => {
+        const a = src.indexOf(sig);
+        assert.ok(a > 0, `${sig} not found`);
+        const open = src.indexOf('{', a);
+        let depth = 0;
+        for (let i = open; i < src.length; i++) {
+            if (src[i] === '{') depth++;
+            else if (src[i] === '}' && --depth === 0) return src.slice(a, i + 1);
+        }
+        throw new Error('unbalanced');
+    };
+    const block = src.slice(src.indexOf(START), src.indexOf(END));
+    const consts = src.match(/\n    const ROAD_FIN_X_MIN[\s\S]*?const ROAD_FIN_HOLD_MAX = 4;[^\n]*\n/);
+    assert.ok(consts, 'finale constants not found');
+    const fwConsts = src.match(/\n    const ROAD_FW_NDC_Y[^\n]*\n    const ROAD_FW_Y_MIN[^\n]*\n/);
+    assert.ok(fwConsts, 'firework camera constants not found');
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + fwConsts[0] + consts[0]
+        + fnText('    function _bgRoadFwBurstY(') + '\n'
+        + fnText('    function _bgRoadLaunchFinaleRocket(') + '\n'
+        + fnText('    function _bgRoadUpdateFinale(') + '\n'
+        + 'this.update = _bgRoadUpdateFinale; this.makeMood = _roadMakeMood;'
+        + 'this.makeBuf = () => _fwMakeBuf(ROAD_FW_POOL, ROAD_FW_ROCKETS);', sandbox);
+    return sandbox;
+}
+function finaleRoad(f) {
+    const v = { set() { return v; }, applyMatrix4() { return v; }, distanceTo() { return 1; } };
+    return {
+        mood: f.makeMood(), fwBuf: f.makeBuf(), fwCount: 0, fwDirty: false, seed: 5,
+        skylineZ: -11, groundY: 0, cam: null, root: null, fwV: v,
+        tmpColor: { r: 0, g: 0, b: 0, setHex() { return this; } },
+        finLaunched: -1, finBigDone: false, finLift: 0, finLive: false, finBeatIv: 0.5,
+    };
+}
+function finaleRun(f, s, chart, secs, fps, playing = true) {
+    const dt = 1 / fps;
+    for (let t = 0; t < secs - 1e-9; t += dt) {
+        f.update(s, chart, playing, false, dt);
+        if (playing || chart.ended) chart.finAge += dt;
+    }
+}
+
+test('_bgRoadUpdateFinale: wakes the city, clears the weather and fires the volley on schedule', () => {
+    const f = loadFinale();
+    const s = finaleRoad(f);
+    s.mood.heat = 0.1; s.mood.gloom = 1;
+    const chart = { finAge: 0, finN: 6, finClean: false, ended: false, beats: null };
+    finaleRun(f, s, chart, 1, 60);
+    assert.ok(s.fwCount >= 1 && s.fwCount <= 2, `first rockets (${s.fwCount})`);
+    finaleRun(f, s, chart, 1.2, 60);
+    assert.equal(s.finLift, 1, 'fully awake after 1.5 s');
+    assert.equal(s.mood.heat, 1, 'lamps amber');
+    assert.equal(s.mood.gloom, 0, 'fog and rain gone within 2 s');
+    finaleRun(f, s, chart, 6, 60);
+    assert.equal(s.fwCount, 6, 'six rockets, no big willow without a clean run');
+    assert.equal(s.finLaunched, 6);
+    finaleRun(f, s, chart, 10, 60);
+    assert.equal(s.finLive, false, 'over');
+    assert.equal(s.mood.heat, 1, 'the city stays lit');
+    // A clean judged run earns the big willow; Lite never fires it.
+    const c = finaleRoad(f);
+    const cc = { finAge: 0, finN: 8, finClean: true, ended: false, beats: null };
+    finaleRun(f, c, cc, 8, 60);
+    assert.equal(c.fwCount, 9);
+    const l = finaleRoad(f);
+    const lc = { finAge: 0, finN: 3, finClean: true, ended: false, beats: null };
+    for (let t = 0; t < 8; t += 1 / 60) { f.update(l, lc, true, true, 1 / 60); lc.finAge += 1 / 60; }
+    assert.equal(l.fwCount, 3);
+});
+
+test('_bgRoadUpdateFinale: paused it holds still; after the song ends it runs; off resets it', () => {
+    const f = loadFinale();
+    const s = finaleRoad(f);
+    s.mood.gloom = 1;
+    const chart = { finAge: 0, finN: 6, finClean: false, ended: false, beats: [{ time: 10 }, { time: 10.6 }] };
+    finaleRun(f, s, chart, 0.5, 60);
+    const lift = s.finLift, n = s.fwCount, gloom = s.mood.gloom;
+    finaleRun(f, s, chart, 3, 60, false);
+    assert.equal(s.finLift, lift, 'the lift waits');
+    assert.equal(s.fwCount, n, 'no launches');
+    assert.equal(s.mood.gloom, gloom, 'the weather waits');
+    assert.equal(s.finLive, false, 'no continuous frames for a paused finale');
+    chart.ended = true;
+    finaleRun(f, s, chart, 7, 60, false);
+    assert.equal(s.fwCount, 6, 'the volley finishes after the song ended');
+    assert.ok(Math.abs(s.finBeatIv - 0.6) < 1e-9, 'neon keeps the last beat spacing');
+    chart.finAge = -1;
+    f.update(s, chart, true, false, 1 / 60);
+    assert.equal(s.finLift, 0);
+    assert.equal(s.finLaunched, -1);
+    assert.equal(s.finLive, false);
+});
+
+test('_bgRoadUpdateFinale: a road mounted mid-volley skips the rockets already fired', () => {
+    const f = loadFinale();
+    const whole = finaleRoad(f);
+    const a = { finAge: 0, finN: 7, finClean: true, ended: false, beats: null };
+    finaleRun(f, whole, a, 3, 60);
+    const before = whole.fwCount;
+    // The remount: a fresh road state at the same finale clock.
+    const fresh = finaleRoad(f);
+    const b = { finAge: a.finAge, finN: 7, finClean: true, ended: false, beats: null };
+    f.update(fresh, b, true, false, 1 / 60);
+    assert.equal(fresh.fwCount, 0, 'nothing re-fired');
+    finaleRun(f, fresh, b, 6, 60);
+    assert.equal(before + fresh.fwCount, 8, 'the rest of the volley and the big willow, once each');
+});
+
+test('finale wiring: instance trigger, re-arm, exit hold and setting', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    // Fires once per pass when the last note crosses the hit line (or the
+    // song ends first), only while playing or after the end, only on the road.
+    assert.match(src, /if \(!_bgFinFired && _bgFinOn && style === BG_STYLES\.road && bundle\.isReady\n\s*&& \(_bgEnded \|\| \(_bgPlay && _bgT >= _bgLastNoteT\)\)\) \{/);
+    // A seek back before the last note re-arms it; a new song clears it.
+    assert.match(src, /if \(_bgBack && !\(_bgT >= _bgLastNoteT\)\) \{ _bgFinFired = false; _bgFinAge = -1; \}/);
+    assert.match(src, /_bgFwN = 0;\n\s*_bgFinFired = false;\n\s*_bgFinAge = -1;/);
+    // Its clock: wall dt while playing or after the end, frozen on pause.
+    assert.match(src, /if \(_bgFinAge >= 0 && \(_bgPlay \|\| _bgEnded\)\) _bgFinAge \+= dt;/);
+    // The last note is recomputed when the chart arrays change, never re-arming.
+    assert.match(src, /_bgLastNoteT = _roadLastNoteT\(bundle\.notes, bundle\.chords, _bgDurRef\);/);
+    // The road overrides the mood before fog and rain are derived.
+    const fin = src.indexOf('_bgRoadUpdateFinale(s, chart, playing, lite, dt);   // overrides');
+    assert.ok(fin > 0 && fin < src.indexOf('s.fogAmt = _roadSmooth(ROAD_FOG_START'));
+    assert.ok(fin > src.indexOf('_roadMoodStep(s.mood, playing ? dt : 0'));
+    // Free-play exit hold: taken in our own song:ended handler, gated.
+    const hold = src.slice(src.indexOf('function _bgFinaleHold() {'), src.indexOf('function _bgQueueRocket('));
+    assert.match(hold, /_ndHasProvider/);
+    assert.match(hold, /localStorage\.getItem\('autoplayExit'\) !== '0'/);
+    assert.match(hold, /q\.hasNext\(\)/);
+    assert.match(hold, /_h3dOverlayUp\(\)/);
+    assert.match(hold, /Math\.min\(ROAD_FIN_HOLD_MAX, left\) \* 1000/);
+    assert.match(hold, /if \(!\(left > ROAD_FIN_HOLD_MIN\)\) return;/);
+    // Continuous frames while the volley runs after the end.
+    assert.match(src, /bgMountedStyleId === 'road' && bgState && bgState\.finLive\) return true;/);
+    // The setting: default on, a boolean, a setter, a checkbox.
+    assert.match(src, /roadQuality: 'auto', finale: true \};/);
+    assert.match(src, /'streakFx', 'bloom', 'finale'\]\);/);
+    assert.match(src, /window\.h3dBgSetFinale\s*= \(v\) => _bgWriteGlobal\('finale', !!v\);/);
+    assert.match(src, /_bgFinOn\s*= _bgReadSetting\(panelKey, 'finale'\);/);
+    const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8');
+    assert.match(html, /id="h3d-bg-road-finale"[\s\S]{0,200}window\.h3dBgSetFinale\(this\.checked\)/);
+    assert.match(html, /localStorage\.getItem\('h3d_bg_finale'\)/);
 });
