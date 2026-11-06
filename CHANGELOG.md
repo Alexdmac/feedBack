@@ -66,6 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   play, with exit-at-end on, the player stays open up to 4 seconds after the
   song so the volley is seen; with note detection, its summary keeps the exit
   as before. A new "Night road finale" setting (on by default) turns it off.
+- **Bridges on the night road (3D Highway).** For a section whose name starts
+  with "bridge" (Bridge, bridge2, Bridge (half time), bridge_1), "brdg",
+  "middle 8" or "middle eight", the road crosses a bridge: a lighter concrete
+  deck under the lanes, railings on the sidewalks, and the hills falling away
+  into a dark valley on both sides, easing in and out over the first and last
+  0.6 s. Back-to-back bridge sections make one bridge; sections under 1.5 s
+  get none; "prebridge" and "solo/bridge" don't count. It moves with the song
+  like the rest of the road. Lite keeps the deck and railings but no valley.
+  A new "Night road bridges" setting (on by default) turns it off.
 - **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
   (Off, 120, 60, 30) that draws the highway at most that many times a second,
   to save power and heat or leave the graphics card free for other apps. Off

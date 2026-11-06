@@ -2398,7 +2398,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto', finale: true };
+    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto', finale: true, bridges: true };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -2808,7 +2808,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'finale']);
+    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'finale', 'bridges']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -3011,6 +3011,8 @@
     window.h3dBgSetBloom        = (v) => _bgWriteGlobal('bloom', !!v);
     // Night road arrival finale (road background only).
     window.h3dBgSetFinale       = (v) => _bgWriteGlobal('finale', !!v);
+    // Night road bridges over 'bridge' sections (road background only).
+    window.h3dBgSetBridges      = (v) => _bgWriteGlobal('bridges', !!v);
     window.h3dBgSetToneHudVisible   = (v) => _bgWriteGlobal('toneHudVisible', !!v);
     window.h3dBgSetToneHudPosition  = (v) => _bgWriteGlobal('toneHudPosition', v);
     window.h3dBgSetToneHudSize      = (v) => _bgWriteGlobal('toneHudSize', v);
@@ -4014,6 +4016,90 @@
         return bursts;
     }
 
+    // Bridges (step 3): for a section whose name starts with "bridge" (or
+    // brdg / middle 8 / middle eight), the road crosses a bridge over a
+    // valley. Names are free text: lowercased, '_' read as a space, then
+    // everything but letters and digits dropped, so "Bridge 2", "bridge_1"
+    // and "BRIDGE (half time)" all match while "prebridge" and
+    // "solo/bridge" don't.
+    const ROAD_BRIDGE_NAMES = ['bridge', 'brdg', 'middle8', 'middleeight'];
+    const ROAD_BRIDGE_MIN_S = 1.5;        // shorter spans get no bridge (it would be all ramp)
+    const ROAD_BRIDGE_LAST_S = 8;         // the last section's span while the song length is unknown
+    const ROAD_BRIDGE_RAMP_S = 0.6;       // s at each end over which the valley and parapets ease in
+    const ROAD_BRIDGE_POOL = 3;           // spans in view at once
+    function _roadIsBridgeName(name) {
+        if (name == null) return false;
+        const n = String(name).toLowerCase().replace(/_/g, ' ').replace(/[^a-z0-9]/g, '');
+        for (let i = 0; i < ROAD_BRIDGE_NAMES.length; i++) {
+            if (n.startsWith(ROAD_BRIDGE_NAMES[i])) return true;
+        }
+        return false;
+    }
+    // Bridge spans { t0, t1 } (song seconds) from the sections: a bridge
+    // section runs to the next section's start (the last one to the song's
+    // end), back-to-back bridge sections merge, spans under minS are
+    // dropped. Works on a sorted copy. Allocates: call it when the
+    // sections or the song length change, not per frame.
+    function _roadBridgeSpans(sections, duration, minS) {
+        const out = [];
+        if (!sections || !(sections.length > 0)) return out;
+        const list = [];
+        for (let i = 0; i < sections.length; i++) {
+            const sec = sections[i];
+            if (sec && Number.isFinite(sec.time)) list.push(sec);
+        }
+        list.sort((a, b) => a.time - b.time);
+        for (let i = 0; i < list.length; i++) {
+            if (!_roadIsBridgeName(list[i].name)) continue;
+            const t0 = list[i].time;
+            let t1;
+            if (i + 1 < list.length) t1 = list[i + 1].time;
+            else t1 = Number.isFinite(duration) && duration > t0 ? duration : t0 + ROAD_BRIDGE_LAST_S;
+            const last = out.length > 0 ? out[out.length - 1] : null;
+            if (last && Math.abs(last.t1 - t0) < 1e-6) last.t1 = t1;
+            else out.push({ t0, t1 });
+        }
+        const min = Number.isFinite(minS) ? minS : 0;
+        const kept = [];
+        for (let i = 0; i < out.length; i++) if (out[i].t1 - out[i].t0 >= min) kept.push(out[i]);
+        return kept;
+    }
+    function _roadMakeBridgeSlots(cap) {
+        const out = new Array(cap);
+        for (let i = 0; i < cap; i++) out[i] = { t0: 0, t1: 0, zN: 0, zF: 0 };
+        return out;
+    }
+    // Spans overlapping [now - behind, now + ahead] into out[0..n): their
+    // times and the z of their near (start) and far (end) ends, unclipped,
+    // where a note at that time would sit. spans are sorted. Returns n.
+    function _roadPlaceBridges(spans, now, ts, behind, ahead, out, cap) {
+        if (!spans || spans.length === 0 || !out || !Number.isFinite(now)) return 0;
+        const t0 = now - behind, t1 = now + ahead;
+        const max = cap < out.length ? cap : out.length;
+        let n = 0;
+        for (let i = 0; i < spans.length && n < max; i++) {
+            const sp = spans[i];
+            if (sp.t1 <= t0) continue;
+            if (sp.t0 >= t1) break;
+            const sl = out[n++];
+            sl.t0 = sp.t0; sl.t1 = sp.t1;
+            sl.zN = -(sp.t0 - now) * ts;
+            sl.zF = -(sp.t1 - now) * ts;
+        }
+        return n;
+    }
+    // How far into the bridge z is (0 off it, 1 on it), easing in over
+    // `ramp` (z units) inside each end: the valley deepens and the
+    // parapets rise as you drive on, and the reverse as you drive off.
+    function _roadBridgeMask(z, zN, zF, ramp) {
+        if (!(z <= zN) || !(z >= zF)) return 0;
+        const d = Math.min(zN - z, z - zF);
+        let u = ramp > 0 ? d / ramp : 1;
+        if (u >= 1) return 1;
+        u = u < 0 ? 0 : u;
+        return u * u * (3 - 2 * u);
+    }
+
     // Arrival finale (step 2): when the last note crosses the hit line the
     // city wakes up and a volley goes up over the skyline. n rockets spread
     // over ROAD_FIN_SPREAD s from the trigger, then, after a clean judged
@@ -4302,6 +4388,22 @@
     const ROAD_FIN_BIG_C1 = 0xfff1d0, ROAD_FIN_BIG_C2 = 0xffc860;
     const ROAD_FIN_HOLD_MIN = 1.5;        // core's own auto-exit grace (AUTO_EXIT_GRACE_MS)
     const ROAD_FIN_HOLD_MAX = 4;          // free play: s the player may stay open after the song ends
+    // Bridges (spans and masks in the placement block). The deck is a
+    // lighter concrete strip over the carriageway, drawn after the asphalt
+    // and before the lane marks; dark edge beams run under each sidewalk's
+    // outer edge; parapets (balusters and a rail) stand on the sidewalk's
+    // outer edge, outside the posts; the hills fall away into a valley.
+    const ROAD_DECK_TINT = 0x8a8e96, ROAD_DECK_MIX = 0.3;
+    const ROAD_DECK_LIFT = 0.02 * K;      // above the asphalt, below the seams and lane marks
+    const ROAD_DECK_ORDER = -0.95;        // after the asphalt (-1) among the background opaques
+    const ROAD_GROUND_ORDER = -1.05;      // the hills (and valley) before both
+    const ROAD_BEAM_W = 3 * K, ROAD_BEAM_H = 12 * K, ROAD_BEAM_HEX = 0x1e2126;
+    const ROAD_PARAPET_H = 9 * K, ROAD_RAIL_W = 2 * K, ROAD_RAIL_H = 1.6 * K, ROAD_BALUSTER_W = 1.1 * K;
+    const ROAD_PARAPET_HEX = 0x9a9ea6;
+    const ROAD_BALUSTER_DT = 0.1;         // s of road between balusters
+    const ROAD_PARAPET_POOL = 128;        // balusters (and rail pieces), both sides
+    const ROAD_VALLEY_D = 110 * K;        // valley floor below the ground
+    const ROAD_VALLEY_DARK = 0.7;         // the floor darkens toward black
     // Soft round additive points sized in pixels from the live viewport
     // (uScale, set in onBeforeRender). Size 0 = a dead slot, moved off screen.
     const ROAD_FW_VERT = [
@@ -4540,6 +4642,10 @@
         if (Math.abs(wet - s.wetShown) > 0.004 || (wet === 0 && s.wetShown !== 0)) {
             s.wetShown = wet;
             s.asphaltMat.color.setHex(_roadMixHex(s.asphaltHex, ROAD_WET_HEX, ROAD_WET_MIX * wet));
+            if (s.deckMat) {
+                s.deckMat.color.setHex(_roadMixHex(_roadMixHex(s.asphaltHex, ROAD_DECK_TINT, ROAD_DECK_MIX),
+                    ROAD_WET_HEX, ROAD_WET_MIX * wet));
+            }
         }
         if (s.quality.lite) return;
         const time = chart && Number.isFinite(chart.time) ? chart.time : 0;
@@ -4567,6 +4673,8 @@
                 const kn = (dist - ROAD_FOG_NEAR_CLEAR) / ROAD_FOG_SINK;
                 if (kn < k) k = kn;
                 k = k < 0 ? 0 : (k > 1 ? 1 : k);
+                // Over a bridge's valley a bank would float: skip it.
+                if (s.brN > 0 && k > 0) k *= 1 - _bgRoadBridgeMaskAt(s, z);
                 d.position.set(s.fogSideX[i], s.groundY, z);
                 d.scale.set(s.fogSideW[i], s.fogSideH[i] * (0.4 + 0.6 * fog) * k + 1e-4, 1);
                 d.updateMatrix();
@@ -4615,12 +4723,6 @@
     function _roadSignLabel(sec) {
         return sec && sec.name != null ? String(sec.name).trim().toUpperCase() : '';
     }
-    // Per-frame gantries. Section `index` always uses gantry
-    // index % ROAD_SIGN_POOL: at most ROAD_SIGN_POOL consecutive sections
-    // are in view, so they never share one. A gantry's canvas is redrawn
-    // only when a new section takes it (a 512x128 upload while the sign is
-    // still far off in the fog), never per frame. Opacity eases down near
-    // the hit line (ROAD_SIGN_FADE_FAR / ROAD_SIGN_NEAR_OPACITY).
     // The burst height that puts (x, y, z) at screen height `target` (NDC)
     // for the live camera, within [ROAD_FW_Y_MIN, ROAD_FW_Y_MAX]. Bisection
     // over a dozen projections, once per rocket.
@@ -4705,6 +4807,89 @@
             g.attributes.aSize.needsUpdate = true;
         }
     }
+    // Per frame: the bridge spans in view (recomputed when the sections or
+    // the song length change), the deck and edge beams clipped to the
+    // road, and the parapets by song time with their ramps. The valley is
+    // carved by _bgRoadUpdateHills and the side fog banks over it are
+    // skipped in _bgRoadUpdateWeather, both from s.brSlots / s.brN.
+    function _bgRoadUpdateBridge(s, chart) {
+        if (!s.deck) return;
+        if (chart && (chart.sections !== s.brSections || chart.duration !== s.brDur)) {
+            s.brSections = chart.sections;
+            s.brDur = chart.duration;
+            s.brSpans = _roadBridgeSpans(chart.sections, chart.duration, ROAD_BRIDGE_MIN_S);
+            s.hillDirty = true;
+        }
+        const on = !!(chart && chart.isReady && chart.bridges !== false && Number.isFinite(chart.time));
+        const now = on ? chart.time : 0;
+        const n = on && s.brSpans.length > 0
+            ? _roadPlaceBridges(s.brSpans, now, TS, s.zNear / TS, AHEAD + 1, s.brSlots, ROAD_BRIDGE_POOL) : 0;
+        if (n !== s.brN) s.hillDirty = true;   // the valley must clear even when the road stands still
+        s.brN = n;
+        const d = s.dummy;
+        const ramp = ROAD_BRIDGE_RAMP_S * TS;
+        let nd = 0, nb = 0, np = 0;
+        for (let i = 0; i < n; i++) {
+            const sl = s.brSlots[i];
+            const zA = Math.min(sl.zN, s.zNear), zB = Math.max(sl.zF, s.zFar);
+            if (zA <= zB) continue;
+            d.position.set(0, s.deckY, (zA + zB) / 2);
+            d.scale.set(1, 1, zA - zB);
+            d.updateMatrix();
+            s.deck.setMatrixAt(nd++, d.matrix);
+            for (let side = -1; side <= 1; side += 2) {
+                d.position.set(side * s.beamX, s.beamY, (zA + zB) / 2);
+                d.updateMatrix();
+                s.beams.setMatrixAt(nb++, d.matrix);
+            }
+            // Balusters every ROAD_BALUSTER_DT s of the span from its start,
+            // with a rail piece reaching to the next one; both ease with the
+            // ramps. Culled like the posts (BEHIND behind the hit line).
+            const tA = Math.max(sl.t0, now - BEHIND), tB = Math.min(sl.t1, now + AHEAD + 1);
+            const step = ROAD_BALUSTER_DT * TS;
+            for (let k = Math.max(0, Math.ceil((tA - sl.t0) / ROAD_BALUSTER_DT - 1e-9)); np + 2 <= ROAD_PARAPET_POOL; k++) {
+                const t = sl.t0 + k * ROAD_BALUSTER_DT;
+                if (t > tB + 1e-9) break;
+                const z = -(t - now) * TS;
+                const m = _roadBridgeMask(z, sl.zN, sl.zF, ramp);
+                const mr = _roadBridgeMask(z - step / 2, sl.zN, sl.zF, ramp);
+                if (m < 0.02 && mr < 0.02) continue;
+                const h = ROAD_PARAPET_H * (m > 0.02 ? m : 0.02);
+                const hr = ROAD_PARAPET_H * (mr > 0.02 ? mr : 0.02);
+                const railLen = t + ROAD_BALUSTER_DT <= sl.t1 + 1e-9 ? step : 0;
+                for (let side = -1; side <= 1; side += 2) {
+                    d.position.set(side * s.parapetX, s.baseY, z);
+                    d.scale.set(1, h, 1);
+                    d.updateMatrix();
+                    s.balusters.setMatrixAt(np, d.matrix);
+                    d.position.set(side * s.parapetX, s.baseY + hr, z - step / 2);
+                    d.scale.set(1, 1, railLen > 0 ? railLen : 1e-4);
+                    d.updateMatrix();
+                    s.rails.setMatrixAt(np, d.matrix);
+                    np++;
+                }
+            }
+        }
+        d.scale.set(1, 1, 1);
+        if (s.deck.count !== nd || nd > 0) { s.deck.count = nd; s.deck.instanceMatrix.needsUpdate = true; }
+        if (s.beams.count !== nb || nb > 0) { s.beams.count = nb; s.beams.instanceMatrix.needsUpdate = true; }
+        if (s.balusters.count !== np || np > 0) {
+            s.balusters.count = np; s.rails.count = np;
+            s.balusters.instanceMatrix.needsUpdate = true;
+            s.rails.instanceMatrix.needsUpdate = true;
+        }
+    }
+    // The deepest bridge mask over z among the spans in view (0 = none).
+    function _bgRoadBridgeMaskAt(s, z) {
+        let m = 0;
+        const ramp = ROAD_BRIDGE_RAMP_S * TS;
+        for (let b = 0; b < s.brN; b++) {
+            const sl = s.brSlots[b];
+            const v = _roadBridgeMask(z, sl.zN, sl.zF, ramp);
+            if (v > m) m = v;
+        }
+        return m;
+    }
     // One finale rocket: launched from the city in front of the skyline,
     // straight up to a burst over it; sides alternate, out from the road's
     // line. The big willow goes up the middle.
@@ -4781,6 +4966,12 @@
         }
         s.finBeatIv = iv;
     }
+    // Per-frame gantries. Section `index` always uses gantry
+    // index % ROAD_SIGN_POOL: at most ROAD_SIGN_POOL consecutive sections
+    // are in view, so they never share one. A gantry's canvas is redrawn
+    // only when a new section takes it (a 512x128 upload while the sign is
+    // still far off in the fog), never per frame. Opacity eases down near
+    // the hit line (ROAD_SIGN_FADE_FAR / ROAD_SIGN_NEAR_OPACITY).
     function _bgRoadUpdateSigns(s, chart) {
         const secs = chart ? chart.sections : null;
         if (secs !== s.signSections) {
@@ -4827,7 +5018,9 @@
     }
     // Per-frame hills: heights and colours written into the existing
     // attributes; skipped when neither song time nor theme/seed changed.
-    function _bgRoadUpdateHills(s, time) {
+    // valley: carve the bridges in view (s.brSlots) into a dark valley;
+    // off in Lite, whose hills stand still while the deck scrolls past.
+    function _bgRoadUpdateHills(s, time, valley) {
         const scroll = (Number.isFinite(time) ? time : 0) * TS;
         if (!s.hillDirty && scroll === s.hillScroll) return;
         s.hillDirty = false;
@@ -4835,6 +5028,7 @@
         const inv = 1 / ROAD_HILL_SCALE, seed = s.seed;
         const lo = s.groundLo, hi = s.groundHi;
         const dr = hi[0] - lo[0], dg = hi[1] - lo[1], db = hi[2] - lo[2];
+        const carve = !!valley && s.brN > 0;
         for (let k = 0; k < s.hills.length; k++) {
             const h = s.hills[k];
             const p = h.pos.array, c = h.col.array;
@@ -4845,6 +5039,19 @@
                 if (r > 0) {
                     const nv = _roadNoise2(hx[i] * inv, (hz[i] - scroll) * inv, seed);
                     if (nv > 0) f = nv * r;
+                }
+                // The valley: every vertex past the carriageway's edge
+                // (the sidewalks are slabs that stay put) drops to the
+                // floor, darkening as it goes.
+                const m = carve && (hx[i] > s.valleyX || hx[i] < -s.valleyX) ? _bgRoadBridgeMaskAt(s, hz[i]) : 0;
+                if (m > 0) {
+                    f *= 1 - m;
+                    const dk = 1 - ROAD_VALLEY_DARK * m;
+                    p[j + 1] = ROAD_HILL_H * f - ROAD_VALLEY_D * m;
+                    c[j] = (lo[0] + dr * f) * dk;
+                    c[j + 1] = (lo[1] + dg * f) * dk;
+                    c[j + 2] = (lo[2] + db * f) * dk;
+                    continue;
                 }
                 p[j + 1] = ROAD_HILL_H * f;
                 c[j] = lo[0] + dr * f;
@@ -4933,6 +5140,14 @@
             // every other background transparent instead.
             s.windows.renderOrder = -2;
             s.neon.renderOrder = -2;
+            // The bridge deck is opaque without depth writes, like the
+            // asphalt: it must draw after it (the lane marks and seams are
+            // transparent, so they draw after both anyway).
+            if (s.deck) s.deck.renderOrder = ROAD_DECK_ORDER;
+            // The ground draws before the asphalt and deck (which write no
+            // depth): a bridge's valley falls below the road, and seen
+            // from above its far walls project over the nearer road.
+            for (let i = 0; i < s.hills.length; i++) if (s.hills[i].mesh) s.hills[i].mesh.renderOrder = ROAD_GROUND_ORDER;
             // Gantries join the gameplay group order (see ROAD_GANTRY_ORDER):
             // a Group's renderOrder is the group order of its children.
             for (let i = 0; i < s.signs.length; i++) {
@@ -5444,6 +5659,16 @@
                     // and the remembered heat that sizes the volley.
                     finLaunched: -1, finBigDone: false, finLift: 0, finLive: false, finBeatIv: 0.5,
                     finHeat: 0,
+                    // Bridges: spans (song s) for the current sections,
+                    // the spans in view and the meshes.
+                    brSections: undefined, brDur: NaN, brSpans: [], brN: 0,
+                    brSlots: _roadMakeBridgeSlots(ROAD_BRIDGE_POOL),
+                    deck: null, deckMat: null, beams: null, balusters: null, rails: null,
+                    deckY: roadY + ROAD_DECK_LIFT,
+                    beamX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W + ROAD_BEAM_W / 2,
+                    beamY: roadY + ROAD_SIDEWALK_H - ROAD_BEAM_H / 2,
+                    parapetX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W - ROAD_RAIL_W / 2,
+                    valleyX: halfW + 1 * K,
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -5485,7 +5710,7 @@
                     m.position.set(xOff, groundY, zMid);
                     m.frustumCulled = false;     // heights change every frame
                     root.add(m);
-                    s.hills.push({ pos, col, hx, hz, ramp, cnt });
+                    s.hills.push({ pos, col, hx, hz, ramp, cnt, mesh: m });
                 }
 
                 // Curbs at the carriageway edges, then a sidewalk each side.
@@ -5513,6 +5738,31 @@
                 s.joints.count = 0;
                 s.joints.frustumCulled = false;
                 root.add(s.joints);
+
+                // Bridges (see _bgRoadUpdateBridge): the deck over the
+                // carriageway (unit length, scaled in z per span), edge
+                // beams, balusters (base at y 0, scaled in y) and rail
+                // pieces (unit length, scaled in z). Hidden until a bridge
+                // section comes into view.
+                {
+                    s.deckMat = mat(new T.MeshBasicMaterial({ color: 0x3a3e46, depthWrite: false }));
+                    const deckGeo = geo(new T.PlaneGeometry(halfW * 2, 1));
+                    deckGeo.rotateX(-Math.PI / 2);
+                    s.deck = new T.InstancedMesh(deckGeo, s.deckMat, ROAD_BRIDGE_POOL);
+                    const beamMat = mat(new T.MeshBasicMaterial({ color: ROAD_BEAM_HEX }));
+                    s.beams = new T.InstancedMesh(geo(new T.BoxGeometry(ROAD_BEAM_W, ROAD_BEAM_H, 1)), beamMat, ROAD_BRIDGE_POOL * 2);
+                    const parMat = mat(new T.MeshBasicMaterial({ color: ROAD_PARAPET_HEX }));
+                    const balGeo = geo(new T.BoxGeometry(ROAD_BALUSTER_W, 1, ROAD_BALUSTER_W));
+                    balGeo.translate(0, 0.5, 0);
+                    s.balusters = new T.InstancedMesh(balGeo, parMat, ROAD_PARAPET_POOL);
+                    s.rails = new T.InstancedMesh(geo(new T.BoxGeometry(ROAD_RAIL_W, ROAD_RAIL_H, 1)), parMat, ROAD_PARAPET_POOL);
+                    for (const m of [s.deck, s.beams, s.balusters, s.rails]) {
+                        m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                        m.count = 0;
+                        m.frustumCulled = false;
+                        root.add(m);
+                    }
+                }
 
                 // Fret-position lanes: dashed edge lines (dim, and bright
                 // for the lane in force now), lane-change diagonals and beat
@@ -5817,7 +6067,8 @@
                 s.rainAmt = _roadSmooth(ROAD_RAIN_START, ROAD_RAIN_FULL, s.mood.gloom);
                 _bgRoadUpdateFireworks(s, chart, playing, lite, dt);   // before the skyline: it reads the burst flash
                 _bgRoadUpdateSkyline(s, bands, chart);   // first: a new song re-seeds the hills too
-                _bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0));
+                _bgRoadUpdateBridge(s, chart);   // before the hills (valley) and the weather (fog over the valley)
+                _bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0), !lite);
                 _bgRoadUpdateSigns(s, chart);
                 _bgRoadUpdateWeather(s, chart, t);
                 let n = 0;
@@ -5938,7 +6189,8 @@
                 for (const m of [s.posts, s.beatHeads, s.barHeads,
                     s.laneDim, s.laneBright, s.connectors, s.seams, s.joints,
                     s.towers, s.windows, s.neon,
-                    s.pools, s.fogFar, s.fogSide, s.rain]) m?.dispose?.();
+                    s.pools, s.fogFar, s.fogSide, s.rain,
+                    s.deck, s.beams, s.balusters, s.rails]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
                 // Textures this style owns: one per gantry, and the sky.
@@ -5961,6 +6213,8 @@
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
                 s.pools = s.fogFar = s.fogSide = s.rain = null;
                 s.fogMat = s.rainMat = s.poolTex = s.fogTex = null;
+                s.deck = s.beams = s.balusters = s.rails = s.deckMat = null;
+                s.brSections = undefined;
                 if (s.fw) s.fw.onBeforeRender = () => {};
                 s.fw = null;
                 s.fwMoving = false;
@@ -7432,6 +7686,7 @@
         let _timingFx           = BG_DEFAULTS.timingFx;
         let _streakFx           = BG_DEFAULTS.streakFx;
         let _bgFinOn            = BG_DEFAULTS.finale;
+        let _bgBridgesOn        = BG_DEFAULTS.bridges;
         let _bloom              = BG_DEFAULTS.bloom;
         let _composer = null, _bloomPass = null, _bloomLoad = null, _bloomW = 0, _bloomH = 0;
         let _sparkPts = null, _sparkPos = null, _sparkCol = null, _sparkVel = null, _sparkLife = null;
@@ -7498,6 +7753,8 @@
             // Arrival finale: its clock (s since the trigger, -1 = none), how
             // many rockets, whether the run was clean (big willow), colours.
             finAge: -1, finN: 0, finClean: false, finC1: 0x00f0ff, finC2: 0xff2ec4,
+            // Bridges over 'bridge' sections on or off (the setting).
+            bridges: true,
         };
         // Road mood inputs. drawNote counts each judged note once: keys are
         // round(t * 1e4) * 16 + string (15 = the whole chord), the value
@@ -11475,6 +11732,7 @@
             _timingFx            = _bgReadSetting(panelKey, 'timingFx');
             _streakFx            = _bgReadSetting(panelKey, 'streakFx');
             _bgFinOn             = _bgReadSetting(panelKey, 'finale');
+            _bgBridgesOn         = _bgReadSetting(panelKey, 'bridges');
             _bloom               = _bgReadSetting(panelKey, 'bloom');
             _applyCinematic();
             fpsVisible           = _bgReadSetting(panelKey, 'fpsVisible');
@@ -19084,6 +19342,7 @@
                         _bgChart.time = bundle.currentTime;
                         _bgChart.beats = bundle.beats;
                         _bgChart.sections = bundle.sections;
+                        _bgChart.bridges = _bgBridgesOn;
                         _bgChart.isReady = bundle.isReady;
                         _bgChart.lowerBoundTime = bundle.lowerBoundTime;
                         _bgChart.anchors = bundle.anchors;

@@ -78,7 +78,14 @@ function load() {
         '\nthis._roadFinaleAt = _roadFinaleAt;' +
         '\nthis._roadFinaleDue = _roadFinaleDue;' +
         '\nthis._roadFinaleEnd = _roadFinaleEnd;' +
-        '\nthis._fwFinaleShell = _fwFinaleShell;', sandbox);
+        '\nthis._fwFinaleShell = _fwFinaleShell;' +
+        '\nthis.ROAD_BRIDGE_MIN_S = ROAD_BRIDGE_MIN_S;' +
+        '\nthis.ROAD_BRIDGE_POOL = ROAD_BRIDGE_POOL;' +
+        '\nthis._roadIsBridgeName = _roadIsBridgeName;' +
+        '\nthis._roadBridgeSpans = _roadBridgeSpans;' +
+        '\nthis._roadMakeBridgeSlots = _roadMakeBridgeSlots;' +
+        '\nthis._roadPlaceBridges = _roadPlaceBridges;' +
+        '\nthis._roadBridgeMask = _roadBridgeMask;', sandbox);
     return sandbox;
 }
 
@@ -1549,11 +1556,119 @@ test('finale wiring: instance trigger, re-arm, exit hold and setting', () => {
     // Continuous frames while the volley runs after the end.
     assert.match(src, /bgMountedStyleId === 'road' && bgState && bgState\.finLive\) return true;/);
     // The setting: default on, a boolean, a setter, a checkbox.
-    assert.match(src, /roadQuality: 'auto', finale: true \};/);
-    assert.match(src, /'streakFx', 'bloom', 'finale'\]\);/);
+    assert.match(src, /roadQuality: 'auto', finale: true[,}]/);
+    assert.match(src, /'streakFx', 'bloom', 'finale'[,\]]/);
     assert.match(src, /window\.h3dBgSetFinale\s*= \(v\) => _bgWriteGlobal\('finale', !!v\);/);
     assert.match(src, /_bgFinOn\s*= _bgReadSetting\(panelKey, 'finale'\);/);
     const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8');
     assert.match(html, /id="h3d-bg-road-finale"[\s\S]{0,200}window\.h3dBgSetFinale\(this\.checked\)/);
     assert.match(html, /localStorage\.getItem\('h3d_bg_finale'\)/);
+});
+
+// --- bridges ----------------------------------------------------------------
+
+test('_roadIsBridgeName: starts-with after clean-up, the table from the scope', () => {
+    const r = load();
+    for (const yes of ['bridge', 'Bridge', 'BRIDGE', 'bridge2', 'Bridge 2', 'bridge(halftime)', 'BRIDGE (half time)',
+        'bridge_1', 'brdg', 'middle 8', 'Middle8', 'middle eight', 'Middle_Eight', 'bridgesolo', '  bridge  ']) {
+        assert.equal(r._roadIsBridgeName(yes), true, yes);
+    }
+    for (const no of ['prebridge', 'post-bridge', 'solo/bridge', 'Solo / Bridge', 'Open strings', 'chorus', 'solo',
+        'default', '', null, undefined, 'middle', 'brd', 'middle 9']) {
+        assert.equal(r._roadIsBridgeName(no), false, String(no));
+    }
+});
+
+test('_roadBridgeSpans: to the next section, adjacent bridges merge, short ones drop, unsorted is fine', () => {
+    const r = load();
+    const plain = (a) => Array.from(a, (x) => [x.t0, x.t1]);   // out of the vm realm
+    // PonyIcon: two bridge entries in a row become one bridge.
+    const pony = [{ time: 0, name: 'intro' }, { time: 110.4, name: 'bridge' }, { time: 119.6, name: 'bridge' },
+        { time: 128.8, name: 'preverse' }, { time: 140, name: 'outro' }];
+    assert.deepEqual(plain(r._roadBridgeSpans(pony, 200, 1.5)), [[110.4, 128.8]]);
+    // Separate bridges stay separate; the last section runs to the song's end.
+    const two = [{ time: 10, name: 'Bridge' }, { time: 20, name: 'chorus' }, { time: 50, name: 'bridge2' }];
+    assert.deepEqual(plain(r._roadBridgeSpans(two, 70, 1.5)), [[10, 20], [50, 70]]);
+    // Song length unknown yet: the last one gets 8 s.
+    assert.deepEqual(plain(r._roadBridgeSpans(two, 0, 1.5)), [[10, 20], [50, 58]]);
+    // Under 1.5 s: no bridge.
+    const short = [{ time: 10, name: 'bridge' }, { time: 11, name: 'verse' }, { time: 30, name: 'middle 8' }, { time: 31.5, name: 'x' }];
+    assert.deepEqual(plain(r._roadBridgeSpans(short, 60, 1.5)), [[30, 31.5]]);
+    // Unsorted input is sorted on a copy (the caller's array is untouched).
+    const mixed = [{ time: 50, name: 'outro' }, { time: 30, name: 'bridge' }, { time: 40, name: 'solo' }];
+    assert.deepEqual(plain(r._roadBridgeSpans(mixed, 60, 1.5)), [[30, 40]]);
+    assert.equal(mixed[0].time, 50);
+    // No bridge, no sections, bad entries.
+    assert.equal(r._roadBridgeSpans([{ time: 0, name: 'default' }], 100, 1.5).length, 0);
+    assert.equal(r._roadBridgeSpans(null, 100, 1.5).length, 0);
+    assert.deepEqual(plain(r._roadBridgeSpans([null, { time: NaN, name: 'bridge' }, { time: 5, name: 'bridge' }], 20, 1.5)), [[5, 20]]);
+    // A chart whose only section is a bridge is a bridge for the whole song.
+    assert.deepEqual(plain(r._roadBridgeSpans([{ time: 0, name: 'bridge' }], 180, 1.5)), [[0, 180]]);
+});
+
+test('_roadPlaceBridges: spans overlapping the window, ends at note z, the cap respected', () => {
+    const r = load();
+    const spans = [{ t0: 10, t1: 20 }, { t0: 22, t1: 24 }, { t0: 40, t1: 50 }];
+    const out = r._roadMakeBridgeSlots(r.ROAD_BRIDGE_POOL);
+    assert.equal(r._roadPlaceBridges(spans, 0, TS, 2, 4, out, 3), 0, 'nothing in view yet');
+    assert.equal(r._roadPlaceBridges(spans, 7, TS, 2, 4, out, 3), 1, 'coming into view');
+    assert.ok(Math.abs(out[0].zN - (-(10 - 7) * TS)) < 1e-9);
+    assert.ok(Math.abs(out[0].zF - (-(20 - 7) * TS)) < 1e-9);
+    assert.equal(r._roadPlaceBridges(spans, 19, TS, 2, 4, out, 3), 2, 'leaving one, the next one ahead');
+    assert.equal(out[0].t0, 10);
+    assert.equal(out[1].t0, 22);
+    assert.equal(r._roadPlaceBridges(spans, 19, TS, 2, 4, out, 1), 1, 'cap');
+    assert.equal(r._roadPlaceBridges(spans, 26.5, TS, 2, 4, out, 3), 0, 'past both, the third not yet');
+    assert.equal(r._roadPlaceBridges(spans, NaN, TS, 2, 4, out, 3), 0);
+    assert.equal(r._roadPlaceBridges([], 15, TS, 2, 4, out, 3), 0);
+});
+
+test('_roadBridgeMask: 0 off the bridge, 1 on it, easing over the ramp at both ends', () => {
+    const r = load();
+    const zN = 0, zF = -10, ramp = 2;
+    assert.equal(r._roadBridgeMask(1, zN, zF, ramp), 0);
+    assert.equal(r._roadBridgeMask(-11, zN, zF, ramp), 0);
+    assert.equal(r._roadBridgeMask(-5, zN, zF, ramp), 1);
+    assert.equal(r._roadBridgeMask(0, zN, zF, ramp), 0);
+    assert.equal(r._roadBridgeMask(-10, zN, zF, ramp), 0);
+    let prev = 0;
+    for (let z = 0; z >= -2; z -= 0.1) {
+        const m = r._roadBridgeMask(z, zN, zF, ramp);
+        assert.ok(m >= prev - 1e-12 && m <= 1, `rises driving on (${z})`);
+        prev = m;
+    }
+    assert.ok(Math.abs(r._roadBridgeMask(-1, zN, zF, ramp) - r._roadBridgeMask(-9, zN, zF, ramp)) < 1e-12, 'symmetric');
+    assert.equal(r._roadBridgeMask(-5, zN, zF, 0), 1, 'no ramp');
+    assert.equal(r._roadBridgeMask(NaN, zN, zF, ramp), 0);
+});
+
+test('bridge wiring: deck order, valley, fog skip, Lite, setting', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    // Built in build() (the stage stamp), drawn after the asphalt.
+    const build = src.slice(src.indexOf('        road: {\n            build('), src.indexOf('            update(s, bands, dt, t, chart) {'));
+    assert.match(build, /s\.deck = new T\.InstancedMesh\(deckGeo, s\.deckMat, ROAD_BRIDGE_POOL\);/);
+    assert.match(build, /s\.deckMat = mat\(new T\.MeshBasicMaterial\(\{ color: 0x3a3e46, depthWrite: false \}\)\);/);
+    assert.match(src, /if \(s\.deck\) s\.deck\.renderOrder = ROAD_DECK_ORDER;/);
+    assert.match(src, /const ROAD_DECK_ORDER = -0\.95;/);
+    // The ground (and its valley) draws before the asphalt and deck, which write
+    // no depth: otherwise the valley's far walls paint over the nearer road.
+    assert.match(src, /const ROAD_GROUND_ORDER = -1\.05;/);
+    assert.match(src, /s\.hills\[i\]\.mesh\.renderOrder = ROAD_GROUND_ORDER;/);
+    // Placed before the hills (valley) and the weather (fog over the valley);
+    // Lite keeps the deck and parapets but carves no valley.
+    const upd = src.indexOf('_bgRoadUpdateBridge(s, chart);   // before the hills');
+    assert.ok(upd > 0 && upd < src.indexOf('_bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0), !lite);'));
+    assert.ok(upd < src.indexOf('_bgRoadUpdateWeather(s, chart, t);'));
+    assert.match(src, /if \(s\.brN > 0 && k > 0\) k \*= 1 - _bgRoadBridgeMaskAt\(s, z\);/);
+    assert.match(src, /const carve = !!valley && s\.brN > 0;/);
+    // The setting reaches the road through the chart.
+    assert.match(src, /_bgChart\.bridges = _bgBridgesOn;/);
+    assert.match(src, /_bgBridgesOn\s*= _bgReadSetting\(panelKey, 'bridges'\);/);
+    assert.match(src, /finale: true, bridges: true \};/);
+    assert.match(src, /'finale', 'bridges'\]\);/);
+    assert.match(src, /window\.h3dBgSetBridges\s*= \(v\) => _bgWriteGlobal\('bridges', !!v\);/);
+    const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8');
+    assert.match(html, /id="h3d-bg-road-bridges"[\s\S]{0,200}window\.h3dBgSetBridges\(this\.checked\)/);
+    // Disposed with the road.
+    assert.match(src, /s\.deck, s\.beams, s\.balusters, s\.rails\]\) m\?\.dispose\?\.\(\);/);
 });
