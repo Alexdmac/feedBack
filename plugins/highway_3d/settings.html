@@ -91,8 +91,29 @@
         <p class="text-xs text-gray-500 mt-1">Applies to the 3D highway immediately.</p>
     </div>
 
+    <!-- Neck size -->
+    <div class="mt-3">
+        <label for="h3d-neck-size" class="text-xs font-medium text-gray-400 mb-1 block">Neck size: <span id="h3d-neck-size-label">100%</span></label>
+        <input type="range" id="h3d-neck-size" min="100" max="160" step="5" value="100"
+            oninput="document.getElementById('h3d-neck-size-label').textContent = this.value + '%'; window.h3dSetNeckSize && window.h3dSetNeckSize(this.value / 100)"
+            class="w-full accent-accent">
+        <p class="text-xs text-gray-500 mt-1">Spreads the strings apart and makes the strings and notes bigger, so approaching notes are easier to read. 100% is the standard look. Also in the player's Plugins menu.</p>
+    </div>
+
     <script>
     (function () {
+        const ns = document.getElementById('h3d-neck-size');
+        if (ns) {
+            let pct = 100;
+            try {
+                const g = window.h3dGetNeckSize;
+                const v = typeof g === 'function' ? Number(g()) : Number(localStorage.getItem('highway_3d.neckSize'));
+                if (Number.isFinite(v) && v > 0) pct = Math.round(Math.min(1.6, Math.max(1, v)) * 100);
+            } catch (_) {}
+            ns.value = String(pct);
+            const lbl = document.getElementById('h3d-neck-size-label');
+            if (lbl) lbl.textContent = pct + '%';
+        }
         const sel = document.getElementById('h3d-fret-spacing');
         if (sel) {
             try {

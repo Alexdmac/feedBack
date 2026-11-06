@@ -91,6 +91,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the city as it draws nearer over the outro. The street lamps on the
   bridge turn a cooler white. Lite keeps the deck and railings only. A new "Night road bridges" setting
   (on by default) turns it off.
+- **Neck size (3D Highway).** A new Neck size slider (100-160%) in Settings >
+  3D Highway > Fretboard, and in the player's Plugins menu, spreads the strings
+  apart and makes the strings and the notes bigger, so approaching notes are
+  easier to read. The strings thicken faster than the rest (2.2x at 160%), the
+  notes, their sustains and labels grow with the string gaps, and the board and
+  the background stay where they are. It applies live to every 3D Highway panel
+  and is remembered on this device; 100% is the standard look.
 - **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
   (Off, 120, 60, 30) that draws the highway at most that many times a second,
   to save power and heat or leave the graphics card free for other apps. Off

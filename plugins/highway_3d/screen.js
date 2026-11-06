@@ -879,7 +879,17 @@
         return labels;
     }
 
-    const STR_THICK = 0.25 * K;
+    // Neck size (Settings > 3D Highway > Fretboard, and the player's Plugins
+    // popover): ONE device-wide multiplier, 100-160%, on the string gap, the
+    // strings and the note gems, so approaching notes read bigger. The camera
+    // frames by fret span, not by string height, so a taller string stack
+    // shows larger on screen. The *_BASE values are today's look; the scaled
+    // `let`s are rebound by _h3dApplyNeckSize (after NW/NH/ND below) and are
+    // read live by every per-frame draw path. Geometry a panel builds once
+    // (gem boxes, ghost frames, the board) is resized by that panel's
+    // _syncNeckSize when it sees the value move.
+    const STR_THICK_BASE = 0.25 * K;
+    let STR_THICK = STR_THICK_BASE;
 
     // Fret wires — bowed metal tubes (backported from highway_babylon's
     // "hit-zone fret bars"). All frets share one bowed TubeGeometry whose
@@ -887,7 +897,7 @@
     // frets reads as wrapping a cylindrical neck — chart-format depth cue.
     // Negative Z = away from camera (into the highway). All tunable.
     const FRET_BOW_DZ = -1.2 * K;        // middle-of-span Z offset
-    const FRET_TUBE_RADIUS = STR_THICK * 0.75; // slightly thicker than a string
+    let FRET_TUBE_RADIUS = STR_THICK_BASE * 0.75; // slightly thicker than a string (at 100%)
     const FRET_TUBE_SEG = 12;            // tubular segments along the curve
     // Radial segments (cross-section). 8 rather than 6: at FRET_TUBE_RADIUS the
     // hexagonal facets of a 6-segment tube are visible along the top highlight.
@@ -929,7 +939,8 @@
     const FRET_WIRE_HIT_DECAY = 0.32;
 
     const S_BASE = 3 * K;
-    const S_GAP = 4 * K;
+    const S_GAP_BASE = 4 * K;
+    let S_GAP = S_GAP_BASE;   // scaled by Neck size
 
     const AHEAD = 3.0;
     const BEHIND = 0.5;
@@ -1083,7 +1094,8 @@
     }
 
     // Shorter, flatter notes (joel style)
-    const NW = 5 * K, NH = 3 * K, ND = 0.25 * K;
+    const NW_BASE = 5 * K, NH_BASE = 3 * K, ND_BASE = 0.25 * K;
+    let NW = NW_BASE, NH = NH_BASE, ND = ND_BASE;   // scaled by Neck size
     // Sustain-trail X offset for fretted notes. Module-scoped + frozen
     // so the hot path's `offsets.length` loop sees a stable singleton
     // reference. The standalone-open-string path builds a fresh pair
@@ -1094,7 +1106,44 @@
     // `const baseOff = NW * 3 * openWScale` plus the inline `[-, +]`
     // literal in the chord-member branch — just consolidated.
     const SINGLE_SUS_OFFSETS = Object.freeze([0]);
-    const BEND_HALFSTEP_WORLD_Y = S_GAP * 0.8;
+    let BEND_HALFSTEP_WORLD_Y = S_GAP_BASE * 0.8;
+
+    // Neck size. Strings thicken faster than the rest (NECK_STR_EXTRA): at
+    // 100% a string is 1/16 of the gap between strings, too thin to follow
+    // at speed, and "thicker strings" is half of what the setting is for.
+    // Fret wires only grow with the gaps, so they stay thinner than the
+    // strings they cross. Stored as a plain number under
+    // 'highway_3d.neckSize' (like fretSpacing, device-wide: every panel).
+    const NECK_SIZE_MIN = 1, NECK_SIZE_MAX = 1.6;
+    const NECK_STR_EXTRA = 2;     // strings: 1 + 2*(m-1) -> 2.2x at 160%
+    let _h3dNeckSize = 1;
+    function _h3dClampNeckSize(v) {
+        const n = (v === null || v === undefined || v === '') ? NaN : Number(v);
+        if (!Number.isFinite(n)) return NECK_SIZE_MIN;
+        // Whole percent, so a stored "1.3000000001" and the slider's 1.3
+        // are the same size and never trigger a no-op rebuild.
+        return Math.min(NECK_SIZE_MAX, Math.max(NECK_SIZE_MIN, Math.round(n * 100) / 100));
+    }
+    function _h3dApplyNeckSize(m) {
+        _h3dNeckSize = m;
+        S_GAP = S_GAP_BASE * m;
+        NW = NW_BASE * m; NH = NH_BASE * m; ND = ND_BASE * m;
+        STR_THICK = STR_THICK_BASE * (1 + NECK_STR_EXTRA * (m - 1));
+        FRET_TUBE_RADIUS = STR_THICK_BASE * 0.75 * m;
+        BEND_HALFSTEP_WORLD_Y = S_GAP * 0.8;
+    }
+    try { _h3dApplyNeckSize(_h3dClampNeckSize(localStorage.getItem('highway_3d.neckSize'))); } catch (_) {}
+    window.h3dGetNeckSize = () => _h3dNeckSize;
+    window.h3dSetNeckSize = v => {
+        // Clamp before persisting so a bad value never lands in storage.
+        // Live, like fretSpacing: rebind the module sizes, then every mounted
+        // panel resizes its own geometry on the 'neckSize' broadcast.
+        const m = _h3dClampNeckSize(v);
+        try { localStorage.setItem('highway_3d.neckSize', String(m)); } catch (_) {}
+        if (m === _h3dNeckSize) return;
+        _h3dApplyNeckSize(m);
+        _bgEmitChange('neckSize');
+    };
     const VIBRATO_HALF_WAVE_S = 0.08;
     // Bend ribbon envelope: fraction of the sustain spent ramping up to
     // the bent pitch, and releasing back down (rest is the held plateau).
@@ -6087,7 +6136,9 @@
                 const bw = (settings && settings.boardWidth > 0) ? settings.boardWidth : 256 * K;
                 const cx = (settings && Number.isFinite(settings.boardCenter)) ? settings.boardCenter : 0;
                 const halfW = bw / 2 + ROAD_EDGE_W;
-                const boardY = S_BASE - NH / 2 - 2 * K;
+                // NH_BASE, not NH: Neck size grows the gems around their
+                // strings and leaves the board (and so the road) in place.
+                const boardY = S_BASE - NH_BASE / 2 - 2 * K;
                 const roadY = boardY - 0.5 * K;      // just under the board plane
                 const groundY = boardY - 1.0 * K;
                 const zNear = 2 * TS;                // behind the hit line
@@ -7596,6 +7647,17 @@
     // disabled control gets pointer-events:none so the hover reaches them.
     let _pcReactiveWrap = null, _pcIntensityWrap = null, _pcReason = null;
     let _pcListener = null, _pcRetry = 0, _pcRetryTimer = 0;
+    // Neck size slider + its label (the label shows the percentage).
+    let _pcNeck = null, _pcNeckLabel = null;
+    // Neck size as a whole percent, read through the public getter so this
+    // block has no hard dependency on the module variable (100 if absent).
+    function _pcNeckPct() {
+        try {
+            const g = window.h3dGetNeckSize;
+            const m = typeof g === 'function' ? Number(g()) : 1;
+            return Math.round((Number.isFinite(m) ? m : 1) * 100);
+        } catch (_) { return 100; }
+    }
 
     // The player chrome exposes this slot once it has initialised. A host
     // that does not provide it gets no control (and no error) - the Settings
@@ -7748,6 +7810,13 @@
             _pcIntensityWrap.title = uses.intensity ? '' : why;
             _pcIntensityWrap.style.cursor = uses.intensity ? '' : 'not-allowed';
         }
+        // Neck size works under every style (it is the fretboard, not the
+        // background), so it is never greyed out.
+        if (_pcNeck) {
+            const pct = _pcNeckPct();
+            _pcNeck.value = String(pct);
+            if (_pcNeckLabel) _pcNeckLabel.textContent = 'Neck size ' + pct + '%';
+        }
     }
     // Mirror the current values into the Settings panel's controls when it's
     // in the DOM.
@@ -7773,6 +7842,11 @@
             // formatting identical to settings.html's own hydration.
             const il = document.getElementById('h3d-bg-intensity-label');
             if (il) il.textContent = Number(inten).toFixed(2);
+            const pct = _pcNeckPct();
+            const ns = document.getElementById('h3d-neck-size');
+            if (ns) ns.value = String(pct);
+            const nl = document.getElementById('h3d-neck-size-label');
+            if (nl) nl.textContent = pct + '%';
         } catch (e) { console.error('[3D-Hwy] settings-panel mirror failed', e); }
     }
     function _pcMount() {
@@ -7856,13 +7930,33 @@
         });
         _pcIntensityWrap.appendChild(_pcIntensity);
         box.appendChild(_pcIntensityWrap);
+
+        // Neck size is a fretboard setting, not a background one, but it is
+        // the knob worth reaching mid-song: try a size while notes come in.
+        // Same device-wide setter as the Settings slider (h3dSetNeckSize).
+        _pcNeckLabel = _pcGroupLabel('Neck size');
+        box.appendChild(_pcNeckLabel);
+        _pcNeck = document.createElement('input');
+        _pcNeck.type = 'range';
+        _pcNeck.min = '100'; _pcNeck.max = '160'; _pcNeck.step = '5';
+        _pcNeck.title = 'Neck size: string spacing, string and note size';
+        _pcNeck.setAttribute('aria-label', 'Neck size');
+        _pcNeck.style.cssText = 'width:100%;accent-color:#4080e0;';
+        // 'input' (live), unlike Intensity's 'change': a step only rescales
+        // the gems and rebuilds the board, with no background rebuild, so a
+        // drag is cheap enough to watch the size change as it goes.
+        _pcNeck.addEventListener('input', () => {
+            try { window.h3dSetNeckSize(parseFloat(_pcNeck.value) / 100); }
+            catch (e) { console.error('[3D-Hwy] neck size set failed', e); }
+        });
+        box.appendChild(_pcNeck);
         slot.appendChild(box);
         _pcEl = box;
         _pcSync();
         _pcListener = (key) => {
             if (key === 'style' || key === 'reactive' || key === 'intensity'
                 || key === 'customImageDataUrl' || key === 'customVideoName'
-                || key === 'venueScene') {
+                || key === 'venueScene' || key === 'neckSize') {
                 // 'venueScene' has no dropdown/settings widget of its own, but
                 // toggling Venue changes the EFFECTIVE style, so the greying
                 // must re-evaluate (see _pcSync's effectiveStyle).
@@ -7878,6 +7972,7 @@
         if (_pcEl && _pcEl.parentNode) _pcEl.parentNode.removeChild(_pcEl);
         _pcEl = null; _pcSel = null; _pcReactive = null; _pcIntensity = null;
         _pcReactiveWrap = null; _pcIntensityWrap = null; _pcReason = null;
+        _pcNeck = null; _pcNeckLabel = null;
     }
     function _pcAcquire() {
         _pcRefs++;
@@ -7992,6 +8087,12 @@
         // Per-string gradient gem geometries (index 0..5). Built in initScene
         // from sampled colour PNGs; each carries a per-vertex colour attribute.
         let gNoteGrad = [];
+        // Board-ghost rim geometry (one shared by every projMeshArr mesh).
+        // Kept so _syncNeckSize can resize it with the gems.
+        let ghostFrameGeo = null;
+        // Neck size the gem geometries above were built (or last resized)
+        // at; _syncNeckSize compares it with the device-wide _h3dNeckSize.
+        let _neckForGeo = 1;
         let mStr = [], mGlow = [], mSus = [], mStrHitOutline = [], mAccentOutline = [], mAccentCore = [], mAccentHaloNear = [], mAccentHaloMid = [], mAccentHaloFar = [];
         // Pre-built accent-halo shell descriptors per string. Populated after
         // mAccentHaloFar/Mid/Near are materialised; consumed in drawNote()'s
@@ -10959,6 +11060,7 @@
 
             // Rectangular note geometry
             gNote = new T.BoxGeometry(NW, NH, ND);
+            _neckForGeo = _h3dNeckSize;   // gNote, gNoteGrad and the ghost rim below use today's NW/NH/ND
             // Per-string vertical gradient gems — colours sampled from the
             // original colour PNGs (top highlight → deeper bottom). Each gradient
             // string gets its own BoxGeometry clone carrying a per-vertex colour
@@ -11208,7 +11310,7 @@
             // "upcoming" lead-note previews. All slots share one geometry —
             // it's identical (NW/NH/ND-based) regardless of string or slot,
             // so one ExtrudeGeometry serves all nStr*3 meshes.
-            const _ghostFrameGeo = mkGhostFrameGeometry();
+            ghostFrameGeo = mkGhostFrameGeometry();
             projMeshArr = activePalette.map((_, s) => [0, 1, 2].map(() => {
                 const mat = new T.MeshStandardMaterial({
                     color: activePalette[s],
@@ -11220,7 +11322,7 @@
                     depthWrite: false,
                     depthTest: false,
                 });
-                const m = new T.Mesh(_ghostFrameGeo, mat);
+                const m = new T.Mesh(ghostFrameGeo, mat);
                 m.visible = false;
                 // Board projection ghost frame. depthTest:false above, so
                 // renderOrder alone decides stacking — keep it above the
@@ -12057,6 +12159,13 @@
             scene.add(bgGroup);
             _bgMountStyle();
             _bgListener = (changedKey) => {
+                if (changedKey === 'neckSize') {
+                    // The module sizes were rebound in h3dSetNeckSize; resize
+                    // this panel's gems and rebuild its board (draw() also
+                    // catches up a panel that missed this, e.g. while hidden).
+                    _syncNeckSize();
+                    return;
+                }
                 if (changedKey === 'fretSpacing') {
                     // _h3dFretUniform + the fretX-derived scalars were already
                     // updated globally in h3dSetFretSpacing. Rebuild this
@@ -12955,6 +13064,23 @@
             }).catch((e) => console.warn('[3D-Hwy] bloom modules failed', e));
             return null;
         }
+        // Bring this panel's built-once geometry to the current Neck size.
+        // The gem boxes, their per-string gradient clones and the ghost rim
+        // are shared by every pooled mesh, so they are scaled IN PLACE (the
+        // pools keep their geometry refs; the gradient colours ride along,
+        // since a uniform scale keeps each vertex's 0..1 height); the board
+        // is rebuilt for the new string gaps and thickness. Everything else
+        // reads NW/NH/ND/S_GAP live each frame. Cheap no-op when unchanged.
+        function _syncNeckSize() {
+            if (!gNote || _neckForGeo === _h3dNeckSize) return;
+            const r = _h3dNeckSize / _neckForGeo;
+            gNote.scale(r, r, r);
+            for (const g of gNoteGrad) g?.scale?.(r, r, r);
+            ghostFrameGeo?.scale?.(r, r, r);
+            _neckForGeo = _h3dNeckSize;
+            if (fretG) buildBoard();
+        }
+
         function buildBoard() {
             // Dispose before clearing (traverse: nut/headstock may live in a Group).
             while (fretG.children.length) {
@@ -13005,7 +13131,7 @@
             _boardPlaneMat = pm;
             const p = new T.Mesh(pg, pm);
             p.rotation.x = -Math.PI / 2;
-            p.position.set(board.center, S_BASE - NH / 2 - 2 * K, -blAhead / 2);
+            p.position.set(board.center, S_BASE - NH_BASE / 2 - 2 * K, -blAhead / 2);   // fixed under Neck size
             fretG.add(p);
 
             // Thin Line strings (glow layer). Retained in stringLineGlows[]
@@ -16939,7 +17065,7 @@
             if (hasChartAnchors || activeFrets.size > 0) {
                 // Lane tint: one translucent quad per playable fret column, exact
                 // wire→wire span (no horizontal pad) — see HWY_LANE_STRIPE_*.
-                const boardY = S_BASE - NH / 2 - 2 * K;
+                const boardY = S_BASE - NH_BASE / 2 - 2 * K;   // the board plane's Y (fixed under Neck size)
 
                 if (hasChartAnchors) {
                     const nearB = laneBoundsFromAnchor(getChartAnchorAt(anchors, now));
@@ -17256,7 +17382,7 @@
                     const bl2 = pBeat.get();
                     bl2.material = meas ? mBeatM : mBeatQ;
                     bl2.scale.set(bw2, 1, 1);
-                    bl2.position.set(board.min - 2 * K, S_BASE - NH / 2 - 1.5 * K, dZ(b.time - now));
+                    bl2.position.set(board.min - 2 * K, S_BASE - NH_BASE / 2 - 1.5 * K, dZ(b.time - now));
                 }
             }
 
@@ -19739,6 +19865,7 @@
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
             gNote = gSus = gBeat = gTapChevron = null;
+            ghostFrameGeo = null;
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;
             _lookaheadCamX = xFretMid(CAM_LOCK_CENTER_FRET);
             _camLastMs = 0;
@@ -19941,6 +20068,7 @@
                 const newNStr = resolveStringCount(bundle);
                 const newScale = bundle.renderScale || 1;
                 const leftyChanged = _leftyCached !== _leftyForBoard;
+                if (_neckForGeo !== _h3dNeckSize) _syncNeckSize();
                 if (_invertedCached !== _invertedForBoard || leftyChanged || newNStr !== nStr) {
                     if (newNStr !== nStr) {
                         _oobStringWarned = false;
