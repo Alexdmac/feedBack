@@ -98,7 +98,12 @@ function load() {
         '\nthis._roadCableAnchorT = _roadCableAnchorT;' +
         '\nthis.ROAD_REFL_POOL = ROAD_REFL_POOL;' +
         '\nthis._roadMakeReflBuf = _roadMakeReflBuf;' +
-        '\nthis._roadReflectLayout = _roadReflectLayout;', sandbox);
+        '\nthis._roadReflectLayout = _roadReflectLayout;' +
+        '\nthis.ROAD_APPROACH_S = ROAD_APPROACH_S;' +
+        '\nthis._roadApproachWindow = _roadApproachWindow;' +
+        '\nthis._roadApproach = _roadApproach;' +
+        '\nthis._roadFogClampZ = _roadFogClampZ;' +
+        '\nthis._roadSkylinePose = _roadSkylinePose;', sandbox);
     return sandbox;
 }
 
@@ -1499,7 +1504,7 @@ function loadLaunch() {
     assert.ok(consts, 'finale constants not found');
     const sandbox = {};
     vm.createContext(sandbox);
-    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + fwConsts[0] + consts[0]
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + fwConsts[0] + consts[0] + approachConsts(src)
         + sliceFn(src, '    function _bgRoadFwBurstY(') + '\n'
         + sliceFn(src, '    function _bgRoadFwFitX(') + '\n'
         + sliceFn(src, '    function _bgRoadLaunchRocket(') + '\n'
@@ -1519,7 +1524,8 @@ async function launchView(f, aspect) {
     root.updateMatrixWorld();
     const s = {
         cam, root, fwV: new T.Vector3(), tmpColor: new T.Color(), fwBuf: f.makeBuf(), fwCount: 0, seed: 5,
-        postX: 160 * K, groundY: 0, zFar: -4 * TS, skylineZ: -4 * TS - 600 * K,
+        postX: 160 * K, groundY: 0, zFar: -4 * TS, skylineZ: -4 * TS - 600 * K, skyBaseZ: -4 * TS - 600 * K,
+        skySc: 1, approach: 0,
     };
     const ndc = (x, y, z) => new T.Vector3(x, y, z).applyMatrix4(root.matrixWorld).project(cam);
     // Each launch's burst point, read off the rocket and cleared again.
@@ -1730,6 +1736,12 @@ test('the pool holds a hot finale with its big willow and a milestone on top, at
     }
 });
 
+// The skyline approach's constants (the finale bursts in front of the city).
+function approachConsts(src) {
+    const m = src.match(/\n    const ROAD_APPROACH_DZ[\s\S]*?const ROAD_APPROACH_FOG_THIN[^\n]*\n/);
+    assert.ok(m, 'approach constants not found');
+    return m[0];
+}
 // One function's text out of screen.js, by its signature line.
 function sliceFn(src, sig) {
     const a = src.indexOf(sig);
@@ -1765,7 +1777,7 @@ function loadFinale() {
     assert.ok(fwConsts, 'firework camera constants not found');
     const sandbox = {};
     vm.createContext(sandbox);
-    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + fwConsts[0] + consts[0]
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + fwConsts[0] + consts[0] + approachConsts(src)
         + fnText('    function _bgRoadFwBurstY(') + '\n'
         + fnText('    function _bgRoadFwFitX(') + '\n'
         + fnText('    function _bgRoadLaunchFinaleRocket(') + '\n'
@@ -1778,7 +1790,7 @@ function finaleRoad(f) {
     const v = { set() { return v; }, applyMatrix4() { return v; }, distanceTo() { return 1; } };
     return {
         mood: f.makeMood(), fwBuf: f.makeBuf(), fwCount: 0, fwDirty: false, seed: 5,
-        skylineZ: -11, groundY: 0, cam: null, root: null, fwV: v,
+        skylineZ: -11, skyBaseZ: -11, skySc: 1, approach: 0, groundY: 0, cam: null, root: null, fwV: v,
         tmpColor: { r: 0, g: 0, b: 0, setHex() { return this; } },
         finLaunched: -1, finBigDone: false, finLift: 0, finLive: false, finBeatIv: 0.5,
     };
@@ -2290,4 +2302,256 @@ test('bridge dressing wiring: orders, the gantry pattern, Lite, lamp tint, per-s
     // Torn down with the road.
     assert.match(src, /s\.brTowers = s\.brBeacons = s\.brCables = s\.water = s\.refl = s\.reflMat = null;/);
     assert.match(src, /s\.brCross\.length = 0;/);
+});
+
+// --- skyline approach (step 5) ----------------------------------------------
+
+test('_roadApproach: eases in over the 20 s before the last note, by song time', () => {
+    const r = load();
+    assert.equal(r.ROAD_APPROACH_S, 20);
+    assert.equal(r._roadApproachWindow(150), 20);
+    assert.equal(r._roadApproachWindow(30), 15, 'half a short song');
+    for (const bad of [0, -3, NaN, undefined, null]) assert.equal(r._roadApproachWindow(bad), 0);
+    assert.equal(r._roadApproach(0, 150), 0);
+    assert.equal(r._roadApproach(130, 150), 0, 'starts 20 s out');
+    assert.equal(r._roadApproach(140, 150), 0.5);
+    assert.equal(r._roadApproach(150, 150), 1, 'there at the last note');
+    assert.equal(r._roadApproach(170, 150), 1, 'and stays through the outro');
+    let prev = 0;
+    for (let t = 125; t <= 155; t += 0.25) {
+        const a = r._roadApproach(t, 150);
+        assert.ok(a >= prev - 1e-12 && a >= 0 && a <= 1, `monotone at ${t}`);
+        prev = a;
+    }
+    // Eased: it sets off and arrives gently.
+    assert.ok(r._roadApproach(131, 150) < 0.01 && r._roadApproach(149, 150) > 0.99);
+    // A rewind is just an earlier time: the city recedes.
+    assert.ok(r._roadApproach(135, 150) < r._roadApproach(145, 150));
+    assert.equal(r._roadApproach(NaN, 150), 0);
+    assert.equal(r._roadApproach(140, NaN), 0, 'no end, no approach');
+    assert.ok(Math.abs(r._roadApproach(20, 30) - 7 / 27) < 1e-12, 'a short song eases over its second half');
+});
+
+test('_roadFogClampZ: the front stays past the fog for a camera down the road, any yaw', () => {
+    const r = load();
+    // An unrotated camera at z 100: depth = 100 - z, so z <= 100 - depth.
+    assert.equal(r._roadFogClampZ(0, 0, 1, -100, 0, 50, 800), -700);
+    // Height only counts through the view's tilt.
+    assert.equal(r._roadFogClampZ(0, 0.2, 1, -100, 50, 0, 800), -710);
+    // A yawed view: the nearer edge of the ground decides.
+    assert.equal(r._roadFogClampZ(0.25, 0, 1, -100, 0, 400, 800), -800);
+    assert.equal(r._roadFogClampZ(-0.25, 0, 1, -100, 0, 400, 800), -800);
+    assert.equal(r._roadFogClampZ(0, 0, 0.5, -50, 0, 0, 800), -1500, 'depth grows slower along a tilted view');
+    assert.equal(r._roadFogClampZ(0, 0, 1, -100, 0, 50, 0), Infinity, 'no fog');
+    assert.equal(r._roadFogClampZ(0, 0, 1, -100, 0, 50, NaN), Infinity);
+    assert.equal(r._roadFogClampZ(0, 0, 0, -100, 0, 50, 800), -Infinity, 'looking across the road');
+    assert.equal(r._roadFogClampZ(0, 0, -1, -100, 0, 50, 800), -Infinity, 'looking back');
+    assert.equal(r._roadFogClampZ(NaN, 0, 1, -100, 0, 50, 800), -Infinity);
+});
+
+test('_roadSkylinePose: grows and slides, held at the limit, never past home', () => {
+    const r = load();
+    const out = { sc: 0, dz: 0 };
+    const pose = (ap, limit) => { r._roadSkylinePose(ap, -1500, 45, 380, 1.15, limit, out); return [out.sc, out.dz]; };
+    assert.deepEqual(pose(0, -1000), [1, 0]);
+    assert.deepEqual(pose(1, -1000), [1.15, 380]);
+    const [sc, dz] = pose(0.5, -1000);
+    assert.ok(Math.abs(sc - 1.075) < 1e-12 && dz === 190);
+    assert.deepEqual(pose(7, -1000), [1.15, 380], 'ap clamps to 1');
+    assert.deepEqual(pose(-1, -1000), [1, 0]);
+    // The limit binds: the front lands on it.
+    const [sc2, dz2] = pose(1, -1300);
+    assert.equal(sc2, 1.15);
+    assert.ok(Math.abs(-1500 + dz2 + 45 * sc2 - -1300) < 1e-9, `front at ${-1500 + dz2 + 45 * sc2}`);
+    // A limit at or behind home: it stays home (and doesn't grow past it).
+    assert.deepEqual(pose(1, -1455), [1, 0]);
+    assert.deepEqual(pose(1, -2000), [1, 0]);
+    const [sc3, dz3] = pose(1, -1450);
+    assert.equal(dz3, 0);
+    assert.ok(sc3 > 1 && -1500 + 45 * sc3 <= -1450 + 1e-9, 'grows only up to the limit');
+    for (const bad of [NaN, -Infinity]) assert.deepEqual(pose(1, bad), [1, 0]);
+    assert.deepEqual(pose(1, Infinity), [1.15, 380]);
+});
+
+// _bgRoadUpdateApproach and the fog clamp, sliced, with a real three.js
+// camera and node: the city must never stand nearer than the scene fog's
+// far end, whatever the zoom, window shape or fog.
+function loadApproach() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const block = src.slice(src.indexOf(START), src.indexOf(END));
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + approachConsts(src)
+        + sliceFn(src, '    function _bgRoadUpdateApproach(') + '\n'
+        + sliceFn(src, '    function _bgRoadFogClampZ(') + '\n'
+        + 'this.update = _bgRoadUpdateApproach; this.DZ = ROAD_APPROACH_DZ; this.SCALE = ROAD_APPROACH_SCALE;'
+        + 'this.FRONT = ROAD_APPROACH_FRONT; this.GAP = ROAD_APPROACH_GAP; this.MARGIN = ROAD_APPROACH_FOG_MARGIN;', sandbox);
+    return sandbox;
+}
+async function approachRoad(cfg) {
+    const T = await import(pathToFileURL(THREE_JS).href);
+    const K = 0.0075, TS = 230 * K;
+    const cam = new T.PerspectiveCamera(70, cfg.aspect || 16 / 9, 0.01, 670 * K * 3);
+    cam.position.set(cfg.cx || 0, cfg.y * K, cfg.z * K);
+    cam.lookAt((cfg.lookX || 0) * K, 0, (cfg.lookZ != null ? cfg.lookZ : -230) * K);
+    cam.updateMatrixWorld();
+    const root = new T.Group();
+    root.position.x = (cfg.rootX || 0) * K;
+    root.updateMatrixWorld();
+    const node = new T.Object3D();
+    root.add(node);
+    const zFar = -4 * TS;
+    const s = {
+        cam, root, skyNode: node, zFar, skylineZ: zFar - 600 * K, groundY: -2 * K, groundHalfX: 1190 * K,
+        skyPose: { sc: 1, dz: 0 }, skySc: 1, skyDz: 0, approach: 0, skyBaseZ: zFar - 600 * K,
+    };
+    // A point of the city's layout (road frame) where the node puts it,
+    // and its depth in the view.
+    const place = (x, y, z) => {
+        node.updateMatrixWorld();
+        return new T.Vector3(x, y, z).applyMatrix4(node.matrixWorld);
+    };
+    const depth = (w) => -w.clone().applyMatrix4(cam.matrixWorldInverse).z;
+    return { T, K, s, place, depth };
+}
+const FOG_NORMAL = 670 * 0.0075 * 1.2, FOG_VENUE = 670 * 0.0075 * 0.98;
+
+test('skyline approach: the city arrives at the last note and recedes on rewind; the node keeps the layout', async () => {
+    const f = loadApproach();
+    const { K, s, place } = await approachRoad({ y: 120, z: 110 });
+    const chart = { isReady: true, finOn: true, time: 0, lastNoteT: 150, duration: 160, fogFar: FOG_NORMAL };
+    f.update(s, chart, false);
+    assert.equal(s.approach, 0);
+    assert.equal(s.skyDz, 0);
+    assert.equal(s.skySc, 1);
+    assert.equal(s.skyBaseZ, s.skylineZ);
+    chart.time = 150;
+    f.update(s, chart, false);
+    assert.equal(s.approach, 1);
+    assert.equal(s.skySc, f.SCALE);
+    assert.ok(Math.abs(s.skyDz - f.DZ) < 1e-9, `not clamped at the usual camera (${s.skyDz / K})`);
+    assert.ok(Math.abs(s.skyBaseZ - (s.skylineZ + f.DZ)) < 1e-9);
+    // A tower's front-left base corner: grown about the base line, then slid.
+    const p = place(-300 * K, s.groundY, s.skylineZ + 40 * K);
+    assert.ok(Math.abs(p.x - -300 * K * f.SCALE) < 1e-9);
+    assert.ok(Math.abs(p.y - s.groundY) < 1e-9, 'bases stay on the ground');
+    assert.ok(Math.abs(p.z - (s.skylineZ + 40 * K * f.SCALE + f.DZ)) < 1e-9);
+    const top = place(0, s.groundY + 300 * K, s.skylineZ);
+    assert.ok(Math.abs(top.y - (s.groundY + 300 * K * f.SCALE)) < 1e-9, 'and grows taller');
+    // Rewind: back home.
+    chart.time = 100;
+    f.update(s, chart, false);
+    assert.equal(s.approach, 0);
+    const home = place(-300 * K, s.groundY, s.skylineZ + 40 * K);
+    assert.ok(Math.abs(home.x - -300 * K) < 1e-9 && Math.abs(home.z - (s.skylineZ + 40 * K)) < 1e-9);
+    // Halfway, eased.
+    chart.time = 140;
+    f.update(s, chart, false);
+    assert.equal(s.approach, 0.5);
+    // Lite, the finale setting off, or a chart not ready: home.
+    for (const [c, lite] of [[{ ...chart, time: 150 }, true], [{ ...chart, time: 150, finOn: false }, false],
+        [{ ...chart, time: 150, isReady: false }, false]]) {
+        f.update(s, c, lite);
+        assert.equal(s.approach, 0);
+        assert.equal(s.skyDz, 0);
+        assert.equal(s.skySc, 1);
+        assert.equal(s.skyBaseZ, s.skylineZ);
+    }
+    // No notes: it arrives at the song's end instead.
+    f.update(s, { ...chart, lastNoteT: NaN, time: 159.5 }, false);
+    assert.equal(s.approach, 1);
+    // A city laid out closer: its front stops short of the road's end.
+    const near = (await approachRoad({ y: 120, z: 110 })).s;
+    near.skylineZ = near.zFar - 200 * K;
+    f.update(near, { ...chart, time: 150 }, false);
+    const front = near.skylineZ + f.FRONT * near.skySc + near.skyDz;
+    assert.ok(near.skyDz > 0 && near.skyDz < f.DZ);
+    assert.ok(Math.abs(front - (near.zFar - f.GAP)) < 1e-9, `front at ${(front / K).toFixed(1)}K`);
+});
+
+test('skyline approach: never nearer than the fog\'s far end or the road\'s end, for any camera, window or fog', async () => {
+    const f = loadApproach();
+    const cams = [
+        { y: 90, z: 40 },                                // close zoom
+        { y: 120, z: 110 },                              // usual
+        { y: 200, z: 300 },                              // wide zoom
+        { y: 60, z: -300, lookZ: -700 },                 // a Camera Director view down the road
+        { y: 60, z: -500, lookZ: -900 },
+        { y: 120, z: 110, lookX: 400 },                  // yawed right
+        { y: 120, z: 110, lookX: -400, cx: 80 },
+        { y: 40, z: 60, lookZ: -400 },                   // low
+    ];
+    let clamped = 0, free = 0;
+    for (const c of cams) {
+        for (const aspect of [0.6, 16 / 9, 32 / 9]) {
+            for (const fog of [FOG_NORMAL, FOG_VENUE]) {
+                const { K, s, place, depth } = await approachRoad({ ...c, aspect, rootX: 12 });
+                f.update(s, { isReady: true, finOn: true, time: 150, lastNoteT: 150, duration: 160, fogFar: fog }, false);
+                const sc = s.skySc;
+                const frontZ = s.skylineZ + f.FRONT;    // the layout's front line, before the pose
+                const front = place(0, s.groundY, frontZ).z;
+                assert.ok(front <= s.zFar - f.GAP + 1e-9, 'beyond the road\'s end');
+                for (const x of [-1, -0.5, 0, 0.5, 1]) {
+                    // Ground under the front, across the ground's width.
+                    const w = place(x * s.groundHalfX / sc, s.groundY, frontZ);
+                    const d = depth(w);
+                    assert.ok(d >= fog + f.MARGIN - 1e-6 || s.skyDz === 0,
+                        `cam ${JSON.stringify(c)} aspect ${aspect.toFixed(2)} fog ${(fog / K).toFixed(0)}: ground at x ${x} only ${(d / K).toFixed(1)}K deep`);
+                }
+                if (s.skyDz < f.DZ - 1e-9) clamped++; else free++;
+            }
+        }
+    }
+    assert.ok(free >= 30, `the usual views get the whole approach (${free})`);
+    assert.ok(clamped >= 4, `a view far down the road holds it back (${clamped})`);
+});
+
+test('skyline approach wiring: one node for the city, order, host inputs, far fog, fireworks, teardown', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const build = src.slice(src.indexOf('        road: {\n            build('), src.indexOf('            update(s, bands, dt, t, chart) {'));
+    // Towers, windows and neon hang off one plain Object3D (a Group would
+    // become their sort group); the sky stays behind.
+    assert.match(build, /s\.skyNode = new T\.Object3D\(\);\n\s*root\.add\(s\.skyNode\);/);
+    assert.match(build, /for \(const m of \[s\.towers, s\.windows, s\.neon\]\) \{\n\s*m\.count = 0;\n\s*m\.frustumCulled = false;\n\s*s\.skyNode\.add\(m\);/);
+    assert.match(build, /root\.add\(s\.sky\);/);
+    assert.match(build, /groundHalfX: halfW \* ROAD_GROUND_MUL,/);
+    // Per frame: after the skyline (a new song's layout), before the weather.
+    const upd = src.indexOf('_bgRoadUpdateApproach(s, chart, lite);   // before the weather');
+    assert.ok(upd > src.indexOf('_bgRoadUpdateSkyline(s, bands, chart);   // first'));
+    assert.ok(upd < src.indexOf('_bgRoadUpdateWeather(s, chart, t);'));
+    // The host hands over the finale setting, the last note and the live fog.
+    assert.match(src, /_bgChart\.finOn = _bgFinOn;\n\s*_bgChart\.lastNoteT = _bgLastNoteT;\n\s*_bgChart\.fogFar = scene && scene\.fog \? scene\.fog\.far : 0;/);
+    assert.match(src, /finOn: true, lastNoteT: NaN, fogFar: 0,/);
+    // The far fog banks have a material of their own and thin with it.
+    assert.match(build, /s\.fogFar = new T\.InstancedMesh\(fogGeo, s\.fogFarMat, ROAD_FOG_FAR_N\);/);
+    assert.match(build, /s\.fogSide = new T\.InstancedMesh\(fogGeo, s\.fogMat, s\.fogSideN\);/);
+    assert.match(src, /s\.fogFarMat\.opacity = ROAD_FOG_MAX \* fog \* \(1 - ROAD_APPROACH_FOG_THIN \* s\.approach\);/);
+    assert.match(src, /if \(s\.fogFarMat\) s\.fogFarMat\.color\.setHex\(fogHex\);/);
+    // Rockets follow the city; finale bursts stay in front of its faces.
+    assert.match(src, /const z1 = s\.zFar \+ \(s\.skyBaseZ - s\.zFar\) \* \(0\.35/);
+    assert.match(src, /const front = s\.skyBaseZ \+ ROAD_APPROACH_FRONT \* s\.skySc;\n\s*const z1 = front \+ ROAD_FIN_Z_BURST;/);
+    assert.match(src, /_fwLaunch\(s\.fwBuf, x0, s\.groundY, front \+ ROAD_FIN_Z_LAUNCH,/);
+    assert.equal(src.split('s.skylineZ + ROAD_FIN').length, 1, 'no finale z from the home skyline');
+    // Torn down with the road.
+    assert.match(src, /s\.towers = s\.windows = s\.neon = s\.sky = s\.skyNode = null;/);
+    assert.match(src, /s\.fogMat = s\.fogFarMat = s\.rainMat = s\.poolTex = s\.fogTex = null;/);
+});
+
+test('finale bursts open in front of the approached city, a little higher', async () => {
+    const f = loadLaunch();
+    const { s, burst } = await launchView(f, 16 / 9);
+    const K = 0.0075;
+    const far = [];
+    for (let i = 0; i < 8; i++) far.push(burst(() => f.finale(s, i, false, null, false)));
+    s.skyBaseZ = s.skylineZ + 380 * K;
+    s.skySc = 1.15;
+    s.approach = 1;
+    s.fwCount = 0;
+    const near = [];
+    for (let i = 0; i < 9; i++) near.push(burst(() => f.finale(s, i, i === 8, null, false)));
+    const front = s.skyBaseZ + 45 * K * 1.15;
+    for (const b of near) assert.ok(b.z > front, `burst at z ${(b.z / K).toFixed(0)}K behind the faces at ${(front / K).toFixed(0)}K`);
+    near.slice(0, 8).forEach((b, i) => {
+        assert.ok(b.p.y > far[i].p.y + 0.04, `burst ${i} higher once the city is near (${far[i].p.y.toFixed(3)} -> ${b.p.y.toFixed(3)})`);
+    });
 });

@@ -67,7 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Restart, a loop) resets it, and it fires again next time round. In free
   play, with exit-at-end on, the player stays open up to 4 seconds after the
   song so the volley is seen; with note detection, its summary keeps the exit
-  as before. A new "Night road finale" setting (on by default) turns it off.
+  as before. Over the 20 seconds before the last note the city also draws
+  nearer and grows, so you arrive at it as the volley goes up; rewinding
+  lets it recede, and it never comes out of the distance haze, whatever the
+  zoom, window shape or camera angle. Lite leaves the city where it stands.
+  A new "Night road finale" setting (on by default) turns all of it off.
 - **Bridges on the night road (3D Highway).** For a section whose name starts
   with "bridge" (Bridge, bridge2, Bridge (half time), bridge_1), "brdg",
   "middle 8" or "middle eight", the road crosses a bridge: a lighter concrete

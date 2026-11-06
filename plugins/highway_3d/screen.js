@@ -4279,6 +4279,59 @@
         const k = ((i % 3) + 3) % 3;
         return k === 0 ? _fwShellFor(50, 4, false) : (k === 1 ? _fwShellFor(100, 4, false) : _fwShellFor(25, 3, false));
     }
+
+    // Skyline approach (step 5): over the last stretch before the last
+    // note the city draws nearer, so you arrive at it as the finale goes
+    // up. By song time: a rewind lets it recede again. The stretch is
+    // ROAD_APPROACH_S, or half the song in a short one.
+    const ROAD_APPROACH_S = 20;
+    function _roadApproachWindow(endT) {
+        if (!(endT > 0)) return 0;
+        return endT / 2 < ROAD_APPROACH_S ? endT / 2 : ROAD_APPROACH_S;
+    }
+    // How far along the approach is (0..1, eased) at song time `time` when
+    // the last note ends at endT: 0 before the stretch, 1 from the last
+    // note on.
+    function _roadApproach(time, endT) {
+        const w = _roadApproachWindow(endT);
+        if (!(w > 0) || !Number.isFinite(time)) return 0;
+        let u = (time - (endT - w)) / w;
+        u = u < 0 ? 0 : (u > 1 ? 1 : u);
+        return u * u * (3 - 2 * u);
+    }
+    // The nearest z (road frame) the skyline's front may reach so that the
+    // ground under it, anywhere within halfX of the road's line, lies at
+    // least `depth` into the view: past the scene fog's far end, so the
+    // unfogged towers never stand sharp in a half-fogged landscape.
+    // (r0, r1, r2, r3) is row 2 of the view-from-road matrix: a point's
+    // view z is r0 x + r1 y + r2 z + r3, its depth minus that. +Infinity
+    // with no fog; -Infinity when the view doesn't look down the road.
+    function _roadFogClampZ(r0, r1, r2, r3, y, halfX, depth) {
+        if (!(depth > 0)) return Infinity;
+        if (!(r2 > 1e-6) || !Number.isFinite(r0) || !Number.isFinite(r1) || !Number.isFinite(r3)
+            || !Number.isFinite(y) || !Number.isFinite(halfX)) return -Infinity;
+        return -(depth + r1 * y + r3 + Math.abs(r0) * halfX) / r2;
+    }
+    // The skyline's pose at approach ap: it grows about its base line at
+    // baseZ (1 -> scaleMax) and slides up to dzMax nearer, but its front
+    // (frontAhead in front of the base line, before scaling) never comes
+    // nearer than limitZ, and it never moves back past its home. Writes
+    // out = { sc, dz } and returns it.
+    function _roadSkylinePose(ap, baseZ, frontAhead, dzMax, scaleMax, limitZ, out) {
+        const a = ap > 0 ? (ap < 1 ? ap : 1) : 0;
+        let sc = 1 + (scaleMax - 1) * a;
+        if (!(baseZ + frontAhead * sc <= limitZ)) {
+            const fit = frontAhead > 0 ? (limitZ - baseZ) / frontAhead : 1;
+            sc = fit > 1 ? (fit < sc ? fit : sc) : 1;
+        }
+        let dz = dzMax * a;
+        const room = limitZ - (baseZ + frontAhead * sc);
+        if (!(dz <= room)) dz = room;
+        if (!(dz > 0)) dz = 0;
+        out.sc = sc;
+        out.dz = dz;
+        return out;
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -4394,6 +4447,16 @@
     const ROAD_SKY_ABOVE = 2800 * K;
     const ROAD_SKY_BELOW = 150 * K;
     const ROAD_SKY_GLOW_HEX = 0xd08a50;
+    // Skyline approach (_roadApproach): at the last note the city has slid
+    // ROAD_APPROACH_DZ nearer and grown by ROAD_APPROACH_SCALE about its
+    // base line, its front held beyond the road's end and the live scene
+    // fog. The far fog banks thin as it comes. Lite skips it.
+    const ROAD_APPROACH_DZ = 380 * K;
+    const ROAD_APPROACH_SCALE = 1.15;
+    const ROAD_APPROACH_FRONT = 45 * K;     // tower faces stand up to this far in front of the base line (_roadTowerLayout)
+    const ROAD_APPROACH_GAP = 120 * K;      // the front stays this far beyond the road's end
+    const ROAD_APPROACH_FOG_MARGIN = 40 * K;   // ...and this far past the scene fog's far end
+    const ROAD_APPROACH_FOG_THIN = 0.7;     // far fog banks lose this share of their opacity
     // Step 3: light and weather that follow the playing mood (_roadMoodStep).
     // Light pools: a soft ellipse on the sidewalk under each lit post,
     // reaching the road edge, additive, brighter and larger with heat.
@@ -4474,8 +4537,9 @@
     // Arrival finale (schedule and sizes in the placement block). Bursts
     // spread over the skyline, launched from the city itself.
     const ROAD_FIN_X_MIN = 80 * K, ROAD_FIN_X_MAX = 760 * K;   // burst x either side of the road's line
-    const ROAD_FIN_Z_BURST = 20 * K, ROAD_FIN_Z_LAUNCH = 70 * K;   // in front of the skyline's base
+    const ROAD_FIN_Z_BURST = 20 * K, ROAD_FIN_Z_LAUNCH = 70 * K;   // in front of the towers' faces
     const ROAD_FIN_NDC_Y = 0.55, ROAD_FIN_NDC_SPREAD = 0.22, ROAD_FIN_NDC_BIG = 0.62, ROAD_FIN_NDC_X = 0.7;
+    const ROAD_FIN_NDC_NEAR = 0.06;       // bursts sit this much higher once the city has come near (taller on screen)
     const ROAD_FIN_SIZE = 1.35;           // finale shells open wider than milestone ones
     const ROAD_FIN_LIFT_S = 1.5;          // s for the city to wake up fully
     const ROAD_FIN_CLEAR_S = 2;           // s for full gloom (fog, rain) to drain away
@@ -4574,6 +4638,7 @@
         if (s.fogMat) {
             const fogHex = _roadMixHex(clear, ROAD_FOG_HEX, 0.5);
             s.fogMat.color.setHex(fogHex);
+            if (s.fogFarMat) s.fogFarMat.color.setHex(fogHex);
         }
         const ground = _roadMixHex(clear, 0x000000, 0.35);
         // Vertex colours are linear; T.Color.setHex converts like material colours do.
@@ -4780,6 +4845,7 @@
             s.fogSide.count = 0;
         } else {
             s.fogMat.opacity = ROAD_FOG_MAX * fog;
+            s.fogFarMat.opacity = ROAD_FOG_MAX * fog * (1 - ROAD_APPROACH_FOG_THIN * s.approach);
             s.fogFar.count = ROAD_FOG_FAR_N;
             const d = s.dummy, len = s.zNear - s.zFar, scroll = time * TS;
             const growFrom = fogFarD * 0.95;
@@ -4892,7 +4958,7 @@
         const side = (n & 1) ? 1 : -1;
         const x0abs = s.postX + (40 + 80 * _roadHash01(n, 71, seed)) * K;
         const reach = ROAD_FW_REACH_MIN + (ROAD_FW_REACH_MAX - ROAD_FW_REACH_MIN) * _roadHash01(n, 72, seed);
-        const z1 = s.zFar + (s.skylineZ - s.zFar) * (0.35 + 0.3 * _roadHash01(n, 73, seed));
+        const z1 = s.zFar + (s.skyBaseZ - s.zFar) * (0.35 + 0.3 * _roadHash01(n, 73, seed));
         const target = ROAD_FW_NDC_Y + ROAD_FW_NDC_SPREAD * _roadHash01(n, 74, seed);
         let y1 = _bgRoadFwBurstY(s, side * (x0abs + reach), z1, target);
         const f = _bgRoadFwFitX(s, side, x0abs, x0abs + ROAD_FW_REACH_MAX, y1, z1, ROAD_FW_NDC_X);
@@ -5159,8 +5225,12 @@
         const seed = (s.seed ^ Math.imul(n * 31 + i + 1, 0x9e3779b1)) | 0;
         const side = (i & 1) ? 1 : -1;
         const xr = big ? 0 : ROAD_FIN_X_MIN + (ROAD_FIN_X_MAX - ROAD_FIN_X_MIN) * _roadHash01(i, 91, seed);
-        const z1 = s.skylineZ + ROAD_FIN_Z_BURST;
-        const target = big ? ROAD_FIN_NDC_BIG : ROAD_FIN_NDC_Y + ROAD_FIN_NDC_SPREAD * _roadHash01(i, 92, seed);
+        // In front of the towers' faces (they write depth and would hide
+        // a burst behind them), wherever the approach brought the city.
+        const front = s.skyBaseZ + ROAD_APPROACH_FRONT * s.skySc;
+        const z1 = front + ROAD_FIN_Z_BURST;
+        const target = (big ? ROAD_FIN_NDC_BIG : ROAD_FIN_NDC_Y + ROAD_FIN_NDC_SPREAD * _roadHash01(i, 92, seed))
+            + ROAD_FIN_NDC_NEAR * s.approach;
         let y1 = _bgRoadFwBurstY(s, side * xr, z1, target);
         // A narrow view squeezes the volley toward the middle (the climb is
         // all beyond the road, so any x is safe).
@@ -5184,7 +5254,7 @@
         const c = s.tmpColor;
         c.setHex(c1); const r1 = c.r, g1 = c.g, b1 = c.b;
         c.setHex(c2);
-        _fwLaunch(s.fwBuf, x0, s.groundY, s.skylineZ + ROAD_FIN_Z_LAUNCH, x1, y1, z1, K * sc,
+        _fwLaunch(s.fwBuf, x0, s.groundY, front + ROAD_FIN_Z_LAUNCH, x1, y1, z1, K * sc,
             _fwFinaleShell(i, big, lite), r1, g1, b1, c.r, c.g, c.b, seed);
         s.fwDirty = true;
     }
@@ -5399,6 +5469,55 @@
             s.refl.setColorAt(i, c);
         }
         if (s.refl.instanceColor) s.refl.instanceColor.needsUpdate = true;
+    }
+    // Per-frame skyline approach: how far along (by song time, toward the
+    // last note, or the song's end without notes), then the city's pose:
+    // it grows about its base line and slides nearer, its front held
+    // beyond the road's end and past the live scene fog for this camera
+    // (zoom, window shape, a Camera Director angle, the Venue scene's
+    // fog). Off with the finale setting and in Lite.
+    function _bgRoadUpdateApproach(s, chart, lite) {
+        const node = s.skyNode;
+        if (!node) return;
+        let ap = 0;
+        if (!lite && chart && chart.isReady && chart.finOn !== false) {
+            let endT = chart.lastNoteT;
+            if (!Number.isFinite(endT) && chart.duration > 0.5) endT = chart.duration - 0.5;
+            ap = _roadApproach(chart.time, endT);
+        }
+        let limit = s.zFar - ROAD_APPROACH_GAP;
+        if (ap > 0) {
+            const c = _bgRoadFogClampZ(s, chart.fogFar);
+            if (c < limit) limit = c;
+        }
+        const p = _roadSkylinePose(ap, s.skylineZ, ROAD_APPROACH_FRONT, ROAD_APPROACH_DZ,
+            ROAD_APPROACH_SCALE, limit, s.skyPose);
+        if (p.sc !== s.skySc || p.dz !== s.skyDz) {
+            s.skySc = p.sc;
+            s.skyDz = p.dz;
+            // Scale about (0, groundY, skylineZ), then slide: the layout's
+            // coordinates stay the road's.
+            node.scale.setScalar(p.sc);
+            node.position.set(0, s.groundY * (1 - p.sc), s.skylineZ * (1 - p.sc) + p.dz);
+        }
+        s.approach = ap;
+        s.skyBaseZ = s.skylineZ + p.dz;
+    }
+    // _roadFogClampZ for the live camera and scene fog (far end fogFar),
+    // across the ground's width (beyond it there is only sky). +Infinity
+    // without a camera or fog.
+    function _bgRoadFogClampZ(s, fogFar) {
+        const cam = s.cam;
+        if (!(fogFar > 0) || !cam || !cam.matrixWorldInverse || !s.root) return Infinity;
+        // Row 2 of view x road (column-major elements).
+        const a = cam.matrixWorldInverse.elements, b = s.root.matrixWorld.elements;
+        const a2 = a[2], a6 = a[6], a10 = a[10], a14 = a[14];
+        return _roadFogClampZ(
+            a2 * b[0] + a6 * b[1] + a10 * b[2] + a14 * b[3],
+            a2 * b[4] + a6 * b[5] + a10 * b[6] + a14 * b[7],
+            a2 * b[8] + a6 * b[9] + a10 * b[10] + a14 * b[11],
+            a2 * b[12] + a6 * b[13] + a10 * b[14] + a14 * b[15],
+            s.groundY, s.groundHalfX, fogFar + ROAD_APPROACH_FOG_MARGIN);
     }
     // Per-frame skyline: re-lay out on a new song, light windows by song
     // progress, breathe windows with mids and neon with treble, warm the
@@ -5925,6 +6044,10 @@
                         z: new Float32Array(ROAD_WINDOW_POOL),
                     },
                     nWindows: 0, nNeon: 0, skylineZ: 0,
+                    // Skyline approach: the city's node, how far along, its
+                    // base line now and the pose (see _bgRoadUpdateApproach).
+                    skyNode: null, approach: 0, skyBaseZ: 0, skyPose: { sc: 1, dz: 0 }, skySc: 1, skyDz: 0,
+                    groundHalfX: halfW * ROAD_GROUND_MUL,   // the ground's reach either side (the fog clamp's width)
                     towers: null, windows: null, neon: null, sky: null,
                     windowMat: null, neonMat: null, skyMat: null, skyTex: null,
                     orderStamped: false,
@@ -6246,10 +6369,16 @@
                 s.tmpColor.setHex(0xffffff);
                 // Creates the instanceColor attribute once, here.
                 for (let i = 0; i < ROAD_NEON_POOL; i++) s.neon.setColorAt(i, s.tmpColor);
+                // One node for the city, moved as one by the approach. A
+                // plain Object3D, not a Group: a Group would become its
+                // children's sort group.
+                s.skyNode = new T.Object3D();
+                root.add(s.skyNode);
+                s.skyBaseZ = s.skylineZ;
                 for (const m of [s.towers, s.windows, s.neon]) {
                     m.count = 0;
                     m.frustumCulled = false;
-                    root.add(m);
+                    s.skyNode.add(m);
                 }
                 s.skyMat = mat(new T.MeshBasicMaterial({ color: 0xffffff, fog: false, depthWrite: false }));
                 s.sky = new T.Mesh(geo(new T.PlaneGeometry(ROAD_SKY_W, ROAD_SKY_ABOVE + ROAD_SKY_BELOW)), s.skyMat);
@@ -6285,9 +6414,14 @@
                 s.fogMat = mat(new T.MeshBasicMaterial({
                     map: s.fogTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, fog: false,
                 }));
+                // The far banks thin as the city approaches: a material of
+                // their own.
+                s.fogFarMat = mat(new T.MeshBasicMaterial({
+                    map: s.fogTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, fog: false,
+                }));
                 const fogGeo = geo(new T.PlaneGeometry(1, 1));
                 fogGeo.translate(0, 0.35, 0);    // bottom 15% of the card below the ground line
-                s.fogFar = new T.InstancedMesh(fogGeo, s.fogMat, ROAD_FOG_FAR_N);
+                s.fogFar = new T.InstancedMesh(fogGeo, s.fogFarMat, ROAD_FOG_FAR_N);
                 s.fogSide = new T.InstancedMesh(fogGeo, s.fogMat, s.fogSideN);
                 s.fogSide.instanceMatrix.setUsage(T.DynamicDrawUsage);
                 {
@@ -6428,6 +6562,7 @@
                 s.rainAmt = _roadSmooth(ROAD_RAIN_START, ROAD_RAIN_FULL, s.mood.gloom);
                 _bgRoadUpdateFireworks(s, chart, playing, lite, dt);   // before the skyline: it reads the burst flash
                 _bgRoadUpdateSkyline(s, bands, chart);   // first: a new song re-seeds the hills too
+                _bgRoadUpdateApproach(s, chart, lite);   // before the weather: the far fog thins with it
                 _bgRoadUpdateBridge(s, chart, lite);   // before the hills (valley) and the weather (fog over the valley)
                 _bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0), !lite);
                 _bgRoadUpdateSigns(s, chart);
@@ -6598,11 +6733,11 @@
                 s.signMats.length = 0;
                 s.posts = s.beatHeads = s.barHeads = null;
                 s.laneDim = s.laneBright = s.connectors = s.seams = s.joints = null;
-                s.towers = s.windows = s.neon = s.sky = null;
+                s.towers = s.windows = s.neon = s.sky = s.skyNode = null;
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
                 s.pools = s.fogFar = s.fogSide = s.rain = null;
-                s.fogMat = s.rainMat = s.poolTex = s.fogTex = null;
+                s.fogMat = s.fogFarMat = s.rainMat = s.poolTex = s.fogTex = null;
                 s.deck = s.beams = s.balusters = s.rails = s.deckMat = null;
                 s.brTowers = s.brBeacons = s.brCables = s.water = s.refl = s.reflMat = null;
                 s.brCross.length = 0;
@@ -8146,6 +8281,9 @@
             // Arrival finale: its clock (s since the trigger, -1 = none), how
             // many rockets, whether the run was clean (big willow), colours.
             finAge: -1, finN: 0, finClean: false, finC1: 0x00f0ff, finC2: 0xff2ec4,
+            // Skyline approach: the finale setting, when the last note
+            // ends (NaN = no notes) and the scene fog's live far end.
+            finOn: true, lastNoteT: NaN, fogFar: 0,
             // Bridges over 'bridge' sections on or off (the setting).
             bridges: true,
         };
@@ -19818,6 +19956,9 @@
                             _bgFinC2 = _fxHexInt(_fxPalette.accent2, 0xff2ec4);
                         }
                         _bgChart.finAge = _bgFinOn ? _bgFinAge : -1;
+                        _bgChart.finOn = _bgFinOn;
+                        _bgChart.lastNoteT = _bgLastNoteT;
+                        _bgChart.fogFar = scene && scene.fog ? scene.fog.far : 0;
                         _bgChart.finN = _bgFinN;
                         _bgChart.finClean = _bgSongHits > 0 && _bgSongMisses === 0;
                         _bgChart.finC1 = _bgFinC1;
