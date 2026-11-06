@@ -744,6 +744,31 @@ export async function playSong(filename, arrangement, options) {
     document.getElementById('quality-select').value = window.highway.getRenderScale();
     const _minScaleSel = document.getElementById('min-scale-select');
     if (_minScaleSel && window.highway.getMinRenderScale) _minScaleSel.value = String(window.highway.getMinRenderScale());
+    _syncMaxFpsSelect();
+}
+
+// Show the FPS cap in force. getMaxFps() reads the device-wide setting, so
+// this is right even when another window changed it. A cap set outside the
+// four choices (setMaxFps from the console) gets its own entry.
+function _syncMaxFpsSelect() {
+    const sel = document.getElementById('max-fps-select');
+    if (!sel || !window.highway || !window.highway.getMaxFps) return;
+    const cap = String(window.highway.getMaxFps());
+    if (sel.options && !Array.from(sel.options).some(o => o.value === cap)
+        && typeof document.createElement === 'function') {
+        const opt = document.createElement('option');
+        opt.value = cap;
+        opt.textContent = cap;
+        sel.appendChild(opt);
+    }
+    sel.value = cap;
+}
+// ...and follow a change made in another window (splitscreen pop-outs,
+// a second app window) while this one is open.
+if (typeof window.addEventListener === 'function') {
+    window.addEventListener('storage', (e) => {
+        if (e && e.key === 'highwayMaxFps') _syncMaxFpsSelect();
+    });
 }
 
 // Leave the player and return to the screen the song was launched from

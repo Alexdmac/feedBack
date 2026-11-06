@@ -91,8 +91,29 @@
         <p class="text-xs text-gray-500 mt-1">Applies to the 3D highway immediately.</p>
     </div>
 
+    <!-- Neck size -->
+    <div class="mt-3">
+        <label for="h3d-neck-size" class="text-xs font-medium text-gray-400 mb-1 block">Neck size: <span id="h3d-neck-size-label">160%</span></label>
+        <input type="range" id="h3d-neck-size" min="100" max="160" step="5" value="160"
+            oninput="document.getElementById('h3d-neck-size-label').textContent = this.value + '%'; window.h3dSetNeckSize && window.h3dSetNeckSize(this.value / 100)"
+            class="w-full accent-accent">
+        <p class="text-xs text-gray-500 mt-1">Spreads the strings apart and makes the strings and notes bigger, so approaching notes are easier to read. 160% is the default; 100% is the original, smaller look. Also in the player's Plugins menu.</p>
+    </div>
+
     <script>
     (function () {
+        const ns = document.getElementById('h3d-neck-size');
+        if (ns) {
+            let pct = 160;   // the default when nothing is stored
+            try {
+                const g = window.h3dGetNeckSize;
+                const v = typeof g === 'function' ? Number(g()) : Number(localStorage.getItem('highway_3d.neckSize'));
+                if (Number.isFinite(v) && v > 0) pct = Math.round(Math.min(1.6, Math.max(1, v)) * 100);
+            } catch (_) {}
+            ns.value = String(pct);
+            const lbl = document.getElementById('h3d-neck-size-label');
+            if (lbl) lbl.textContent = pct + '%';
+        }
         const sel = document.getElementById('h3d-fret-spacing');
         if (sel) {
             try {
@@ -124,10 +145,50 @@
             <option value="silhouettes">Silhouettes (parallax)</option>
             <option value="lights">Lights (stage glows)</option>
             <option value="geometric">Geometric (rotating shapes)</option>
+            <option value="road">Night road (procedural)</option>
             <option value="butterchurn">Butterchurn (visualizer)</option>
             <option value="image" disabled>Custom image (none uploaded)</option>
             <option value="video" disabled>Custom video (none uploaded)</option>
         </select>
+    </div>
+
+    <!-- Night road quality (road style only). Lite drops the weather and the
+         busier scenery for weaker graphics; Auto switches to Lite by itself
+         while the frame rate stays low and tries Full again later. -->
+    <div class="mt-3">
+        <label for="h3d-bg-road-quality" class="text-xs font-medium text-gray-400 mb-1 block">Night road quality</label>
+        <select id="h3d-bg-road-quality"
+            onchange="window.h3dBgSetRoadQuality && window.h3dBgSetRoadQuality(this.value)"
+            class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+            <option value="auto" selected>Auto</option>
+            <option value="full">Full</option>
+            <option value="lite">Lite</option>
+        </select>
+        <p class="text-[10px] text-gray-500 mt-1">
+            Night road only. Lite drops the rain, fog, light pools, city windows and scenery motion, keeps only the deck and railings of a bridge, leaves the city where it stands at the end, and lights every other beat. Auto switches to Lite while the frame rate stays under 50 fps (or 85% of your FPS cap) and tries Full again after a while, or as soon as the window is back in front.
+        </p>
+    </div>
+
+    <!-- Night road arrival finale (road style only). -->
+    <div class="mt-3 flex items-start justify-between gap-3">
+        <label for="h3d-bg-road-finale" class="text-xs font-medium text-gray-400">
+            Night road finale
+            <span class="block text-[10px] text-gray-500 font-normal">Over the last 20 s the city draws nearer; when the last note passes, it lights up and a volley of fireworks goes up over it. In free play the player stays open up to 4 s after the song so you see it.</span>
+        </label>
+        <input type="checkbox" id="h3d-bg-road-finale" checked
+            onchange="window.h3dBgSetFinale && window.h3dBgSetFinale(this.checked)"
+            class="accent-accent mt-0.5">
+    </div>
+
+    <!-- Night road bridges over 'bridge' sections (road style only). -->
+    <div class="mt-3 flex items-start justify-between gap-3">
+        <label for="h3d-bg-road-bridges" class="text-xs font-medium text-gray-400">
+            Night road bridges
+            <span class="block text-[10px] text-gray-500 font-normal">During a section named Bridge (or Middle 8), the road crosses a bridge with towers and cables over a river valley; the river runs on to the city, with its lights reflected.</span>
+        </label>
+        <input type="checkbox" id="h3d-bg-road-bridges" checked
+            onchange="window.h3dBgSetBridges && window.h3dBgSetBridges(this.checked)"
+            class="accent-accent mt-0.5">
     </div>
 
     <!-- Scene colors — TWO independent axes sharing one palette family:
@@ -615,7 +676,7 @@
             <div class="mt-3 flex items-start justify-between gap-3">
                 <label for="h3d-streakfx" class="text-xs font-medium text-gray-400">
                     Streak feedback
-                    <span class="block text-[10px] text-gray-500 font-normal">A clean run quietly "heats up" — bigger sparks the longer you stay accurate. Eases back on a miss.</span>
+                    <span class="block text-[10px] text-gray-500 font-normal">A clean run quietly "heats up" — bigger sparks the longer you stay accurate. Eases back on a miss. On the night road, streak milestones also launch fireworks over the city.</span>
                 </label>
                 <input type="checkbox" id="h3d-streakfx" checked
                     onchange="window.h3dBgSetStreakFx && window.h3dBgSetStreakFx(this.checked)"
@@ -957,7 +1018,7 @@
     <script>
         (function () {
             const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true };
-            const VALID_STYLES = new Set(['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video']);
+            const VALID_STYLES = new Set(['off', 'particles', 'silhouettes', 'lights', 'geometric', 'road', 'butterchurn', 'image', 'video']);
             // Scene color themes — the single id+label source for BOTH the
             // Background and Highway dropdowns AND the validator below. The
             // <option>s are generated from this list (see hydration), so the two
@@ -1522,6 +1583,25 @@
             }
             if (bgThemeSel) bgThemeSel.value = bgTheme;
             if (hwThemeSel) hwThemeSel.value = hwTheme;
+            // Night road quality: auto | full | lite (road style only).
+            const rqSel = document.getElementById('h3d-bg-road-quality');
+            if (rqSel) {
+                let rq = null;
+                try { rq = localStorage.getItem('h3d_bg_roadQuality'); } catch (_) { /* storage blocked */ }
+                rqSel.value = (rq === 'full' || rq === 'lite') ? rq : 'auto';
+            }
+            const finChk = document.getElementById('h3d-bg-road-finale');
+            if (finChk) {
+                let fv = null;
+                try { fv = localStorage.getItem('h3d_bg_finale'); } catch (_) { /* storage blocked */ }
+                finChk.checked = fv == null ? true : !(fv === 'false' || fv === '0');
+            }
+            const brChk = document.getElementById('h3d-bg-road-bridges');
+            if (brChk) {
+                let bv = null;
+                try { bv = localStorage.getItem('h3d_bg_bridges'); } catch (_) { /* storage blocked */ }
+                brChk.checked = bv == null ? true : !(bv === 'false' || bv === '0');
+            }
 
             if (fileInput) {
                 fileInput.addEventListener('change', function () {

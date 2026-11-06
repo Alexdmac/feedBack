@@ -28,6 +28,7 @@ import {
     _DOM_VIS_CHECK_FRAMES,
     _DRAW_BUDGET_HI_MS,
     _DRAW_BUDGET_LO_MS,
+    _FPS_CAP_SLACK_MS,
     _LYRIC_MEASURE_INNER_MAX,
     _LYRIC_MEASURE_OUTER_MAX,
     _PAUSED_FRAME_INTERVAL_MS,
@@ -48,6 +49,7 @@ import {
     fillTextReadable,
     fretX,
 } from './js/highway-state-primitives.js';
+import { _frameCapNext, _sanitizeMaxFps } from './js/highway-framecap.js';
 import {
     _chordHasTechniqueFlags,
     _computeChordBox,
@@ -210,6 +212,9 @@ function createHighway() {
     hwState._domVisSampledFrame = NaN;
     hwState.animFrame = null;
     hwState._lastPausedDrawAt = 0;
+    hwState._capLastTs = 0;    // slot (rAF timestamp) of the last capped draw
+    hwState._capFlagAt = 0;    // last re-read of 'highwayMaxFps' (rAF ts); Infinity = storage unwritable
+    hwState._zoomLastAt = 0;   // performance.now() of the last default-renderer draw (fret zoom dt)
     hwState._connectOpts = {};
     hwState._resizeContainer = null;
     hwState._resizeHandler = null;
@@ -327,7 +332,8 @@ function createHighway() {
     // auto change flows through the exact same plumbing as a manual
     // setRenderScale. Adapting resolution (not frame rate) keeps motion
     // at the display's native refresh, avoiding judder, and never
-    // affects sync (note position is clock-derived).
+    // affects sync (note position is clock-derived). The user's frame-rate
+    // cap (setMaxFps, "FPS cap") is the one deliberate exception.
     hwState._autoScale = 1;
     hwState._drawMsEMA = 0;              // smoothed cost of _renderer.draw()
     hwState._frameMsEMA = 0;            // smoothed frame interval (for the HUD)
@@ -350,6 +356,13 @@ function createHighway() {
     hwState._autoScaleMin = (function () {
         const v = parseFloat(localStorage.getItem('highwayMinRenderScale'));
         return Number.isFinite(v) ? Math.max(_AUTO_SCALE_MIN, Math.min(1, v)) : _AUTO_SCALE_MIN;
+    })();
+    // User frame-rate cap (0 = off: one draw per display refresh). Device-wide:
+    // every highway re-reads 'highwayMaxFps' about twice a second in draw(), so a
+    // change in one reaches splitscreen panels and pop-out windows. Live changes
+    // come through api.setMaxFps(), the "FPS cap" control next to Min res.
+    hwState._maxFps = (function () {
+        try { return _sanitizeMaxFps(localStorage.getItem('highwayMaxFps')); } catch (_) { return 0; }
     })();
     hwState._inverted = localStorage.getItem('invertHighway') === 'true';
     hwState._lefty = localStorage.getItem('lefty') === '1';
@@ -599,6 +612,7 @@ function createHighway() {
         b.inverted = hwState._inverted;
         b.lefty = hwState._lefty;
         b.renderScale = _effectiveRenderScale();
+        b.maxFps = hwState._maxFps;   // user frame-rate cap, 0 = off: judge "too slow" against it
         b.lyricsVisible = hwState.showLyrics;
         // Teaching marks sd/ch overlay pref (§6.2.2) so custom renderers
         // (e.g. the 3D highway) can mirror the 2D opt-in toggle. The fg
@@ -670,7 +684,15 @@ function createHighway() {
                 hwState.ctx.fillRect(0, 0, W, H);
 
                 const anchor = getAnchorAt(hwState.currentTime);
-                updateSmoothAnchor(anchor, 1 / 60);
+                // The fret zoom eases at a per-second rate tuned at 60 fps.
+                // Below 60 (the user's FPS cap, a slow machine) pass the
+                // real time since the last draw so it keeps that speed; at
+                // 60 and above keep 1/60 per frame, as before.
+                const _zoomNow = performance.now();
+                const _zoomDt = hwState._zoomLastAt > 0
+                    ? Math.min(0.1, Math.max(1 / 60, (_zoomNow - hwState._zoomLastAt) / 1000)) : 1 / 60;
+                hwState._zoomLastAt = _zoomNow;
+                updateSmoothAnchor(anchor, _zoomDt);
 
                 hwState.ctx.save();
                 if (hwState._lefty) {
@@ -1114,6 +1136,13 @@ function createHighway() {
     // nudges _autoScale down when the renderer blows the per-frame budget
     // and back up when it has headroom. A change re-applies via api.resize()
     // — the same path manual setRenderScale uses. (#654)
+    // A frame-rate cap under 60 gives each frame more time, so the draw
+    // budgets scale with it (a 30 cap lowers the resolution at 24 ms, not 12).
+    function _drawBudgetScale() {
+        const c = hwState._maxFps;
+        return c > 0 && c < 60 ? Math.min(2, 60 / c) : 1;
+    }
+
     function _adaptRenderScale(drawMs) {
         hwState._drawMsEMA = hwState._drawMsEMA === 0 ? drawMs : hwState._drawMsEMA * 0.9 + drawMs * 0.1;
         const nowP = performance.now();
@@ -1123,13 +1152,14 @@ function createHighway() {
         // would re-run this comparison every frame on the hot path.
         hwState._lastAutoAdjustAt = nowP;
         const eff = _effectiveRenderScale();
+        const budgetK = _drawBudgetScale();
         let next = hwState._autoScale;
-        if (hwState._drawMsEMA > _DRAW_BUDGET_HI_MS && eff > hwState._autoScaleMin) {
+        if (hwState._drawMsEMA > _DRAW_BUDGET_HI_MS * budgetK && eff > hwState._autoScaleMin) {
             // Over budget — downscale promptly to protect the frame rate, and reset
             // the upscale clock so we don't immediately bounce back up.
             next = hwState._autoScale * 0.85;
             hwState._lastUpscaleAt = nowP;
-        } else if (hwState._drawMsEMA < _DRAW_BUDGET_LO_MS && eff < 1
+        } else if (hwState._drawMsEMA < _DRAW_BUDGET_LO_MS * budgetK && eff < 1
                    && nowP - hwState._lastUpscaleAt >= _AUTO_UPSCALE_COOLDOWN_MS) {
             // Headroom — upscale LAZILY: a smaller step on a longer cooldown, and
             // only when the projected cost AFTER the step (cost scales ~with the
@@ -1137,7 +1167,7 @@ function createHighway() {
             // guard is what stops the up→over-budget→down ping-pong testers saw: the
             // scale settles just inside the deadband instead of oscillating across it.
             const step = 1.06;
-            if (hwState._drawMsEMA * step * step < _DRAW_BUDGET_HI_MS) {
+            if (hwState._drawMsEMA * step * step < _DRAW_BUDGET_HI_MS * budgetK) {
                 next = hwState._autoScale * step;
                 hwState._lastUpscaleAt = nowP;
             }
@@ -1188,7 +1218,7 @@ function createHighway() {
         }
         const fps = hwState._frameMsEMA > 0 ? 1000 / hwState._frameMsEMA : 0;
         hwState._perfHud.textContent =
-            'fps ' + fps.toFixed(0) +
+            'fps ' + fps.toFixed(0) + (hwState._maxFps > 0 ? '/' + hwState._maxFps : '') +
             '  draw ' + hwState._drawMsEMA.toFixed(1) + 'ms' +
             '  scale ' + _effectiveRenderScale().toFixed(2) +
             ' (user ' + hwState._renderScale.toFixed(2) + ' / auto ' + hwState._autoScale.toFixed(2) + ')';
@@ -1256,6 +1286,28 @@ function createHighway() {
         // scope here. Default 2D renderer also checks `ready` in its
         // draw body (defence in depth).
         if (!hwState.ready) return;
+        // User frame-rate cap (0 = off), paced on the rAF timestamp: it is
+        // vsync-aligned and the same for every highway's loop in a frame,
+        // whereas performance.now() here drifts by however long earlier
+        // callbacks (other splitscreen panels) ran. The slot is committed only
+        // once the frame really draws (after the paused throttle below), so a
+        // skipped tick never uses up a paused repaint. The one direct call
+        // (the first frame after 'ready') passes no timestamp and is not capped.
+        const _capTs = arguments[0];
+        let _capNext = NaN;
+        if (typeof _capTs === 'number') {
+            // Follow the shared setting about twice a second (like the perf-HUD
+            // flag) so a change made in one highway reaches every splitscreen
+            // panel and pop-out window.
+            if (_capTs - hwState._capFlagAt > 500) {
+                hwState._capFlagAt = _capTs;
+                try { hwState._maxFps = _sanitizeMaxFps(localStorage.getItem('highwayMaxFps')); } catch (_) { /* keep the in-memory value */ }
+            }
+            if (hwState._maxFps > 0) {
+                _capNext = _frameCapNext(hwState._capLastTs, _capTs, 1000 / hwState._maxFps, _FPS_CAP_SLACK_MS);
+                if (Number.isNaN(_capNext)) return;
+            }
+        }
         // Playback-aware throttle (#654). Reuse getTime()'s pause
         // signal: once an anchor exists, chartTime not advancing for
         // > _CHART_MAX_INTERP_MS means audio is paused/stalled (the
@@ -1281,6 +1333,7 @@ function createHighway() {
                 hwState._lastPausedDrawAt = _nowP;
             }
         }
+        if (!Number.isNaN(_capNext)) hwState._capLastTs = _capNext;
         // Skip bundle allocation when the default renderer is active —
         // it reads closure state directly and ignores the bundle.
         // _makeBundle at 60fps was a steady GC churn for the common
@@ -1781,8 +1834,9 @@ function createHighway() {
                 renderScale: hwState._renderScale,   // the user's Quality setting
                 autoScale: hwState._autoScale,       // what the load-adaptive loop chose
                 effectiveScale: _effectiveRenderScale(),
-                drawBudgetHiMs: _DRAW_BUDGET_HI_MS,
-                drawBudgetLoMs: _DRAW_BUDGET_LO_MS,
+                drawBudgetHiMs: _DRAW_BUDGET_HI_MS * _drawBudgetScale(),
+                drawBudgetLoMs: _DRAW_BUDGET_LO_MS * _drawBudgetScale(),
+                maxFps: hwState._maxFps,             // the user's frame-rate cap, 0 = off
             };
         },
 
@@ -1805,6 +1859,33 @@ function createHighway() {
             this.resize(); // recompute the backing store via _effectiveRenderScale()
         },
         getMinRenderScale() { return hwState._autoScaleMin; },
+
+        // User frame-rate cap: 0 = off (one draw per display refresh), else the
+        // most frames a second the highway draws (clamped 20..360). Persisted
+        // device-wide; every highway re-reads it about twice a second. Changes
+        // the cadence, not the size, so no resize(). Exposed as "FPS cap" next
+        // to Min res in the player controls. Never affects audio sync: note
+        // positions come from the clock.
+        setMaxFps(fps) {
+            if (!Number.isFinite(Number(fps))) return;
+            hwState._maxFps = _sanitizeMaxFps(fps);
+            hwState._capLastTs = 0;                       // resync on the next tick
+            try {
+                localStorage.setItem('highwayMaxFps', String(hwState._maxFps));
+                hwState._capFlagAt = performance.now();
+            } catch (_) {
+                hwState._capFlagAt = Infinity;            // can't persist: keep this value, stop re-reading
+            }
+        },
+        // The cap in force: re-reads the device-wide setting (as draw()
+        // does twice a second), so a change made in another window shows
+        // at once. Keeps the in-memory value when storage can't be used.
+        getMaxFps() {
+            if (hwState._capFlagAt !== Infinity) {
+                try { hwState._maxFps = _sanitizeMaxFps(localStorage.getItem('highwayMaxFps')); } catch (_) { /* keep it */ }
+            }
+            return hwState._maxFps;
+        },
 
         // Scale actually applied = manual ceiling * load-adaptive factor (#654).
         getEffectiveRenderScale() { return _effectiveRenderScale(); },
@@ -2882,6 +2963,8 @@ function createHighway() {
             hwState._lastFramePerf = 0;
             hwState._hudOn = false;
             hwState._hudFlagAt = 0;
+            hwState._capLastTs = 0;    // the frame-rate cap resyncs on the next song
+            if (hwState._capFlagAt !== Infinity) hwState._capFlagAt = 0;
             if (hwState.ws) { hwState.ws.close(); hwState.ws = null; }
             hwState.songOffset = 0.0;  // reset per-song offset so next song starts clean
             if (hwState._resizeHandler) {
@@ -2897,6 +2980,7 @@ function createHighway() {
             hwState._chartAnchorPerfNow = NaN;
             hwState._chartLastAdvanceAt = 0;
             hwState._chartObservedRate = 1;
+            hwState._zoomLastAt = 0;   // the fret zoom's dt starts fresh
             // Release the renderer's GPU / DOM / event-listener resources
             // when leaving the player — anything it allocated in init()
             // should be torn down here so navigating away doesn't leak.

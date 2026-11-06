@@ -150,6 +150,7 @@ Every per-frame renderer call receives a `bundle` from feedBack core. Fields use
 - `inverted` — display flag honored via `sY(s)` (low-string-on-top vs the default low-string-on-bottom)
 - `lyricsVisible` — gate for lyrics overlay
 - `renderScale` — pixel-ratio multiplier from the user's quality setting
+- `maxFps` — the user's FPS cap (0 = off). The night road's Auto quality judges "too slow" against 85% of it when it's under 59 (`_roadAutoMinFps`), so a 30 cap doesn't read as a slow machine
 - `songInfo.arrangement` — only field of `songInfo` this plugin reads, used as the bass-name fallback in `resolveStringCount()`
 - `stringCount` — feedBack#93; always prefer this over deriving from tuning/arrangement
 - `lefty` — display flag consumed by this renderer from `bundle.lefty`. Captured into `_leftyCached` before each frame so `xFret()`, `xFretMid()`, `boardSpanX()`, board geometry, note placement, and the camera shoulder offset mirror the fret axis for left-handed mode. A runtime lefty flip rebuilds board state and mirrors `curX`/`tgtX` plus the lookahead camera X cache so the camera does not drift across the neck.

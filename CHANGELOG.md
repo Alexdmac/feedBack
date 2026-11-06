@@ -12,6 +12,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top bar is gone; RockStar no longer shows any support or donation links.
 
 ### Added
+- **Night road background (3D Highway).** A new "Night road (procedural)"
+  background style draws a dark city road under the fretboard, with a curb and
+  sidewalk either side and street lights that pass the hit line on the beat
+  (skipping every third beat in the bar) and a taller, brighter one on every
+  bar line. The carriageway runs under the note track, with the curbs at the
+  board edges. Every fret position is drawn as a
+  road lane with dashed edges (the current one brighter), and each change of
+  fret position is a lane change, drawn as a short diagonal between the old
+  and new lanes. The lights, lane dashes, sidewalk joints and a thin seam across the
+  road on every beat move with the song, so pausing, seeking and practice speed carry
+  them too. A green overhead sign with the section name passes over the road
+  as each section begins, fading as it nears the hit line so it never sits
+  solid behind the notes, low hills seeded from the song roll past either
+  side, and a city skyline sits at the end of the road, its windows lighting
+  up as the song progresses. With note detection on, the road follows how you
+  play: a run of hits or a high multiplier warms the street lights from cool
+  white to amber and grows the light pools they throw on the sidewalk, and a
+  string of misses rolls fog banks in over the hills and the skyline, then
+  rain beside the road and a wet sheen on the asphalt, which clear as you
+  recover. The weather builds and clears over seconds rather than with each
+  note: a run of nothing but misses brings fog after about 3 to 4 seconds and
+  rain after about 6 to 7. The city follows too: a bad streak switches its windows and neon
+  off, and good playing lights every window and flashes the neon on the beat.
+  Weather never covers the board or the notes, and free play stays a clear
+  night. A new "Night road quality" setting (Auto, Full, Lite) adds a
+  Lite level for weaker graphics. Auto switches to it while the frame rate
+  stays under 50 fps (or 85% of the FPS cap), then tries Full again: after
+  15 s of Lite play (backing off to 4 minutes on a machine that can't hold
+  it), as soon as the window is back in front, or when Lite suddenly runs
+  much faster because another app let go of the graphics card. On a display
+  slower than 55 Hz (a 50 Hz TV or projector) the bars fit what the display
+  can deliver, and a Full that gives out soon after a try counts as a failed
+  try, so a slow spell that comes and goes can't make it flip back and forth.
+- **Streak fireworks on the night road (3D Highway).** With note detection
+  on, each streak milestone (25, 50, then every 100) launches a firework from
+  beside the road that bursts over the city between the road's end and the
+  skyline, in the scoring skin's colours, and briefly lights up the sky and
+  the windows. The shell grows with the streak: two colours from 50 (or a 4x
+  multiplier), a gold willow and a white core from 100, an inner shell from
+  200. On the night road it replaces the 2D milestone burst; with Streak
+  feedback off, the 2D burst stays as before. Lite quality fires a smaller
+  shell. Fireworks freeze on pause, vanish when you rewind, and a rocket
+  launched on the last note still bursts after the song ends. Bursts are
+  placed for the current view, so a narrow window or panel pulls them in
+  toward the middle, and sparks fade out softly near the ground instead of
+  being cut off. Free play has no fireworks.
+- **City finale on the night road (3D Highway).** When the last note passes
+  the hit line (or the song ends, for a chart whose last note is right at the
+  end), the city wakes up: every window lights, the neon flashes on the beat,
+  the sky glow warms, the street lights turn amber, and fog and rain clear in
+  about 2 seconds. A volley of fireworks goes up over the skyline for about
+  6 seconds: 6 rockets in free play, 5 to 8 with note detection depending on
+  how hot your run was, and a big gold willow to close a run with no misses.
+  Lite fires 3 rockets. Pause freezes it; seeking back before the last note
+  (Restart, a loop) resets it, and it fires again next time round. In free
+  play, with exit-at-end on, the player stays open up to 4 seconds after the
+  song so the volley is seen; with note detection, its summary keeps the exit
+  as before. Over the 20 seconds before the last note the city also draws
+  nearer and grows, so you arrive at it as the volley goes up; rewinding
+  lets it recede, and it never comes out of the distance haze, whatever the
+  zoom, window shape or camera angle. Lite leaves the city where it stands.
+  A new "Night road finale" setting (on by default) turns all of it off.
+- **Bridges on the night road (3D Highway).** For a section whose name starts
+  with "bridge" (Bridge, bridge2, Bridge (half time), bridge_1), "brdg",
+  "middle 8" or "middle eight", the road crosses a bridge: a lighter concrete
+  deck under the lanes, railings on the sidewalks, and the hills falling away
+  into a dark valley on both sides, easing in and out over the first and last
+  0.6 s. Back-to-back bridge sections make one bridge; sections under 1.5 s
+  get none; "prebridge" and "solo/bridge" don't count. It moves with the song
+  like the rest of the road. A pair of towers stands just inside each end,
+  clear of the section's sign, with a crossbeam over the road that fades
+  like the signs near the hit line, cable stays down to the railings outside
+  the road, and red beacons on top. A river runs along the valley floor with
+  reflections of the city's windows and neon that glitter on a hot run and
+  go dark with gloom. Past the road's end the river runs on to a dark bank
+  under the city, so no sky shows below the skyline: it catches the sky's glow
+  near the far bank, and each lit tower casts thin shimmering streaks across
+  it (fewer as windows go out, none when the city is dark). The bank moves
+  with the city as it draws nearer over the outro. The street lamps on the
+  bridge turn a cooler white. Lite keeps the deck and railings only. A new "Night road bridges" setting
+  (on by default) turns it off.
+- **Neck size (3D Highway).** A new Neck size slider (100-160%) in Settings >
+  3D Highway > Fretboard, and in the player's Plugins menu, spreads the strings
+  apart and makes the strings and the notes bigger, so approaching notes are
+  easier to read. The strings thicken faster than the rest (2.2x at 160%), the
+  notes, their sustains and labels grow with the string gaps, and the board and
+  the background stay where they are. It applies live to every 3D Highway panel
+  and is remembered on this device. It starts at 160%; 100% is the original,
+  smaller look.
+- **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
+  (Off, 120, 60, 30) that draws the highway at most that many times a second,
+  to save power and heat or leave the graphics card free for other apps. Off
+  draws at the display's refresh rate, as before. The cap is shared by every
+  highway on the device (splitscreen panels, pop-out windows) and never
+  touches audio sync. Camera tracking (3D) and the fret zoom (2D) keep their
+  speed under a cap. Plugins see it as `bundle.maxFps`.
 - **Home now opens with your Song Library.** Below the stat cards, Home shows
   the first twelve songs in your saved Song Library sort, using the same cards
   as the Song Library page (play, favorite, save, menu, arrangement chips,
@@ -377,6 +473,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- **3D Highway streak effects follow the note detection skin again.** The
+  tier-up ring, milestone burst and score pops read the skin from a storage
+  key note detection never writes, so they stayed neon whatever skin was
+  picked. They now read note detection's own key, and switch live when the
+  skin changes.
 - **Count-in follows the song's meter and its pickup measure.** The count-in
   (loop wrap, section practice, and the "Countdown before song" setting) always
   clicked exactly four beats, so a 3/4 song was counted in 4/4, and a song
