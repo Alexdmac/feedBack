@@ -2010,7 +2010,7 @@ test('bridge wiring: deck order, valley, fog skip, Lite, setting', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8');
     assert.match(html, /id="h3d-bg-road-bridges"[\s\S]{0,200}window\.h3dBgSetBridges\(this\.checked\)/);
     // Disposed with the road.
-    assert.match(src, /s\.deck, s\.beams, s\.balusters, s\.rails,\n\s*s\.brTowers, s\.brBeacons, s\.brCables, s\.water, s\.refl\]\) m\?\.dispose\?\.\(\);/);
+    assert.match(src, /s\.deck, s\.beams, s\.balusters, s\.rails,\n\s*s\.brTowers, s\.brBeacons, s\.brCables, s\.water, s\.refl, s\.farRefl\]\) m\?\.dispose\?\.\(\);/);
 });
 
 test('_roadBridgeTowerT: towers stand inside each end, clear of the gantries there', () => {
@@ -2115,6 +2115,7 @@ function loadDress() {
         + dress
         + fnText('    function _bgRoadBridgeMaskAt(') + '\n'
         + fnText('    function _bgRoadUpdateBridgeDress(') + '\n'
+        + fnText('    function _bgRoadUpdateFarRiver(') + '\n'
         + 'this.dress = _bgRoadUpdateBridgeDress; this.place = _roadPlaceBridges;'
         + 'this.slots = _roadMakeBridgeSlots; this.reflBuf = _roadMakeReflBuf; this.layout = _roadReflectLayout;'
         + 'this.c = { K, TS, ROAD_BR_TOWER_H, ROAD_REFL_POOL, ROAD_BRIDGE_POOL, ROAD_BRIDGE_CABLES, ROAD_BRIDGE_BACKSTAYS,'
@@ -2283,7 +2284,7 @@ test('bridge dressing wiring: orders, the gantry pattern, Lite, lamp tint, per-s
     assert.match(build, /s\.reflMat = mat\(new T\.MeshBasicMaterial\(\{ color: 0xffffff, depthWrite: false \}\)\);/);
     // Lite drops it at once, and update() keeps it so.
     const lite = src.slice(src.indexOf('    function _bgRoadEnterLite('), src.indexOf('    function _bgRoadLeaveLite('));
-    assert.match(lite, /s\.brTowers, s\.brBeacons, s\.brCables, s\.water, s\.refl\]\)/);
+    assert.match(lite, /s\.brTowers, s\.brBeacons, s\.brCables, s\.water, s\.refl, s\.farRefl\]\)/);
     assert.match(lite, /s\.brCross\[i\]\.visible = false;/);
     assert.match(src, /const n = lite \? 0 : s\.brN;/);
     assert.match(src, /_bgRoadUpdateBridgeDress\(s, now, lite\);\n    \}/);
@@ -2554,4 +2555,274 @@ test('finale bursts open in front of the approached city, a little higher', asyn
     near.slice(0, 8).forEach((b, i) => {
         assert.ok(b.p.y > far[i].p.y + 0.04, `burst ${i} higher once the city is near (${far[i].p.y.toFixed(3)} -> ${b.p.y.toFixed(3)})`);
     });
+});
+
+// The far river (_bgRoadUpdateFarRiver) runs outside the pure block on real
+// THREE objects, so it is sliced with its constants and driven on a stand-in
+// road state built the way build() builds it.
+function loadFarRiver() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const block = src.slice(src.indexOf(START), src.indexOf(END));
+    const line = (re) => {
+        const m = src.match(re);
+        assert.ok(m, `${re} not found`);
+        return m[0];
+    };
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block + approachConsts(src)
+        + line(/\n    const ROAD_TOWER_POOL = [^\n]*\n/)
+        + line(/\n    const ROAD_SKY_GAP = [^\n]*\n/)
+        + line(/\n    const ROAD_SKY_W = [^\n]*\n/)
+        + line(/\n    const ROAD_VALLEY_D = [^\n]*\n/)
+        + line(/\n    const ROAD_WATER_LIFT = [^\n]*\n/)
+        + line(/\n    const ROAD_BANK_FRONT[\s\S]*?const ROAD_FAR_LIFT[^\n]*\n/)
+        + sliceFn(src, '    function _bgRoadBridgeMaskAt(') + '\n'
+        + sliceFn(src, '    function _bgRoadUpdateFarRiver(') + '\n'
+        + 'this.river = _bgRoadUpdateFarRiver; this.place = _roadPlaceBridges; this.slots = _roadMakeBridgeSlots;'
+        + 'this.towerBuf = _roadMakeTowerBuf; this.towerLayout = _roadTowerLayout;'
+        + 'this.c = { K, TS, ROAD_TOWER_POOL, ROAD_SKY_GAP, ROAD_SKY_W, ROAD_VALLEY_D, ROAD_WATER_LIFT, ROAD_BANK_FRONT,'
+        + ' ROAD_BANK_LIP, ROAD_FAR_REFL_PER, ROAD_APPROACH_FRONT, ROAD_SHEEN_STR };', sandbox);
+    return sandbox;
+}
+async function farRiverRoad(f, cfg = {}) {
+    const T = await import(pathToFileURL(THREE_JS).href);
+    const { K, TS } = f.c;
+    const cam = new T.PerspectiveCamera(70, cfg.aspect || 16 / 9, 0.01, 670 * K * 3);
+    cam.position.set(0, (cfg.y || 120) * K, (cfg.z != null ? cfg.z : 110) * K);
+    cam.lookAt(0, 0, (cfg.lookZ != null ? cfg.lookZ : -230) * K);
+    cam.updateMatrixWorld();
+    const root = new T.Group();
+    const zNear = 2 * TS, zFar = -4 * TS, groundY = -2 * K;
+    const skylineZ = zFar - 600 * K;
+    const skyNode = new T.Object3D();
+    root.add(skyNode);
+    const flat = new T.PlaneGeometry(1, 1);
+    flat.rotateX(-Math.PI / 2);
+    const farRiver = new T.Object3D();
+    root.add(farRiver);
+    const farWater = new T.Mesh(flat, new T.MeshBasicMaterial());
+    const farSheen = new T.Mesh(flat, new T.MeshBasicMaterial({ color: 0 }));
+    const pool = f.c.ROAD_TOWER_POOL * f.c.ROAD_FAR_REFL_PER;
+    const farRefl = new T.InstancedMesh(flat, new T.MeshBasicMaterial(), pool);
+    for (let i = 0; i < pool; i++) farRefl.setColorAt(i, new T.Color(1, 1, 1));
+    farRefl.count = 0;
+    for (const m of [farWater, farSheen, farRefl]) {
+        m.scale.x = m === farRefl ? 1 : f.c.ROAD_SKY_W;
+        farRiver.add(m);
+    }
+    farRiver.visible = false;
+    const boxGeo = new T.BoxGeometry(1, 1, 1);
+    boxGeo.translate(0, -0.5, -0.5);
+    const bank = new T.Mesh(boxGeo, new T.MeshBasicMaterial());
+    bank.position.set(0, groundY, skylineZ + f.c.ROAD_APPROACH_FRONT + f.c.ROAD_BANK_FRONT);
+    bank.scale.set(f.c.ROAD_SKY_W, 1, f.c.ROAD_APPROACH_FRONT + f.c.ROAD_BANK_FRONT + f.c.ROAD_SKY_GAP);
+    bank.visible = false;
+    skyNode.add(bank);
+    const seed = 12345;
+    const towerBuf = f.towerBuf(f.c.ROAD_TOWER_POOL);
+    const nt = f.towerLayout(seed, f.c.ROAD_TOWER_POOL, towerBuf);
+    const s = {
+        cam, root, cx: 0, zNear, zFar, groundY, waterY: groundY - f.c.ROAD_VALLEY_D + f.c.ROAD_WATER_LIFT,
+        skylineZ, skyNode, skyBaseZ: skylineZ, skySc: 1, seed,
+        farRiver, farWater, farSheen, farRefl, bank,
+        towerBuf, towers: { count: nt }, nWindows: 400, windows: { count: 300 },
+        windowMat: { color: new T.Color(0.9, 0.7, 0.4) }, skyMat: { color: new T.Color(1, 1, 1) },
+        glowLin: [0.5, 0.25, 0.1], dummy: new T.Object3D(), tmpColor: new T.Color(),
+        brSlots: f.slots(4), brN: 0, brSpans: [{ t0: 60, t1: 82 }],
+    };
+    // The approach's pose of the city (see _bgRoadUpdateApproach).
+    s.pose = (sc, dz) => {
+        skyNode.scale.setScalar(sc);
+        skyNode.position.set(0, groundY * (1 - sc), skylineZ * (1 - sc) + dz);
+        s.skySc = sc;
+        s.skyBaseZ = skylineZ + dz;
+    };
+    s.at = (now, lite = false) => {
+        s.brN = f.place(s.brSpans, now, TS, zNear / TS, 4, s.brSlots, 4);
+        f.river(s, now, lite);
+        root.updateMatrixWorld(true);
+        return s;
+    };
+    return { T, K, TS, s };
+}
+
+test('far river: only while a bridge reaches the road\'s far end, never in Lite', async () => {
+    const f = loadFarRiver();
+    const { s, TS } = await farRiverRoad(f);
+    s.at(30);
+    assert.equal(s.farRiver.visible, false);
+    assert.equal(s.bank.visible, false);
+    assert.equal(s.farRefl.count, 0);
+    // The span's start reaches the far end (z = zFar) when now = 60 - 4.
+    s.at(55);
+    assert.equal(s.farRiver.visible, false, 'not before the bridge reaches the road\'s end');
+    s.at(61.5);
+    assert.equal(s.farRiver.visible, true);
+    assert.equal(s.bank.visible, true);
+    assert.equal(s.farRefl.count, s.towers.count * f.c.ROAD_FAR_REFL_PER);
+    s.at(61.5, true);
+    assert.equal(s.farRiver.visible, false, 'Lite');
+    assert.equal(s.bank.visible, false);
+    assert.equal(s.farRefl.count, 0);
+    // Once the span's end has passed the far end, the hills are back.
+    s.at(80);
+    assert.equal(s.farRiver.visible, false);
+    assert.ok(-(82 - 80) * TS > s.zFar, 'span end inside the view');
+});
+
+test('far river: from the valley\'s water at the road\'s end to just under the bank\'s lip, at the city wherever it is', async () => {
+    const f = loadFarRiver();
+    const { T, K, s } = await farRiverRoad(f);
+    const { ROAD_BANK_LIP, ROAD_APPROACH_FRONT, ROAD_BANK_FRONT, ROAD_SKY_W } = f.c;
+    for (const [sc, dz] of [[1, 0], [1.15, 380 * K]]) {
+        s.pose(sc, dz);
+        s.at(61.5);
+        const face = s.skyBaseZ + (ROAD_APPROACH_FRONT + ROAD_BANK_FRONT) * sc;
+        const w = s.farWater;
+        const near = new T.Vector3(0, 0, 0.5).applyMatrix4(w.matrixWorld);
+        const far = new T.Vector3(0, 0, -0.5).applyMatrix4(w.matrixWorld);
+        assert.ok(Math.abs(near.z - s.zFar) < 1e-9 && Math.abs(near.y - s.waterY) < 1e-9, `meets the valley's water (${sc})`);
+        assert.ok(Math.abs(far.z - face) < 1e-9 && Math.abs(far.y - (s.groundY - ROAD_BANK_LIP)) < 1e-9, `reaches the bank's face (${sc})`);
+        const side = new T.Vector3(0.5, 0, 0).applyMatrix4(w.matrixWorld);
+        assert.ok(Math.abs(side.x - ROAD_SKY_W / 2) < 1e-9, 'as wide as the sky');
+        // The bank: top on the ground, face at the water's end, foot under the water.
+        const b = s.bank;
+        const top = new T.Vector3(0, 0, 0).applyMatrix4(b.matrixWorld);
+        const foot = new T.Vector3(0, -1, 0).applyMatrix4(b.matrixWorld);
+        assert.ok(Math.abs(top.y - s.groundY) < 1e-9, 'top on the ground');
+        assert.ok(Math.abs(top.z - face) < 1e-9, 'face at the water\'s end');
+        assert.ok(foot.y < far.y - 1e-6, 'foot under the water');
+        // In front of every tower's face.
+        for (let i = 0; i < s.towers.count; i++) {
+            const tb = s.towerBuf;
+            const zf = s.skyBaseZ + (tb.z[i] + tb.d[i] / 2) * K * sc;
+            assert.ok(zf < face, `tower ${i} behind the bank's face`);
+        }
+    }
+    // A shallow end (the ramp) makes a shallow river; the lip shrinks with it.
+    s.pose(1, 0);
+    s.at(56.2);
+    const v = new T.Vector3(0, 0, 0.5).applyMatrix4(s.farWater.matrixWorld);
+    assert.ok(v.y > s.waterY + 1e-6 && v.y < s.groundY, `part depth at the ramp (${(v.y / K).toFixed(1)}K)`);
+});
+
+test('far river: no sky shows between the road\'s far end and the city on a bridge', async () => {
+    const f = loadFarRiver();
+    for (const cam of [{ y: 120, z: 110 }, { y: 75, z: 60, lookZ: -600, aspect: 2000 / 1165 }, { y: 200, z: 300 }, { y: 60, z: -300, lookZ: -700 }]) {
+        const { T, K, s } = await farRiverRoad(f, cam);
+        for (const [sc, dz] of [[1, 0], [1.15, 380 * K]]) {
+            s.pose(sc, dz);
+            s.at(61.5);
+            const skyZ = s.skylineZ - f.c.ROAD_SKY_GAP;
+            const rc = new T.Raycaster();
+            const front = s.skyBaseZ + f.c.ROAD_APPROACH_FRONT * sc;   // the towers' faces stand behind this
+            let checked = 0;
+            for (const x of [-900, -300, 0, 300, 900]) {
+                // From the valley's water at the road's end up to the towers' bases.
+                for (let k = 0; k <= 20; k++) {
+                    const u = 0.002 + 0.996 * k / 20;   // off the edges themselves
+                    const p = new T.Vector3(x * K, s.waterY + (s.groundY - s.waterY) * u, s.zFar + (front - s.zFar) * u);
+                    const dir = p.clone().sub(s.cam.position).normalize();
+                    rc.set(s.cam.position, dir);
+                    const hit = rc.intersectObjects([s.farWater, s.bank], false)[0];
+                    const tSky = (skyZ - s.cam.position.z) / dir.z;
+                    assert.ok(hit && hit.distance <= tSky + 1e-9,
+                        `camera ${JSON.stringify(cam)} sc ${sc}: the sky shows at x ${x}K, step ${k}`);
+                    checked++;
+                }
+            }
+            assert.equal(checked, 105);
+        }
+    }
+});
+
+test('far river: streaks run from the bank toward the viewer, upright on screen, lit like the windows', async () => {
+    const f = loadFarRiver();
+    const { T, K, s } = await farRiverRoad(f, { y: 75, z: 60, lookZ: -600, aspect: 2000 / 1165 });
+    const { ROAD_APPROACH_FRONT, ROAD_BANK_FRONT } = f.c;
+    const m4 = new T.Matrix4();
+    const ends = (i) => {
+        s.farRefl.getMatrixAt(i, m4);
+        m4.premultiply(s.farRiver.matrixWorld);
+        // Either way along the axis (yaw can turn a streak end for end): far end
+        // first. (Its lift over the tilted water moves it a hair in z.)
+        const p = new T.Vector3(0, 0, -0.5).applyMatrix4(m4), q = new T.Vector3(0, 0, 0.5).applyMatrix4(m4);
+        return p.z < q.z ? [p, q] : [q, p];
+    };
+    for (const [sc, dz] of [[1, 0], [1.15, 380 * K]]) {
+        s.pose(sc, dz);
+        s.at(61.5);
+        s.cam.updateMatrixWorld();
+        const face = s.skyBaseZ + (ROAD_APPROACH_FRONT + ROAD_BANK_FRONT) * sc;
+        const n = s.farRefl.count;
+        assert.ok(n > 0);
+        for (let i = 0; i < n; i++) {
+            const [a, b] = ends(i);
+            assert.ok(Math.abs(a.z - face) < 1 * K, `streak ${i} starts at the bank (${((a.z - face) / K).toFixed(1)}K)`);
+            assert.ok(b.z <= s.zFar + 1 * K, `streak ${i} stays on the far river`);
+            // Upright: on screen it leans exactly as a plumb line from its
+            // foot does (the camera looks down a little, so plumb lines
+            // off the middle lean too).
+            const pa = a.clone().project(s.cam), pb = b.clone().project(s.cam);
+            const pv = a.clone().add(new T.Vector3(0, 20 * K, 0)).project(s.cam);
+            const lean = (pb.x - pa.x) / (pb.y - pa.y), plumb = (pv.x - pa.x) / (pv.y - pa.y);
+            assert.ok(Math.abs(pb.y - pa.y) > 0.005, `streak ${i} has height on screen`);
+            assert.ok(Math.abs(lean - plumb) < 0.005, `streak ${i} upright on screen (sc ${sc}: lean ${lean.toFixed(4)}, plumb ${plumb.toFixed(4)})`);
+        }
+    }
+    // Brightness: the window colour x the lit share; none when the city is dark.
+    s.pose(1, 0);
+    s.at(61.5);
+    const c = new T.Color(), lit = [];
+    for (let i = 0; i < s.farRefl.count; i++) { s.farRefl.getColorAt(i, c); lit.push(c.r); }
+    s.windows.count = 150;
+    s.at(61.5);
+    for (let i = 0; i < s.farRefl.count; i++) {
+        s.farRefl.getColorAt(i, c);
+        assert.ok(Math.abs(c.r - lit[i] / 2) < 1e-6, 'half the windows, half as bright');
+    }
+    s.windows.count = 0;
+    s.at(61.5);
+    assert.equal(s.farRefl.count, 0, 'a dark city casts none');
+    assert.equal(s.farRiver.visible, true, 'the water stays');
+    // The sky's sheen follows the sky's brightness.
+    s.windows.count = 300;
+    s.at(61.5);
+    const g0 = s.farSheen.material.color.r;
+    assert.ok(Math.abs(g0 - 0.5 * f.c.ROAD_SHEEN_STR) < 1e-9);
+    s.skyMat.color.setScalar(0.5);
+    s.at(61.5);
+    assert.ok(Math.abs(s.farSheen.material.color.r - g0 / 2) < 1e-9);
+    // Shimmer by song time: same time, same streaks; time moves them.
+    s.skyMat.color.setScalar(1);
+    s.at(61.5);
+    const e0 = ends(0)[1].z;
+    s.at(61.5);
+    assert.equal(ends(0)[1].z, e0);
+    s.at(61.9);
+    assert.notEqual(ends(0)[1].z, e0);
+});
+
+test('road wiring: the far river is built, ordered, updated after the dressing, hidden in Lite and torn down', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    // Updated at the end of the bridge dressing (after the skyline and the approach).
+    assert.match(src, /if \(s\.refl\.count !== nr \|\| nr > 0\) \{[^\n]*\}\n\s*_bgRoadUpdateFarRiver\(s, now, lite\);\n    \}/);
+    // Built: the water shares the valley's material; the bank rides with the city.
+    assert.match(src, /s\.farWater = new T\.Mesh\(reflGeo, s\.water\.material\);/);
+    assert.match(src, /s\.skyNode\.add\(s\.bank\);/);
+    assert.match(src, /s\.farRiver = new T\.Object3D\(\);/);
+    // Drawn with the water, its reflections and the towers.
+    assert.match(src, /if \(s\.farWater\) s\.farWater\.renderOrder = ROAD_WATER_ORDER;/);
+    assert.match(src, /if \(s\.farSheen\) s\.farSheen\.renderOrder = ROAD_REFL_ORDER;/);
+    assert.match(src, /if \(s\.farRefl\) s\.farRefl\.renderOrder = ROAD_REFL_ORDER;/);
+    assert.match(src, /if \(s\.bank\) s\.bank\.renderOrder = -2;/);
+    // Lite hides it at once.
+    assert.match(src, /s\.brTowers, s\.brBeacons, s\.brCables, s\.water, s\.refl, s\.farRefl\]\) \{\n\s*if \(m\) m\.count = 0;/);
+    assert.match(src, /if \(s\.farRiver\) s\.farRiver\.visible = false;\n\s*if \(s\.bank\) s\.bank\.visible = false;/);
+    // The sheen takes the theme's sky glow.
+    assert.match(src, /c\.setHex\(_roadMixHex\(clear, ROAD_SKY_GLOW_HEX, 0\.55\)\);[^\n]*\n\s*s\.glowLin\[0\] = c\.r; s\.glowLin\[1\] = c\.g; s\.glowLin\[2\] = c\.b;/);
+    // Torn down.
+    assert.match(src, /s\.water, s\.refl, s\.farRefl\]\) m\?\.dispose\?\.\(\);/);
+    assert.match(src, /s\.farRiver = s\.farWater = s\.farSheen = s\.farRefl = s\.bank = null;/);
 });

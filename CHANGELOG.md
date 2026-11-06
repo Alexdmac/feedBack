@@ -84,8 +84,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like the signs near the hit line, cable stays down to the railings outside
   the road, and red beacons on top. A river runs along the valley floor with
   reflections of the city's windows and neon that glitter on a hot run and
-  go dark with gloom. The street lamps on the bridge turn a cooler white.
-  Lite keeps the deck and railings only. A new "Night road bridges" setting
+  go dark with gloom. Past the road's end the river runs on to a dark bank
+  under the city, so no sky shows below the skyline: it catches the sky's glow
+  near the far bank, and each lit tower casts thin shimmering streaks across
+  it (fewer as windows go out, none when the city is dark). The bank moves
+  with the city as it draws nearer over the outro. The street lamps on the
+  bridge turn a cooler white. Lite keeps the deck and railings only. A new "Night road bridges" setting
   (on by default) turns it off.
 - **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
   (Off, 120, 60, 30) that draws the highway at most that many times a second,

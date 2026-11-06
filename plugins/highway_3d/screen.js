@@ -4584,6 +4584,23 @@
     const ROAD_REFL_X_IN = 30 * K;        // nearest a streak comes to the road's edge
     // Reflection brightness: (base + heat) * (1 - gloom share) * (0.5 + intensity), clamped.
     const ROAD_REFL_BASE = 0.4, ROAD_REFL_HEAT = 0.6, ROAD_REFL_GLOOM = 0.85, ROAD_REFL_MAX = 1.0;
+    // The far river (Full, while a bridge reaches the road's far end): past
+    // the road's end the water runs on to a dark bank under the city, so no
+    // sky shows below the skyline. It rises gently from the valley's water
+    // to just under the bank's lip (all of it lies past the fog, so the
+    // slope never shows), takes a sheen of the sky's glow toward the far
+    // bank, and the lit windows streak across it. Its depth follows the
+    // bridge at the road's end. The bank (tower colour, in the city's node,
+    // so the approach carries it) stands just in front of the towers' faces.
+    const ROAD_BANK_FRONT = 5 * K;           // in front of the towers' faces
+    const ROAD_BANK_LIP = 10 * K;            // its top above the water
+    const ROAD_SHEEN_STR = 0.45;             // x the sky's glow, at the far bank
+    const ROAD_FAR_REFL_PER = 2;             // streaks per tower
+    const ROAD_FAR_REFL_W = 0.1;             // a streak's width, as a share of its tower's
+    const ROAD_FAR_REFL_X = 0.22;            // ...off the tower's middle, either side
+    const ROAD_FAR_REFL_LEN_MIN = 160 * K, ROAD_FAR_REFL_LEN_MAX = 460 * K;
+    const ROAD_FAR_REFL_STR = 0.6;           // x the window colour x the lit share
+    const ROAD_FAR_LIFT = 0.3 * K;           // the sheen, then the streaks, over the water
     // On a bridge the lamp heads (and their pools) take a cooler white.
     const ROAD_BRIDGE_LAMP_R = 0.78, ROAD_BRIDGE_LAMP_G = 0.9, ROAD_BRIDGE_LAMP_B = 1.0;
     // Soft round additive points sized in pixels from the live viewport
@@ -4648,6 +4665,8 @@
         c.setHex(_roadMixHex(ground, ROAD_HILL_TOP_HEX, ROAD_HILL_TOP_LIFT));
         s.groundHi[0] = c.r; s.groundHi[1] = c.g; s.groundHi[2] = c.b;
         s.hillDirty = true;
+        c.setHex(_roadMixHex(clear, ROAD_SKY_GLOW_HEX, 0.55));   // the far river's sheen
+        s.glowLin[0] = c.r; s.glowLin[1] = c.g; s.glowLin[2] = c.b;
         if (s.skyMat) {
             const old = s.skyTex;
             s.skyTex = _roadSkyTexture(
@@ -4778,10 +4797,12 @@
     function _bgRoadEnterLite(s, why, minFps) {
         if (!s || !s.posts) return;
         for (const m of [s.joints, s.pools, s.fogFar, s.fogSide, s.rain, s.windows, s.neon,
-            s.brTowers, s.brBeacons, s.brCables, s.water, s.refl]) {
+            s.brTowers, s.brBeacons, s.brCables, s.water, s.refl, s.farRefl]) {
             if (m) m.count = 0;
         }
         for (let i = 0; i < s.brCross.length; i++) s.brCross[i].visible = false;
+        if (s.farRiver) s.farRiver.visible = false;
+        if (s.bank) s.bank.visible = false;
         s.hillDirty = true;                  // re-lay the hills once, at rest
         if (why) _bgRoadLogQuality(s, why, minFps);
     }
@@ -5205,6 +5226,7 @@
         if (s.brCables.count !== nc || nc > 0) { s.brCables.count = nc; s.brCables.instanceMatrix.needsUpdate = true; }
         if (s.water.count !== nw || nw > 0) { s.water.count = nw; s.water.instanceMatrix.needsUpdate = true; }
         if (s.refl.count !== nr || nr > 0) { s.refl.count = nr; s.refl.instanceMatrix.needsUpdate = true; }
+        _bgRoadUpdateFarRiver(s, now, lite);
     }
     // The deepest bridge mask over z among the spans in view (0 = none).
     function _bgRoadBridgeMaskAt(s, z) {
@@ -5216,6 +5238,87 @@
             if (v > m) m = v;
         }
         return m;
+    }
+    // The far river (see ROAD_BANK_FRONT): shown while a bridge reaches the
+    // road's far end, as deep there as the valley. Its frame (s.farRiver)
+    // sits at the bank's face, wherever the approach brought the city, +z
+    // toward the viewer, tilted so the water meets the valley's at the
+    // road's end. Each tower casts thin streaks from the bank toward the
+    // viewer (upright on screen, like the valley's), as bright as the
+    // windows and the share of them lit, shimmering by song time. Runs
+    // after the skyline (lit windows, sky) and the approach (the city's pose).
+    function _bgRoadUpdateFarRiver(s, now, lite) {
+        const fr = s.farRiver;
+        if (!fr || !s.bank) return;
+        const m = !lite && s.brN > 0 ? _bgRoadBridgeMaskAt(s, s.zFar) : 0;
+        if (!(m > 0.02)) {
+            if (fr.visible) fr.visible = false;
+            if (s.bank.visible) s.bank.visible = false;
+            if (s.farRefl.count !== 0) s.farRefl.count = 0;
+            return;
+        }
+        const sc = s.skySc;
+        const zb = s.skyBaseZ + (ROAD_APPROACH_FRONT + ROAD_BANK_FRONT) * sc;
+        const yb = s.groundY - ROAD_BANK_LIP * m;
+        const dz = s.zFar - zb, dy = yb - (s.groundY + (s.waterY - s.groundY) * m);
+        const len = Math.sqrt(dz * dz + dy * dy);
+        const tilt = Math.atan2(dy, dz);
+        fr.position.set(0, yb, zb);
+        fr.rotation.x = tilt;
+        s.farWater.position.z = len / 2;
+        s.farWater.scale.z = len;
+        s.farSheen.position.z = len / 2;
+        s.farSheen.scale.z = len;
+        // The sky's glow, as bright as the sky is now.
+        const g = s.glowLin, k = ROAD_SHEEN_STR * m * s.skyMat.color.r;
+        s.farSheen.material.color.setRGB(g[0] * k, g[1] * k, g[2] * k);
+        if (!fr.visible) fr.visible = true;
+        // The bank's top stays on the ground; its foot (grown with the
+        // city) stays under the water.
+        s.bank.scale.y = (ROAD_BANK_LIP + ROAD_WATER_LIFT) * m;
+        if (!s.bank.visible) s.bank.visible = true;
+        const tb = s.towerBuf, nt = s.towers.count, d = s.dummy, c = s.tmpColor;
+        const share = s.nWindows > 0 ? s.windows.count / s.nWindows : 0;
+        const wc = s.windowMat.color, seed = s.seed;
+        // A streak lies where the water meets the upright plane through its
+        // foot (on the bank's face) and the camera, so it stands upright on
+        // screen however steep the water gets: in the frame, along
+        // (dx * cos(tilt), dz) of the camera's offset (dx, dz) from the foot.
+        const cp = s.cam && s.cam.position;
+        const camX = cp ? cp.x - s.cx : 0, camZ = cp ? cp.z : s.zNear * 0.5;
+        const ct = Math.cos(tilt);
+        let nr = 0;
+        if (share > 0) {
+            for (let i = 0; i < nt; i++) {
+                const w = tb.w[i] * K * sc;
+                for (let j = 0; j < ROAD_FAR_REFL_PER; j++) {
+                    const q = i * ROAD_FAR_REFL_PER + j;
+                    const hl = _roadHash01(q, 61, seed), hp = _roadHash01(q, 62, seed);
+                    const sh = 0.75 + 0.25 * Math.sin(2 * Math.PI * (now * (0.3 + 0.5 * hl) + hp));
+                    let l = (ROAD_FAR_REFL_LEN_MIN + (ROAD_FAR_REFL_LEN_MAX - ROAD_FAR_REFL_LEN_MIN) * hl) * sh * m;
+                    if (l > len) l = len;
+                    const x = tb.x[i] * K * sc + (j & 1 ? 1 : -1) * ROAD_FAR_REFL_X * w;
+                    const yaw = Math.atan2((x - camX) * ct, zb - camZ);
+                    // From the foot toward the viewer: against the yaw's axis.
+                    d.position.set(x - Math.sin(yaw) * l / 2, ROAD_FAR_LIFT * 2, -Math.cos(yaw) * l / 2);
+                    d.rotation.set(0, yaw, 0);
+                    d.scale.set(ROAD_FAR_REFL_W * w, 1, l);
+                    d.updateMatrix();
+                    s.farRefl.setMatrixAt(nr, d.matrix);
+                    const f = ROAD_FAR_REFL_STR * share * m * (0.3 + 0.7 * _roadHash01(q, 63, seed));
+                    c.setRGB(wc.r * f, wc.g * f, wc.b * f);
+                    s.farRefl.setColorAt(nr, c);
+                    nr++;
+                }
+            }
+            d.rotation.set(0, 0, 0);
+            d.scale.set(1, 1, 1);
+        }
+        if (s.farRefl.count !== nr || nr > 0) {
+            s.farRefl.count = nr;
+            s.farRefl.instanceMatrix.needsUpdate = true;
+            if (s.farRefl.instanceColor) s.farRefl.instanceColor.needsUpdate = true;
+        }
     }
     // One finale rocket: launched from the city in front of the skyline,
     // straight up to a burst over it; sides alternate, out from the road's
@@ -5557,6 +5660,11 @@
             for (const m of [s.brTowers, s.brBeacons, s.brCables]) if (m) m.renderOrder = ROAD_GROUND_ORDER;
             if (s.water) s.water.renderOrder = ROAD_WATER_ORDER;
             if (s.refl) s.refl.renderOrder = ROAD_REFL_ORDER;
+            // The far river likewise; its bank draws with the towers.
+            if (s.farWater) s.farWater.renderOrder = ROAD_WATER_ORDER;
+            if (s.farSheen) s.farSheen.renderOrder = ROAD_REFL_ORDER;
+            if (s.farRefl) s.farRefl.renderOrder = ROAD_REFL_ORDER;
+            if (s.bank) s.bank.renderOrder = -2;
             // Gantries join the gameplay group order (see ROAD_GANTRY_ORDER):
             // a Group's renderOrder is the group order of its children.
             for (let i = 0; i < s.signs.length; i++) {
@@ -6093,6 +6201,8 @@
                     // its reflections, and the crossbeams (gantry pattern);
                     // headTint: the lamp heads carry a bridge tint now.
                     brTowers: null, brBeacons: null, brCables: null, water: null, refl: null, reflMat: null,
+                    farRiver: null, farWater: null, farSheen: null, farRefl: null, bank: null,
+                    glowLin: [0, 0, 0],
                     brCross: [], brCrossMats: [],
                     brTowerX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W + ROAD_BR_TOWER_W / 2,
                     brFloorY: groundY - ROAD_VALLEY_D,
@@ -6228,6 +6338,41 @@
                         m.count = 0;
                         m.frustumCulled = false;
                         root.add(m);
+                    }
+                    // The far river (see _bgRoadUpdateFarRiver): a frame at
+                    // the bank's face holding the water (the valley's
+                    // material), the sky's sheen and a streak per tower
+                    // (additive and unfogged like the city, fading toward
+                    // the viewer; the instance colours carry the brightness).
+                    s.farRiver = new T.Object3D();   // not a Group: no sort group of its own
+                    s.farRiver.visible = false;
+                    root.add(s.farRiver);
+                    s.farWater = new T.Mesh(reflGeo, s.water.material);
+                    const fade = (g, f) => {
+                        const uv = g.attributes.uv, col = new Float32Array(uv.count * 3);
+                        for (let i = 0; i < uv.count; i++) col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = f(uv.getY(i));
+                        g.setAttribute('color', new T.BufferAttribute(col, 3));
+                        g.rotateX(-Math.PI / 2);     // uv y = 1: the far edge (-z)
+                        return g;
+                    };
+                    s.farSheen = new T.Mesh(geo(fade(new T.PlaneGeometry(1, 1, 1, 6), (v) => v * v * v)),
+                        mat(new T.MeshBasicMaterial({
+                            color: 0x000000, vertexColors: true, fog: false, transparent: true,
+                            depthWrite: false, blending: T.AdditiveBlending,
+                        })));
+                    s.farSheen.position.y = ROAD_FAR_LIFT;
+                    s.farRefl = new T.InstancedMesh(geo(fade(new T.PlaneGeometry(1, 1), (v) => 0.1 + 0.9 * v)),
+                        mat(new T.MeshBasicMaterial({
+                            color: 0xffffff, vertexColors: true, fog: false, transparent: true,
+                            depthWrite: false, blending: T.AdditiveBlending,
+                        })), ROAD_TOWER_POOL * ROAD_FAR_REFL_PER);
+                    for (let i = 0; i < ROAD_TOWER_POOL * ROAD_FAR_REFL_PER; i++) s.farRefl.setColorAt(i, s.headColor);
+                    s.farRefl.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                    s.farRefl.count = 0;
+                    for (const m of [s.farWater, s.farSheen, s.farRefl]) {
+                        m.scale.x = m === s.farRefl ? 1 : ROAD_SKY_W;
+                        m.frustumCulled = false;
+                        s.farRiver.add(m);
                     }
                     const crossGeo = geo(new T.BoxGeometry(s.brTowerX * 2 + ROAD_BR_TOWER_W, ROAD_BR_CROSS_H, ROAD_BR_TOWER_W));
                     for (let i = 0; i < ROAD_BRIDGE_POOL * 2; i++) {
@@ -6379,6 +6524,19 @@
                     m.count = 0;
                     m.frustumCulled = false;
                     s.skyNode.add(m);
+                }
+                // The far river's bank (see ROAD_BANK_FRONT): a unit box with
+                // its top at the ground and its face at the front, scaled
+                // down into the water per frame.
+                {
+                    const bankGeo = geo(new T.BoxGeometry(1, 1, 1));
+                    bankGeo.translate(0, -0.5, -0.5);
+                    s.bank = new T.Mesh(bankGeo, mat(new T.MeshBasicMaterial({ color: ROAD_TOWER_COLOR, fog: false })));
+                    s.bank.position.set(0, groundY, s.skylineZ + ROAD_APPROACH_FRONT + ROAD_BANK_FRONT);
+                    s.bank.scale.set(ROAD_SKY_W, 1, ROAD_APPROACH_FRONT + ROAD_BANK_FRONT + ROAD_SKY_GAP);
+                    s.bank.visible = false;
+                    s.bank.frustumCulled = false;
+                    s.skyNode.add(s.bank);
                 }
                 s.skyMat = mat(new T.MeshBasicMaterial({ color: 0xffffff, fog: false, depthWrite: false }));
                 s.sky = new T.Mesh(geo(new T.PlaneGeometry(ROAD_SKY_W, ROAD_SKY_ABOVE + ROAD_SKY_BELOW)), s.skyMat);
@@ -6715,7 +6873,7 @@
                     s.towers, s.windows, s.neon,
                     s.pools, s.fogFar, s.fogSide, s.rain,
                     s.deck, s.beams, s.balusters, s.rails,
-                    s.brTowers, s.brBeacons, s.brCables, s.water, s.refl]) m?.dispose?.();
+                    s.brTowers, s.brBeacons, s.brCables, s.water, s.refl, s.farRefl]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
                 // Textures this style owns: one per gantry, and the sky.
@@ -6740,6 +6898,7 @@
                 s.fogMat = s.fogFarMat = s.rainMat = s.poolTex = s.fogTex = null;
                 s.deck = s.beams = s.balusters = s.rails = s.deckMat = null;
                 s.brTowers = s.brBeacons = s.brCables = s.water = s.refl = s.reflMat = null;
+                s.farRiver = s.farWater = s.farSheen = s.farRefl = s.bank = null;
                 s.brCross.length = 0;
                 s.brCrossMats.length = 0;
                 s.brSections = undefined;
