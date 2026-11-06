@@ -73,8 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into a dark valley on both sides, easing in and out over the first and last
   0.6 s. Back-to-back bridge sections make one bridge; sections under 1.5 s
   get none; "prebridge" and "solo/bridge" don't count. It moves with the song
-  like the rest of the road. Lite keeps the deck and railings but no valley.
-  A new "Night road bridges" setting (on by default) turns it off.
+  like the rest of the road. A pair of towers stands just inside each end,
+  clear of the section's sign, with a crossbeam over the road that fades
+  like the signs near the hit line, cable stays down to the railings outside
+  the road, and red beacons on top. A river runs along the valley floor with
+  reflections of the city's windows and neon that glitter on a hot run and
+  go dark with gloom. The street lamps on the bridge turn a cooler white.
+  Lite keeps the deck and railings only. A new "Night road bridges" setting
+  (on by default) turns it off.
 - **FPS cap.** Player > Visualization & quality has a new "FPS cap" setting
   (Off, 120, 60, 30) that draws the highway at most that many times a second,
   to save power and heat or leave the graphics card free for other apps. Off

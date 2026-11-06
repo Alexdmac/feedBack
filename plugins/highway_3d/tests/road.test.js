@@ -85,7 +85,17 @@ function load() {
         '\nthis._roadBridgeSpans = _roadBridgeSpans;' +
         '\nthis._roadMakeBridgeSlots = _roadMakeBridgeSlots;' +
         '\nthis._roadPlaceBridges = _roadPlaceBridges;' +
-        '\nthis._roadBridgeMask = _roadBridgeMask;', sandbox);
+        '\nthis._roadBridgeMask = _roadBridgeMask;' +
+        '\nthis.ROAD_BRIDGE_TOWER_OFF_S = ROAD_BRIDGE_TOWER_OFF_S;' +
+        '\nthis.ROAD_BRIDGE_CABLES = ROAD_BRIDGE_CABLES;' +
+        '\nthis.ROAD_BRIDGE_BACKSTAYS = ROAD_BRIDGE_BACKSTAYS;' +
+        '\nthis.ROAD_BRIDGE_CABLE_DT = ROAD_BRIDGE_CABLE_DT;' +
+        '\nthis._roadBridgeTowerT = _roadBridgeTowerT;' +
+        '\nthis._roadCableDt = _roadCableDt;' +
+        '\nthis._roadCableAnchorT = _roadCableAnchorT;' +
+        '\nthis.ROAD_REFL_POOL = ROAD_REFL_POOL;' +
+        '\nthis._roadMakeReflBuf = _roadMakeReflBuf;' +
+        '\nthis._roadReflectLayout = _roadReflectLayout;', sandbox);
     return sandbox;
 }
 
@@ -1656,7 +1666,7 @@ test('bridge wiring: deck order, valley, fog skip, Lite, setting', () => {
     assert.match(src, /s\.hills\[i\]\.mesh\.renderOrder = ROAD_GROUND_ORDER;/);
     // Placed before the hills (valley) and the weather (fog over the valley);
     // Lite keeps the deck and parapets but carves no valley.
-    const upd = src.indexOf('_bgRoadUpdateBridge(s, chart);   // before the hills');
+    const upd = src.indexOf('_bgRoadUpdateBridge(s, chart, lite);   // before the hills');
     assert.ok(upd > 0 && upd < src.indexOf('_bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0), !lite);'));
     assert.ok(upd < src.indexOf('_bgRoadUpdateWeather(s, chart, t);'));
     assert.match(src, /if \(s\.brN > 0 && k > 0\) k \*= 1 - _bgRoadBridgeMaskAt\(s, z\);/);
@@ -1670,5 +1680,296 @@ test('bridge wiring: deck order, valley, fog skip, Lite, setting', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8');
     assert.match(html, /id="h3d-bg-road-bridges"[\s\S]{0,200}window\.h3dBgSetBridges\(this\.checked\)/);
     // Disposed with the road.
-    assert.match(src, /s\.deck, s\.beams, s\.balusters, s\.rails\]\) m\?\.dispose\?\.\(\);/);
+    assert.match(src, /s\.deck, s\.beams, s\.balusters, s\.rails,\n\s*s\.brTowers, s\.brBeacons, s\.brCables, s\.water, s\.refl\]\) m\?\.dispose\?\.\(\);/);
+});
+
+test('_roadBridgeTowerT: towers stand inside each end, clear of the gantries there', () => {
+    const r = load();
+    const off = r.ROAD_BRIDGE_TOWER_OFF_S;
+    assert.equal(off, 0.4);
+    assert.ok(Math.abs(r._roadBridgeTowerT(60, 82, 0, off) - 60.4) < 1e-9);
+    assert.ok(Math.abs(r._roadBridgeTowerT(60, 82, 1, off) - 81.6) < 1e-9);
+    // A short span keeps them a quarter in from each end, never crossed.
+    assert.ok(Math.abs(r._roadBridgeTowerT(10, 11.5, 0, off) - 10.375) < 1e-9);
+    assert.ok(Math.abs(r._roadBridgeTowerT(10, 11.5, 1, off) - 11.125) < 1e-9);
+    for (const len of [1.5, 2, 3, 8, 40]) {
+        const a = r._roadBridgeTowerT(0, len, 0, off), b = r._roadBridgeTowerT(0, len, 1, off);
+        assert.ok(a > 0 && b < len && a < b, `${len} s: ${a} .. ${b}`);
+        assert.ok(a >= Math.min(off, len / 4) - 1e-9 && len - b >= Math.min(off, len / 4) - 1e-9);
+    }
+});
+
+test('_roadCableAnchorT: stays reach toward the middle, back stays toward the end, all on the span', () => {
+    const r = load();
+    const off = r.ROAD_BRIDGE_TOWER_OFF_S, n = r.ROAD_BRIDGE_CABLES, nb = r.ROAD_BRIDGE_BACKSTAYS;
+    assert.equal(r._roadCableDt(0, 22, off, n, r.ROAD_BRIDGE_CABLE_DT), r.ROAD_BRIDGE_CABLE_DT, 'long span: the widest spacing');
+    assert.ok(Math.abs(r._roadCableDt(0, 1.5, off, n, 1) - (0.75 - 0.375) / n) < 1e-9, 'short span: up to the middle');
+    assert.equal(r._roadCableDt(0, 1.5, off, 0, 1), 0);
+    for (const [t0, t1] of [[60, 82], [10, 11.5], [0, 3], [5, 9]]) {
+        const mid = (t0 + t1) / 2;
+        for (let e = 0; e < 2; e++) {
+            const tt = r._roadBridgeTowerT(t0, t1, e, off);
+            let prev = tt;
+            for (let k = 0; k < n; k++) {
+                const a = r._roadCableAnchorT(t0, t1, e, k, off);
+                assert.ok(a >= t0 - 1e-9 && a <= t1 + 1e-9, 'on the span');
+                if (e === 0) assert.ok(a > prev && a <= mid + 1e-9, `near pair, stay ${k}: ${a}`);
+                else assert.ok(a < prev && a >= mid - 1e-9, `far pair, stay ${k}: ${a}`);
+                prev = a;
+            }
+            prev = tt;
+            for (let k = n; k < n + nb; k++) {
+                const a = r._roadCableAnchorT(t0, t1, e, k, off);
+                if (e === 0) assert.ok(a < prev && a > t0, `near pair, back stay ${k}: ${a}`);
+                else assert.ok(a > prev && a < t1, `far pair, back stay ${k}: ${a}`);
+                prev = a;
+            }
+        }
+    }
+});
+
+test('_roadReflectLayout: per seed, both sides, spread along the road, warm and neon colours', () => {
+    const r = load();
+    const a = r._roadMakeReflBuf(r.ROAD_REFL_POOL), b = r._roadMakeReflBuf(r.ROAD_REFL_POOL);
+    const n = r._roadReflectLayout(1234, r.ROAD_REFL_POOL, 10, a);
+    assert.equal(n, r.ROAD_REFL_POOL);
+    assert.equal(r._roadReflectLayout(1234, 500, 10, b), r.ROAD_REFL_POOL, 'capped to the buffer');
+    assert.deepEqual(Array.from(a.x), Array.from(b.x), 'same seed, same layout');
+    let warm = 0, neon = 0, left = 0;
+    for (let i = 0; i < n; i++) {
+        assert.ok(a.side[i] === 1 || a.side[i] === -1);
+        if (a.side[i] < 0) left++;
+        assert.ok(a.x[i] >= 0 && a.x[i] < 1 && a.len[i] >= 0 && a.len[i] < 1 && a.phase[i] >= 0 && a.phase[i] < 1);
+        assert.ok(a.z[i] >= i / n && a.z[i] < (i + 1) / n, 'stratified along the road');
+        assert.ok(a.rate[i] >= 0.5 && a.rate[i] < 1.5);
+        assert.ok(a.col[i] >= -1 && a.col[i] < 10);
+        if (a.col[i] < 0) warm++; else neon++;
+    }
+    assert.equal(left, n / 2);
+    assert.ok(warm > n * 0.4 && neon > n * 0.2, `warm ${warm}, neon ${neon}`);
+    r._roadReflectLayout(99, r.ROAD_REFL_POOL, 10, b);
+    assert.notDeepEqual(Array.from(a.x), Array.from(b.x), 'another song, another river');
+    r._roadReflectLayout(99, r.ROAD_REFL_POOL, 0, b);
+    assert.ok(Array.from(b.col).every((c) => c === -1), 'no neon strips: all warm');
+});
+
+// _bgRoadUpdateBridgeDress runs outside the pure block (THREE meshes), so
+// it is sliced with recording stand-ins for the meshes and the dummy.
+function loadDress() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const fnText = (sig) => {
+        const a = src.indexOf(sig);
+        assert.ok(a > 0, `${sig} not found`);
+        const open = src.indexOf('{', a);
+        let depth = 0;
+        for (let i = open; i < src.length; i++) {
+            if (src[i] === '{') depth++;
+            else if (src[i] === '}' && --depth === 0) return src.slice(a, i + 1);
+        }
+        throw new Error('unbalanced');
+    };
+    const line = (re) => {
+        const m = src.match(re);
+        assert.ok(m, `${re} not found`);
+        return m[0];
+    };
+    const block = src.slice(src.indexOf(START), src.indexOf(END));
+    const dress = line(/\n    const ROAD_BR_TOWER_W[\s\S]*?const ROAD_BRIDGE_LAMP_R[^\n]*\n/);
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;\n' + block
+        + line(/\n    const ROAD_GANTRY_COLOR = [^\n]*\n/)
+        + line(/\n    const ROAD_SIGN_FADE_FAR = [^\n]*\n/)
+        + line(/\n    const ROAD_SIGN_NEAR_OPACITY = [^\n]*\n/)
+        + line(/\n    const ROAD_PARAPET_H = [^\n]*\n/)
+        + dress
+        + fnText('    function _bgRoadBridgeMaskAt(') + '\n'
+        + fnText('    function _bgRoadUpdateBridgeDress(') + '\n'
+        + 'this.dress = _bgRoadUpdateBridgeDress; this.place = _roadPlaceBridges;'
+        + 'this.slots = _roadMakeBridgeSlots; this.reflBuf = _roadMakeReflBuf; this.layout = _roadReflectLayout;'
+        + 'this.c = { K, TS, ROAD_BR_TOWER_H, ROAD_REFL_POOL, ROAD_BRIDGE_POOL, ROAD_BRIDGE_CABLES, ROAD_BRIDGE_BACKSTAYS,'
+        + ' ROAD_SIGN_NEAR_OPACITY, ROAD_BR_CABLE_POOL };', sandbox);
+    return sandbox;
+}
+function dressRoad(f) {
+    const { K, TS } = f.c;
+    const rec = () => ({
+        count: 0, at: [], instanceMatrix: { needsUpdate: false },
+        setMatrixAt(i, m) { this.at[i] = { ...m }; },
+    });
+    const d = {
+        p: [0, 0, 0], sc: [1, 1, 1], ry: 0, look: null, matrix: null,
+        position: { set(x, y, z) { d.p = [x, y, z]; } },
+        scale: { set(x, y, z) { d.sc = [x, y, z]; } },
+        rotation: { set(_x, y) { d.ry = y; } },
+        quaternion: { identity() { d.look = null; } },
+        lookAt(x, y, z) { d.look = [x, y, z]; },
+        updateMatrix() { d.matrix = { p: d.p.slice(), sc: d.sc.slice(), ry: d.ry, look: d.look && d.look.slice() }; },
+    };
+    const halfW = 132 * K, zNear = 2 * TS, zFar = -4 * TS;
+    const s = {
+        dummy: d, zNear, zFar, baseY: 2 * K, cx: 0, cam: { position: { x: 0, z: 110 * K } },
+        brTowerX: halfW + 31.5 * K, parapetX: halfW + 27 * K, valleyX: halfW + K,
+        brFloorY: -111 * K, waterY: -106 * K, waterX: halfW * 5,
+        reflBuf: f.reflBuf(f.c.ROAD_REFL_POOL), nRefl: 0, reflXSpan: halfW * 3.2, reflZNear: zNear * 0.25, reflZFar: zFar * 0.6,
+        brSlots: f.slots(f.c.ROAD_BRIDGE_POOL), brN: 0, brSpans: [{ t0: 60, t1: 82 }],
+        brTowers: rec(), brBeacons: rec(), brCables: rec(), water: rec(), refl: rec(),
+        reflMat: { color: { v: -1, setRGB(r) { this.v = r; } } },
+        brCross: [], brCrossMats: [], mood: { heat: 0, gloom: 0 }, intensity: 0.5,
+    };
+    for (let i = 0; i < f.c.ROAD_BRIDGE_POOL * 2; i++) {
+        s.brCross.push({ visible: false, position: { z: 0 } });
+        s.brCrossMats.push({ opacity: -1 });
+    }
+    s.nRefl = f.layout(7, f.c.ROAD_REFL_POOL, 10, s.reflBuf);
+    s.at = (now, lite = false) => {
+        s.brN = f.place(s.brSpans, now, TS, zNear / TS, 4, s.brSlots, f.c.ROAD_BRIDGE_POOL);
+        f.dress(s, now, lite);
+        return s;
+    };
+    return s;
+}
+
+test('_bgRoadUpdateBridgeDress: towers, crossbeams, stays and water per span; Lite keeps none', () => {
+    const f = loadDress();
+    const { K, TS } = f.c;
+    const s = dressRoad(f);
+    const stays = f.c.ROAD_BRIDGE_CABLES + f.c.ROAD_BRIDGE_BACKSTAYS;
+    // 1.6 s before the near towers: one pair, its crossbeam, its stays.
+    s.at(58.8);
+    assert.equal(s.brN, 1);
+    assert.equal(s.brTowers.count, 2);
+    assert.equal(s.brBeacons.count, 2);
+    assert.equal(s.brCables.count, 2 * stays);
+    assert.equal(s.water.count, 2);
+    assert.equal(s.brCross.filter((g) => g.visible).length, 1);
+    const tz = -(60.4 - 58.8) * TS;
+    for (let i = 0; i < 2; i++) {
+        const t = s.brTowers.at[i];
+        assert.ok(Math.abs(t.p[2] - tz) < 1e-9, 'tower at the span start + 0.4 s');
+        assert.ok(Math.abs(Math.abs(t.p[0]) - s.brTowerX) < 1e-9, 'outside the sidewalk');
+        assert.equal(t.p[1], s.brFloorY, 'from the valley floor');
+        assert.ok(Math.abs(t.p[1] + t.sc[1] - (s.baseY + f.c.ROAD_BR_TOWER_H)) < 1e-9, 'three lamp posts tall');
+    }
+    assert.ok(Math.abs(s.brCross[0].position.z - tz) < 1e-9);
+    // Every stay runs from its tower down to the parapet on the same side:
+    // outside the road, so it never crosses the board on screen.
+    for (let i = 0; i < s.brCables.count; i++) {
+        const c = s.brCables.at[i];
+        assert.ok(c.look, 'aimed');
+        const side = Math.sign(c.look[0]);
+        assert.ok(Math.abs(c.look[0] - side * s.parapetX) < 1e-9, 'anchored on the parapet line');
+        const x0 = 2 * c.p[0] - c.look[0];
+        assert.ok(Math.abs(x0 - side * s.brTowerX) < 1e-9, 'tied on at the tower');
+        assert.ok(c.look[1] <= s.baseY + 9 * K + 1e-9 && 2 * c.p[1] - c.look[1] > s.baseY + 0.5 * f.c.ROAD_BR_TOWER_H);
+        assert.ok(c.sc[2] > 0);
+    }
+    // On the long bridge's middle: no towers, the water stays.
+    s.at(70);
+    assert.equal(s.brTowers.count, 0);
+    assert.equal(s.brCables.count, 0);
+    assert.equal(s.water.count, 2);
+    assert.equal(s.brCross.filter((g) => g.visible).length, 0, 'crossbeams hidden again');
+    // The far towers come into view no more than the road's length ahead.
+    s.at(81.6 - 4.05);
+    assert.equal(s.brTowers.count, 0, 'past the far end of the road');
+    s.at(81.6 - 3.9);
+    assert.equal(s.brTowers.count, 2);
+    // Lite: deck and parapets only (drawn elsewhere), none of this.
+    s.at(58.8, true);
+    assert.equal(s.brTowers.count + s.brCables.count + s.water.count + s.refl.count, 0);
+    assert.equal(s.brCross.filter((g) => g.visible).length, 0);
+    // No bridge in view: nothing.
+    s.at(40);
+    assert.equal(s.brN, 0);
+    assert.equal(s.brTowers.count + s.brCables.count + s.water.count + s.refl.count, 0);
+});
+
+test('_bgRoadUpdateBridgeDress: the crossbeam fades like a gantry sign toward the hit line', () => {
+    const f = loadDress();
+    const s = dressRoad(f);
+    const near = f.c.ROAD_SIGN_NEAR_OPACITY;
+    s.at(60.4 - 2.5);
+    assert.equal(s.brCrossMats[0].opacity, 1, 'solid well ahead');
+    s.at(60.4 - 1);
+    const mid = s.brCrossMats[0].opacity;
+    assert.ok(mid > near && mid < 1, `easing (${mid})`);
+    s.at(60.4);
+    assert.ok(Math.abs(s.brCrossMats[0].opacity - near) < 1e-9, 'see-through at the hit line');
+    s.at(61);
+    assert.ok(Math.abs(s.brCrossMats[0].opacity - near) < 1e-9, 'and past it');
+});
+
+test('_bgRoadUpdateBridgeDress: reflections only over the water, upright on screen, brightness by heat and gloom', () => {
+    const f = loadDress();
+    const { K } = f.c;
+    const s = dressRoad(f);
+    s.at(70);
+    const n = s.refl.count;
+    assert.ok(n > f.c.ROAD_REFL_POOL / 2, `most of the river shows mid-bridge (${n})`);
+    for (let i = 0; i < n; i++) {
+        const r = s.refl.at[i];
+        assert.ok(Math.abs(r.p[0]) > s.valleyX + 29 * K, 'beside the road, over the valley');
+        assert.ok(Math.abs(r.p[1] - (s.waterY + 0.5 * K)) < 1e-9, 'on the water');
+        // Aimed at the camera's foot, so the streak stands upright on screen.
+        const want = Math.atan2(r.p[0] - s.cam.position.x, r.p[2] - s.cam.position.z);
+        assert.ok(Math.abs(r.ry - want) < 1e-9);
+        assert.ok(r.sc[2] > 0);
+    }
+    // They hold still in z while the water scrolls past (they mirror far lights).
+    const z0 = s.refl.at[0].p[2];
+    s.at(70.5);
+    assert.equal(s.refl.at[0].p[2], z0);
+    // Entering: only those over the water (past the ramp's midpoint) show.
+    s.at(59.5);
+    const few = s.refl.count;
+    assert.ok(few < n, `entering (${few} of ${n})`);
+    for (let i = 0; i < few; i++) assert.ok(s.refl.at[i].p[2] <= -(60 - 59.5) * f.c.TS + 1e-9);
+    // Hot run: a glittering river; gloom: a black one.
+    s.mood.heat = 0; s.mood.gloom = 0; s.at(70);
+    const calm = s.reflMat.color.v;
+    s.mood.heat = 1; s.at(70);
+    const hot = s.reflMat.color.v;
+    s.mood.gloom = 1; s.at(70);
+    const gloomy = s.reflMat.color.v;
+    assert.ok(hot > calm && calm > gloomy && gloomy < 0.2, `${calm} ${hot} ${gloomy}`);
+});
+
+test('bridge dressing wiring: orders, the gantry pattern, Lite, lamp tint, per-song reflections', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const num = (name) => Number(src.match(new RegExp(`(?:const |, )${name} = (-?[0-9.]+)[,;]`))[1]);
+    // Below or beside the road, drawn before it (the asphalt is -1 and writes no depth).
+    assert.ok(num('ROAD_GROUND_ORDER') < num('ROAD_WATER_ORDER'));
+    assert.ok(num('ROAD_WATER_ORDER') < num('ROAD_REFL_ORDER'));
+    assert.ok(num('ROAD_REFL_ORDER') < -1 && -1 < num('ROAD_DECK_ORDER'));
+    assert.match(src, /for \(const m of \[s\.brTowers, s\.brBeacons, s\.brCables\]\) if \(m\) m\.renderOrder = ROAD_GROUND_ORDER;/);
+    assert.match(src, /if \(s\.water\) s\.water\.renderOrder = ROAD_WATER_ORDER;/);
+    assert.match(src, /if \(s\.refl\) s\.refl\.renderOrder = ROAD_REFL_ORDER;/);
+    // The crossbeam is the one bridge part over the board: the gantry pattern.
+    assert.match(src, /const g = s\.brCross\[i\];\n\s*g\.renderOrder = 0;\n\s*for \(let c = 0; c < g\.children\.length; c\+\+\) g\.children\[c\]\.renderOrder = ROAD_GANTRY_ORDER;/);
+    const build = src.slice(src.indexOf('        road: {\n            build('), src.indexOf('            update(s, bands, dt, t, chart) {'));
+    assert.match(build, /const cm = mat\(new T\.MeshBasicMaterial\(\{ color: ROAD_GANTRY_COLOR, transparent: true, depthWrite: false \}\)\);/);
+    assert.match(build, /mat\(new T\.MeshBasicMaterial\(\{ color: ROAD_WATER_HEX, depthWrite: false \}\)\)/);
+    assert.match(build, /s\.reflMat = mat\(new T\.MeshBasicMaterial\(\{ color: 0xffffff, depthWrite: false \}\)\);/);
+    // Lite drops it at once, and update() keeps it so.
+    const lite = src.slice(src.indexOf('    function _bgRoadEnterLite('), src.indexOf('    function _bgRoadLeaveLite('));
+    assert.match(lite, /s\.brTowers, s\.brBeacons, s\.brCables, s\.water, s\.refl\]\)/);
+    assert.match(lite, /s\.brCross\[i\]\.visible = false;/);
+    assert.match(src, /const n = lite \? 0 : s\.brN;/);
+    assert.match(src, /_bgRoadUpdateBridgeDress\(s, now, lite\);\n    \}/);
+    // Lamp heads: a colour per head (white at build), tinted on the bridge,
+    // all back to white once it has passed; the pools follow.
+    assert.match(build, /s\.beatHeads\.setColorAt\(i, s\.headColor\);\n\s*s\.barHeads\.setColorAt\(i, s\.headColor\);/);
+    assert.match(src, /const bm = _bgRoadBridgeMaskAt\(s, slot\.z\);/);
+    assert.match(src, /if \(tint\) heads\.setColorAt\(hi, hc\);/);
+    assert.match(src, /c\.setRGB\(lr \* a \* tr, lg \* a \* tg, lb \* a \* tb\);/);
+    assert.match(src, /\} else if \(s\.headTint\) \{[\s\S]{0,200}for \(let i = 0; i < ROAD_POST_POOL \* 2; i\+\+\)/);
+    assert.ok(num('ROAD_BRIDGE_LAMP_R') < 1 && num('ROAD_BRIDGE_LAMP_B') === 1, 'cooler, not darker in blue');
+    // Reflections are laid out per song with the skyline (the city's neon).
+    const sky = src.slice(src.indexOf('    function _bgRoadLayoutSkyline('), src.indexOf('    function _bgRoadNeonHex('));
+    assert.match(sky, /_bgRoadLayoutReflections\(s\);\n    \}/);
+    assert.match(src, /s\.tmpColor\.setHex\(_bgRoadNeonHex\(i, seed\)\);/);
+    // Torn down with the road.
+    assert.match(src, /s\.brTowers = s\.brBeacons = s\.brCables = s\.water = s\.refl = s\.reflMat = null;/);
+    assert.match(src, /s\.brCross\.length = 0;/);
 });

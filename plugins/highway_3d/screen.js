@@ -4099,6 +4099,67 @@
         u = u < 0 ? 0 : u;
         return u * u * (3 - 2 * u);
     }
+    // Bridge dressing (step 4). Each span has two tower pairs, `off` s
+    // inside its ends so they stand clear of the section gantries there
+    // (a quarter of a short span at most); end 0 is the near (start) pair.
+    const ROAD_BRIDGE_TOWER_OFF_S = 0.4;
+    const ROAD_BRIDGE_CABLES = 5;         // stays per tower toward the span's middle
+    const ROAD_BRIDGE_BACKSTAYS = 2;      // and toward its own end
+    const ROAD_BRIDGE_CABLE_DT = 0.35;    // s between a tower's anchors at most
+    function _roadBridgeTowerT(t0, t1, end, off) {
+        const o = Math.min(off, (t1 - t0) / 4);
+        return end === 0 ? t0 + o : t1 - o;
+    }
+    // Spacing (s) of a tower's anchors toward the middle: n of them reach
+    // the span's middle at most, and sit no further apart than dtMax.
+    function _roadCableDt(t0, t1, off, n, dtMax) {
+        const o = Math.min(off, (t1 - t0) / 4);
+        const reach = (t1 - t0) / 2 - o;
+        return n > 0 && reach > 0 ? Math.min(dtMax, reach / n) : 0;
+    }
+    // Song time of stay k's anchor on the parapet: k < ROAD_BRIDGE_CABLES
+    // step from the tower toward the middle, the rest are back stays spread
+    // evenly between the tower and its end of the span.
+    function _roadCableAnchorT(t0, t1, end, k, off) {
+        const o = Math.min(off, (t1 - t0) / 4);
+        const tt = end === 0 ? t0 + o : t1 - o;
+        const dir = end === 0 ? 1 : -1;     // toward the middle
+        if (k < ROAD_BRIDGE_CABLES) {
+            return tt + dir * (k + 1) * _roadCableDt(t0, t1, off, ROAD_BRIDGE_CABLES, ROAD_BRIDGE_CABLE_DT);
+        }
+        return tt - dir * (k - ROAD_BRIDGE_CABLES + 1) * o / (ROAD_BRIDGE_BACKSTAYS + 1);
+    }
+    // Reflections on the bridge water: streaks that hold still while the
+    // water scrolls past (they mirror far lights). Per song from the seed:
+    // the side, x as a fraction across the valley, z as a fraction along
+    // the road (stratified), a length fraction, a colour (-1 = the warm
+    // windows, else one of the city's nStrips neon strips) and a shimmer
+    // rate (Hz) and phase.
+    const ROAD_REFL_POOL = 96;
+    const ROAD_REFL_WARM = 0.6;           // share that mirror the warm windows
+    function _roadMakeReflBuf(cap) {
+        return {
+            side: new Int8Array(cap), x: new Float32Array(cap), z: new Float32Array(cap),
+            len: new Float32Array(cap), col: new Int8Array(cap),
+            rate: new Float32Array(cap), phase: new Float32Array(cap),
+        };
+    }
+    function _roadReflectLayout(seed, n, nStrips, out) {
+        const m = n < out.x.length ? n : out.x.length;
+        const ns = nStrips > 0 ? nStrips : 0;
+        for (let i = 0; i < m; i++) {
+            out.side[i] = (i & 1) ? 1 : -1;
+            out.x[i] = _roadHash01(i, 41, seed);
+            out.z[i] = (i + _roadHash01(i, 42, seed)) / m;
+            out.len[i] = _roadHash01(i, 43, seed);
+            const h = _roadHash01(i, 44, seed);
+            out.col[i] = h < ROAD_REFL_WARM || ns === 0 ? -1
+                : Math.min(ns - 1, Math.floor((h - ROAD_REFL_WARM) / (1 - ROAD_REFL_WARM) * ns));
+            out.rate[i] = 0.5 + _roadHash01(i, 45, seed);
+            out.phase[i] = _roadHash01(i, 46, seed);
+        }
+        return m;
+    }
 
     // Arrival finale (step 2): when the last note crosses the hit line the
     // city wakes up and a volley goes up over the skyline. n rockets spread
@@ -4404,6 +4465,29 @@
     const ROAD_PARAPET_POOL = 128;        // balusters (and rail pieces), both sides
     const ROAD_VALLEY_D = 110 * K;        // valley floor below the ground
     const ROAD_VALLEY_DARK = 0.7;         // the floor darkens toward black
+    // Bridge dressing (Full only). Towers about three lamp posts tall rise
+    // from the valley floor just outside each sidewalk; a crossbeam spans
+    // each pair near the top, like a gantry; stays fan down from the towers
+    // to the parapet tops on the same side, so only the crossbeam ever
+    // crosses the board on screen. The towers and stays draw with the
+    // ground, the water and its reflections after it, all before the road.
+    const ROAD_BR_TOWER_W = 7 * K, ROAD_BR_TOWER_H = 180 * K;   // height above the sidewalk
+    const ROAD_BR_TOWER_HEX = ROAD_GANTRY_COLOR;
+    const ROAD_BR_CROSS_H = 6 * K, ROAD_BR_CROSS_AT = 0.95;      // crossbeam height, as a share of the tower's
+    const ROAD_BR_BEACON_R = 2.2 * K, ROAD_BR_BEACON_HEX = 0xd83a30;
+    const ROAD_BR_CABLE_W = 1.1 * K, ROAD_BR_CABLE_HEX = 0xa8adb5;
+    const ROAD_BR_CABLE_LO = 0.6, ROAD_BR_CABLE_HI = 0.9;      // tie-on heights on the tower, nearest anchor lowest
+    const ROAD_BR_CABLE_POOL = ROAD_BRIDGE_POOL * 4 * (ROAD_BRIDGE_CABLES + ROAD_BRIDGE_BACKSTAYS);
+    const ROAD_WATER_LIFT = 5 * K;        // above the floor: the ramps' walls hide its ends
+    const ROAD_WATER_HEX = 0x050a14;
+    const ROAD_WATER_ORDER = -1.04, ROAD_REFL_ORDER = -1.03;
+    const ROAD_REFL_W = 2.6 * K, ROAD_REFL_LEN_MIN = 60 * K, ROAD_REFL_LEN_MAX = 180 * K;
+    const ROAD_REFL_LIFT = 0.5 * K;
+    const ROAD_REFL_X_IN = 30 * K;        // nearest a streak comes to the road's edge
+    // Reflection brightness: (base + heat) * (1 - gloom share) * (0.5 + intensity), clamped.
+    const ROAD_REFL_BASE = 0.4, ROAD_REFL_HEAT = 0.6, ROAD_REFL_GLOOM = 0.85, ROAD_REFL_MAX = 1.0;
+    // On a bridge the lamp heads (and their pools) take a cooler white.
+    const ROAD_BRIDGE_LAMP_R = 0.78, ROAD_BRIDGE_LAMP_G = 0.9, ROAD_BRIDGE_LAMP_B = 1.0;
     // Soft round additive points sized in pixels from the live viewport
     // (uScale, set in onBeforeRender). Size 0 = a dead slot, moved off screen.
     const ROAD_FW_VERT = [
@@ -4594,9 +4678,11 @@
     // probe fails (or at build for a fixed Lite); update() keeps it that way.
     function _bgRoadEnterLite(s, why, minFps) {
         if (!s || !s.posts) return;
-        for (const m of [s.joints, s.pools, s.fogFar, s.fogSide, s.rain, s.windows, s.neon]) {
+        for (const m of [s.joints, s.pools, s.fogFar, s.fogSide, s.rain, s.windows, s.neon,
+            s.brTowers, s.brBeacons, s.brCables, s.water, s.refl]) {
             if (m) m.count = 0;
         }
+        for (let i = 0; i < s.brCross.length; i++) s.brCross[i].visible = false;
         s.hillDirty = true;                  // re-lay the hills once, at rest
         if (why) _bgRoadLogQuality(s, why, minFps);
     }
@@ -4811,8 +4897,9 @@
     // the song length change), the deck and edge beams clipped to the
     // road, and the parapets by song time with their ramps. The valley is
     // carved by _bgRoadUpdateHills and the side fog banks over it are
-    // skipped in _bgRoadUpdateWeather, both from s.brSlots / s.brN.
-    function _bgRoadUpdateBridge(s, chart) {
+    // skipped in _bgRoadUpdateWeather, both from s.brSlots / s.brN. The
+    // towers, stays and water follow in _bgRoadUpdateBridgeDress.
+    function _bgRoadUpdateBridge(s, chart, lite) {
         if (!s.deck) return;
         if (chart && (chart.sections !== s.brSections || chart.duration !== s.brDur)) {
             s.brSections = chart.sections;
@@ -4878,6 +4965,121 @@
             s.balusters.instanceMatrix.needsUpdate = true;
             s.rails.instanceMatrix.needsUpdate = true;
         }
+        _bgRoadUpdateBridgeDress(s, now, lite);
+    }
+    // Bridge dressing, per span in view (Lite keeps the deck and parapets
+    // only): a tower pair inside each end, clear of the section gantries,
+    // rising from the valley floor with a red beacon on top; a crossbeam
+    // over the road near the top in the gantry pattern (see-through,
+    // easing to ROAD_SIGN_NEAR_OPACITY at the hit line); stays fanning down
+    // to the parapet tops on the same side. Below, the water at the valley
+    // floor and its reflections: streaks that hold still in z (they mirror
+    // far lights), shown over the water, shimmering by song time, brighter
+    // with heat and darker with gloom.
+    function _bgRoadUpdateBridgeDress(s, now, lite) {
+        if (!s.brTowers) return;
+        const n = lite ? 0 : s.brN;
+        const d = s.dummy;
+        const ramp = ROAD_BRIDGE_RAMP_S * TS;
+        const fadeLen = ROAD_SIGN_FADE_FAR * TS;
+        const topY = s.baseY + ROAD_BR_TOWER_H;
+        const nStays = ROAD_BRIDGE_CABLES + ROAD_BRIDGE_BACKSTAYS;
+        // How far a tower's stays reach from it at most (z units).
+        const reach = (ROAD_BRIDGE_CABLES * ROAD_BRIDGE_CABLE_DT + ROAD_BRIDGE_TOWER_OFF_S) * TS;
+        let nt = 0, nc = 0, nw = 0, nx = 0, nr = 0;
+        for (let i = 0; i < n; i++) {
+            const sl = s.brSlots[i];
+            const zA = Math.min(sl.zN, s.zNear), zB = Math.max(sl.zF, s.zFar);
+            if (zA > zB) {
+                for (let side = -1; side <= 1; side += 2) {
+                    d.position.set(side * s.waterX, s.waterY, (zA + zB) / 2);
+                    d.scale.set(1, 1, zA - zB);
+                    d.updateMatrix();
+                    s.water.setMatrixAt(nw++, d.matrix);
+                }
+            }
+            for (let e = 0; e < 2; e++) {
+                const z = -(_roadBridgeTowerT(sl.t0, sl.t1, e, ROAD_BRIDGE_TOWER_OFF_S) - now) * TS;
+                // Not past the road's far end, like the gantries (a tower
+                // there would stand fogged against the sky above the city),
+                // nor so far behind that its stays can't reach the view.
+                if (z < s.zFar || z > s.zNear + reach) continue;
+                for (let side = -1; side <= 1; side += 2) {
+                    const x = side * s.brTowerX, xa = side * s.parapetX;
+                    d.position.set(x, s.brFloorY, z);
+                    d.scale.set(1, topY - s.brFloorY, 1);
+                    d.updateMatrix();
+                    s.brTowers.setMatrixAt(nt, d.matrix);
+                    d.position.set(x, topY + ROAD_BR_BEACON_R, z);
+                    d.scale.set(1, 1, 1);
+                    d.updateMatrix();
+                    s.brBeacons.setMatrixAt(nt, d.matrix);
+                    nt++;
+                    // Stays toward the middle (the nearest anchor ties on
+                    // lowest), then the back stays toward the span's end.
+                    for (let k = 0; k < nStays; k++) {
+                        const za = -(_roadCableAnchorT(sl.t0, sl.t1, e, k, ROAD_BRIDGE_TOWER_OFF_S) - now) * TS;
+                        const m = _roadBridgeMask(za, sl.zN, sl.zF, ramp);
+                        const ya = s.baseY + ROAD_PARAPET_H * (m > 0.02 ? m : 0.02);
+                        const f = k < ROAD_BRIDGE_CABLES ? k / (ROAD_BRIDGE_CABLES - 1)
+                            : (k - ROAD_BRIDGE_CABLES) / Math.max(1, ROAD_BRIDGE_BACKSTAYS - 1);
+                        const yt = s.baseY + ROAD_BR_TOWER_H * (ROAD_BR_CABLE_LO + (ROAD_BR_CABLE_HI - ROAD_BR_CABLE_LO) * f);
+                        const dx = xa - x, dy = ya - yt, dz = za - z;
+                        d.position.set(x + dx / 2, yt + dy / 2, z + dz / 2);
+                        d.lookAt(xa, ya, za);
+                        d.scale.set(1, 1, Math.sqrt(dx * dx + dy * dy + dz * dz));
+                        d.updateMatrix();
+                        s.brCables.setMatrixAt(nc++, d.matrix);
+                    }
+                    d.quaternion.identity();
+                }
+                const g = s.brCross[nx], cm = s.brCrossMats[nx];
+                nx++;
+                g.position.z = z;
+                let f = fadeLen > 0 ? -z / fadeLen : 1;
+                f = f < 0 ? 0 : (f > 1 ? 1 : f);
+                f = f * f * (3 - 2 * f);
+                cm.opacity = ROAD_SIGN_NEAR_OPACITY + (1 - ROAD_SIGN_NEAR_OPACITY) * f;
+                if (!g.visible) g.visible = true;
+            }
+        }
+        if (n > 0) {
+            // A reflection lies along the line from the viewer to the light,
+            // so each streak points at the camera's foot: on screen they
+            // stand upright instead of running toward the horizon.
+            const cp = s.cam && s.cam.position;
+            const camX = cp ? cp.x - s.cx : 0, camZ = cp ? cp.z : s.zNear * 0.5;
+            const rb = s.reflBuf;
+            const zr = s.reflZNear - s.reflZFar;
+            for (let i = 0; i < s.nRefl; i++) {
+                const z = s.reflZFar + rb.z[i] * zr;
+                const m = _bgRoadBridgeMaskAt(s, z);
+                if (m < 0.5) continue;
+                const sh = 0.6 + 0.4 * Math.sin(2 * Math.PI * (now * rb.rate[i] + rb.phase[i]));
+                const len = (ROAD_REFL_LEN_MIN + (ROAD_REFL_LEN_MAX - ROAD_REFL_LEN_MIN) * rb.len[i]) * sh * m;
+                const x = rb.side[i] * (s.valleyX + ROAD_REFL_X_IN + rb.x[i] * s.reflXSpan);
+                d.position.set(x, s.waterY + ROAD_REFL_LIFT, z);
+                d.rotation.set(0, Math.atan2(x - camX, z - camZ), 0);
+                d.scale.set(ROAD_REFL_W, 1, len);
+                d.updateMatrix();
+                s.refl.setMatrixAt(nr++, d.matrix);
+            }
+            d.rotation.set(0, 0, 0);
+            const mood = s.mood;
+            let b = (ROAD_REFL_BASE + ROAD_REFL_HEAT * mood.heat) * (1 - ROAD_REFL_GLOOM * mood.gloom) * (0.5 + s.intensity);
+            b = b < 0 ? 0 : (b > ROAD_REFL_MAX ? ROAD_REFL_MAX : b);
+            s.reflMat.color.setRGB(b, b, b);
+        }
+        d.scale.set(1, 1, 1);
+        for (let i = nx; i < s.brCross.length; i++) if (s.brCross[i].visible) s.brCross[i].visible = false;
+        if (s.brTowers.count !== nt || nt > 0) {
+            s.brTowers.count = nt; s.brBeacons.count = nt;
+            s.brTowers.instanceMatrix.needsUpdate = true;
+            s.brBeacons.instanceMatrix.needsUpdate = true;
+        }
+        if (s.brCables.count !== nc || nc > 0) { s.brCables.count = nc; s.brCables.instanceMatrix.needsUpdate = true; }
+        if (s.water.count !== nw || nw > 0) { s.water.count = nw; s.water.instanceMatrix.needsUpdate = true; }
+        if (s.refl.count !== nr || nr > 0) { s.refl.count = nr; s.refl.instanceMatrix.needsUpdate = true; }
     }
     // The deepest bridge mask over z among the spans in view (0 = none).
     function _bgRoadBridgeMaskAt(s, z) {
@@ -5104,8 +5306,7 @@
             }
             d.updateMatrix();
             s.neon.setMatrixAt(nn, d.matrix);
-            const pi = Math.min(ROAD_NEON_PALETTE.length - 1, Math.floor(_roadHash01(i, 13, seed) * ROAD_NEON_PALETTE.length));
-            s.tmpColor.setHex(ROAD_NEON_PALETTE[pi]);
+            s.tmpColor.setHex(_bgRoadNeonHex(i, seed));
             s.neon.setColorAt(nn, s.tmpColor);
             nn++;
         }
@@ -5115,6 +5316,25 @@
         s.nNeon = nn;                        // Auto restores it when it leaves Lite
         s.neon.instanceMatrix.needsUpdate = true;
         if (s.neon.instanceColor) s.neon.instanceColor.needsUpdate = true;
+        _bgRoadLayoutReflections(s);
+    }
+    // Neon strip i's colour for this seed (the skyline and its reflections).
+    function _bgRoadNeonHex(i, seed) {
+        const n = ROAD_NEON_PALETTE.length;
+        return ROAD_NEON_PALETTE[Math.min(n - 1, Math.floor(_roadHash01(i, 13, seed) * n))];
+    }
+    // The bridge water's reflections for this seed (once per song): most
+    // mirror the warm windows, the rest one of this city's neon strips.
+    function _bgRoadLayoutReflections(s) {
+        if (!s.refl) return;
+        const rb = s.reflBuf, seed = s.seed, c = s.tmpColor;
+        s.nRefl = _roadReflectLayout(seed, ROAD_REFL_POOL, ROAD_NEON_POOL, rb);
+        for (let i = 0; i < s.nRefl; i++) {
+            if (rb.col[i] < 0) c.setRGB(ROAD_WIN_WARM_R, ROAD_WIN_WARM_G, ROAD_WIN_WARM_B);
+            else c.setHex(_bgRoadNeonHex(rb.col[i], seed));
+            s.refl.setColorAt(i, c);
+        }
+        if (s.refl.instanceColor) s.refl.instanceColor.needsUpdate = true;
     }
     // Per-frame skyline: re-lay out on a new song, light windows by song
     // progress, breathe windows with mids and neon with treble, warm the
@@ -5148,10 +5368,22 @@
             // depth): a bridge's valley falls below the road, and seen
             // from above its far walls project over the nearer road.
             for (let i = 0; i < s.hills.length; i++) if (s.hills[i].mesh) s.hills[i].mesh.renderOrder = ROAD_GROUND_ORDER;
+            // The bridge's towers and stays draw with the ground; the water
+            // (no depth writes) and its reflections after it, all still
+            // before the road: they stand or lie below or beside it.
+            for (const m of [s.brTowers, s.brBeacons, s.brCables]) if (m) m.renderOrder = ROAD_GROUND_ORDER;
+            if (s.water) s.water.renderOrder = ROAD_WATER_ORDER;
+            if (s.refl) s.refl.renderOrder = ROAD_REFL_ORDER;
             // Gantries join the gameplay group order (see ROAD_GANTRY_ORDER):
             // a Group's renderOrder is the group order of its children.
             for (let i = 0; i < s.signs.length; i++) {
                 const g = s.signs[i];
+                g.renderOrder = 0;
+                for (let c = 0; c < g.children.length; c++) g.children[c].renderOrder = ROAD_GANTRY_ORDER;
+            }
+            // So do the bridge crossbeams, the one bridge part over the board.
+            for (let i = 0; i < s.brCross.length; i++) {
+                const g = s.brCross[i];
                 g.renderOrder = 0;
                 for (let c = 0; c < g.children.length; c++) g.children[c].renderOrder = ROAD_GANTRY_ORDER;
             }
@@ -5669,6 +5901,21 @@
                     beamY: roadY + ROAD_SIDEWALK_H - ROAD_BEAM_H / 2,
                     parapetX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W - ROAD_RAIL_W / 2,
                     valleyX: halfW + 1 * K,
+                    // Bridge dressing: towers, beacons, stays, the water and
+                    // its reflections, and the crossbeams (gantry pattern);
+                    // headTint: the lamp heads carry a bridge tint now.
+                    brTowers: null, brBeacons: null, brCables: null, water: null, refl: null, reflMat: null,
+                    brCross: [], brCrossMats: [],
+                    brTowerX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W + ROAD_BR_TOWER_W / 2,
+                    brFloorY: groundY - ROAD_VALLEY_D,
+                    waterY: groundY - ROAD_VALLEY_D + ROAD_WATER_LIFT,
+                    waterX: halfW + halfW * (ROAD_GROUND_MUL - 1) / 2,
+                    reflBuf: _roadMakeReflBuf(ROAD_REFL_POOL), nRefl: 0,
+                    // Streaks spread over the valley you can see: the fog
+                    // hides the road's last stretch, the camera its near end.
+                    reflXSpan: halfW * (ROAD_GROUND_MUL - 1) * 0.4,
+                    reflZNear: zNear * 0.25, reflZFar: zFar * 0.6,
+                    headTint: false, headColor: new T.Color(1, 1, 1),
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -5763,6 +6010,50 @@
                         root.add(m);
                     }
                 }
+                // Bridge dressing (see _bgRoadUpdateBridgeDress; Full only):
+                // towers (base at y 0, scaled in y), beacons, stays (unit
+                // length, aimed per frame), the water (a strip over each
+                // side's ground, scaled in z) and its reflection streaks
+                // (unit square, scaled per streak, coloured per song). The
+                // crossbeams follow the gantry pattern: a Group and a
+                // see-through material each.
+                {
+                    const towerGeo = geo(new T.BoxGeometry(ROAD_BR_TOWER_W, 1, ROAD_BR_TOWER_W));
+                    towerGeo.translate(0, 0.5, 0);
+                    s.brTowers = new T.InstancedMesh(towerGeo,
+                        mat(new T.MeshBasicMaterial({ color: ROAD_BR_TOWER_HEX })), ROAD_BRIDGE_POOL * 4);
+                    s.brBeacons = new T.InstancedMesh(geo(new T.SphereGeometry(ROAD_BR_BEACON_R, 8, 6)),
+                        mat(new T.MeshBasicMaterial({ color: ROAD_BR_BEACON_HEX })), ROAD_BRIDGE_POOL * 4);
+                    s.brCables = new T.InstancedMesh(geo(new T.BoxGeometry(ROAD_BR_CABLE_W, ROAD_BR_CABLE_W, 1)),
+                        mat(new T.MeshBasicMaterial({ color: ROAD_BR_CABLE_HEX })), ROAD_BR_CABLE_POOL);
+                    const waterGeo = geo(new T.PlaneGeometry(groundW, 1));
+                    waterGeo.rotateX(-Math.PI / 2);
+                    s.water = new T.InstancedMesh(waterGeo,
+                        mat(new T.MeshBasicMaterial({ color: ROAD_WATER_HEX, depthWrite: false })), ROAD_BRIDGE_POOL * 2);
+                    s.reflMat = mat(new T.MeshBasicMaterial({ color: 0xffffff, depthWrite: false }));
+                    const reflGeo = geo(new T.PlaneGeometry(1, 1));
+                    reflGeo.rotateX(-Math.PI / 2);
+                    s.refl = new T.InstancedMesh(reflGeo, s.reflMat, ROAD_REFL_POOL);
+                    for (let i = 0; i < ROAD_REFL_POOL; i++) s.refl.setColorAt(i, s.headColor);
+                    for (const m of [s.brTowers, s.brBeacons, s.brCables, s.water, s.refl]) {
+                        m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                        m.count = 0;
+                        m.frustumCulled = false;
+                        root.add(m);
+                    }
+                    const crossGeo = geo(new T.BoxGeometry(s.brTowerX * 2 + ROAD_BR_TOWER_W, ROAD_BR_CROSS_H, ROAD_BR_TOWER_W));
+                    for (let i = 0; i < ROAD_BRIDGE_POOL * 2; i++) {
+                        const g = new T.Group();
+                        const cm = mat(new T.MeshBasicMaterial({ color: ROAD_GANTRY_COLOR, transparent: true, depthWrite: false }));
+                        const bar = new T.Mesh(crossGeo, cm);
+                        bar.position.y = s.baseY + ROAD_BR_TOWER_H * ROAD_BR_CROSS_AT;
+                        g.add(bar);
+                        g.visible = false;
+                        root.add(g);
+                        s.brCross.push(g);
+                        s.brCrossMats.push(cm);
+                    }
+                }
 
                 // Fret-position lanes: dashed edge lines (dim, and bright
                 // for the lane in force now), lane-change diagonals and beat
@@ -5808,6 +6099,12 @@
                 s.barHeadMat = mat(new T.MeshBasicMaterial({ color: 0xffffff }));
                 s.beatHeads = new T.InstancedMesh(headGeo, s.beatHeadMat, cap);
                 s.barHeads = new T.InstancedMesh(headGeo, s.barHeadMat, cap);
+                // White per head (the material colour is the lamp's); a
+                // bridge tints the heads over it (see update()).
+                for (let i = 0; i < cap; i++) {
+                    s.beatHeads.setColorAt(i, s.headColor);
+                    s.barHeads.setColorAt(i, s.headColor);
+                }
                 for (const m of [s.posts, s.beatHeads, s.barHeads]) {
                     m.instanceMatrix.setUsage(T.DynamicDrawUsage);
                     m.count = 0;
@@ -6067,7 +6364,7 @@
                 s.rainAmt = _roadSmooth(ROAD_RAIN_START, ROAD_RAIN_FULL, s.mood.gloom);
                 _bgRoadUpdateFireworks(s, chart, playing, lite, dt);   // before the skyline: it reads the burst flash
                 _bgRoadUpdateSkyline(s, bands, chart);   // first: a new song re-seeds the hills too
-                _bgRoadUpdateBridge(s, chart);   // before the hills (valley) and the weather (fog over the valley)
+                _bgRoadUpdateBridge(s, chart, lite);   // before the hills (valley) and the weather (fog over the valley)
                 _bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0), !lite);
                 _bgRoadUpdateSigns(s, chart);
                 _bgRoadUpdateWeather(s, chart, t);
@@ -6109,6 +6406,9 @@
                 const poolLen = poolGrow * (1 + ROAD_POOL_WET_LEN * wet);
                 const poolX = x - ROAD_POOL_IN, poolY = s.jointY + 0.1 * K;
                 const c = s.tmpColor;
+                // On a bridge the heads and their pools take a cooler white,
+                // eased with the span's ramps (per head colour over white).
+                const tint = s.brN > 0, hc = s.headColor;
                 let np = 0, nBeat = 0, nBar = 0, nPool = 0;
                 for (let i = 0; i < n; i++) {
                     if (!s.postKeep[i]) continue;   // skipped beat in the bar: no light
@@ -6116,6 +6416,14 @@
                     const h = slot.isBar ? ROAD_POST_H * ROAD_BAR_H_MUL : ROAD_POST_H;
                     const hs = slot.isBar ? ROAD_BAR_HEAD_MUL : 1;
                     const heads = slot.isBar ? s.barHeads : s.beatHeads;
+                    let tr = 1, tg = 1, tb = 1;
+                    if (tint) {
+                        const bm = _bgRoadBridgeMaskAt(s, slot.z);
+                        tr = 1 - bm * (1 - ROAD_BRIDGE_LAMP_R);
+                        tg = 1 - bm * (1 - ROAD_BRIDGE_LAMP_G);
+                        tb = 1 - bm * (1 - ROAD_BRIDGE_LAMP_B);
+                        hc.setRGB(tr, tg, tb);
+                    }
                     for (let side = -1; side <= 1; side += 2) {
                         d.position.set(side * x, y0, slot.z);
                         d.scale.set(1, h, 1);
@@ -6124,14 +6432,16 @@
                         d.position.y = y0 + h;
                         d.scale.set(hs, hs, hs);
                         d.updateMatrix();
-                        heads.setMatrixAt(slot.isBar ? nBar++ : nBeat++, d.matrix);
+                        const hi = slot.isBar ? nBar++ : nBeat++;
+                        heads.setMatrixAt(hi, d.matrix);
+                        if (tint) heads.setColorAt(hi, hc);
                     }
                     if (pools) {
                         let f = 1 - (camZ - slot.z - fogNear) / fogSpan;
                         f = f < 0 ? 0 : (f > 1 ? 1 : f);
                         const a = poolStr * f * (slot.isBar ? ROAD_POOL_BAR_MUL : 1);
                         if (a > 0.003) {
-                            c.setRGB(lr * a, lg * a, lb * a);
+                            c.setRGB(lr * a * tr, lg * a * tg, lb * a * tb);
                             for (let side = -1; side <= 1; side += 2) {
                                 d.position.set(side * poolX, poolY, slot.z);
                                 d.scale.set(ROAD_POOL_RX * 2 * poolGrow, 1, ROAD_POOL_RZ * 2 * poolLen);
@@ -6154,6 +6464,21 @@
                 s.posts.instanceMatrix.needsUpdate = true;
                 if (nBeat) s.beatHeads.instanceMatrix.needsUpdate = true;
                 if (nBar) s.barHeads.instanceMatrix.needsUpdate = true;
+                if (tint) {
+                    if (nBeat) s.beatHeads.instanceColor.needsUpdate = true;
+                    if (nBar) s.barHeads.instanceColor.needsUpdate = true;
+                    s.headTint = true;
+                } else if (s.headTint) {
+                    // Off the bridge: every head back to white, once.
+                    hc.setRGB(1, 1, 1);
+                    for (let i = 0; i < ROAD_POST_POOL * 2; i++) {
+                        s.beatHeads.setColorAt(i, hc);
+                        s.barHeads.setColorAt(i, hc);
+                    }
+                    s.beatHeads.instanceColor.needsUpdate = true;
+                    s.barHeads.instanceColor.needsUpdate = true;
+                    s.headTint = false;
+                }
                 s.shown = np;
 
                 // Beat seams across the carriageway, same z as the posts, so
@@ -6190,7 +6515,8 @@
                     s.laneDim, s.laneBright, s.connectors, s.seams, s.joints,
                     s.towers, s.windows, s.neon,
                     s.pools, s.fogFar, s.fogSide, s.rain,
-                    s.deck, s.beams, s.balusters, s.rails]) m?.dispose?.();
+                    s.deck, s.beams, s.balusters, s.rails,
+                    s.brTowers, s.brBeacons, s.brCables, s.water, s.refl]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
                 // Textures this style owns: one per gantry, and the sky.
@@ -6214,6 +6540,9 @@
                 s.pools = s.fogFar = s.fogSide = s.rain = null;
                 s.fogMat = s.rainMat = s.poolTex = s.fogTex = null;
                 s.deck = s.beams = s.balusters = s.rails = s.deckMat = null;
+                s.brTowers = s.brBeacons = s.brCables = s.water = s.refl = s.reflMat = null;
+                s.brCross.length = 0;
+                s.brCrossMats.length = 0;
                 s.brSections = undefined;
                 if (s.fw) s.fw.onBeforeRender = () => {};
                 s.fw = null;
