@@ -31,6 +31,10 @@
     // Tuning names per instrument key (e.g. 'guitar-6', 'bass-4'), loaded from
     // GET /api/tunings. Falls back to empty arrays until the fetch resolves.
     let _tuningsByKey = {};
+    // Exact open-string MIDI notes per tuning name and instrument key (same
+    // shape as _tuningsByKey), from /api/tunings `tuningMidis`. Empty on an
+    // older server — offsetsForTuning() then falls back to the frequencies.
+    let _tuningMidisByKey = {};
     // Last instrument-coverage report for the current song (from the tuner plugin) —
     // drives a passive "different tuning" cue on the tuner badge. null = covered /
     // unknown / off the player.
@@ -103,6 +107,55 @@
             : '<span title="Assumed — not mic-verified" class="text-fb-textDim">&#9671;</span>';
     }
 
+    // Per-string semitone offsets from Standard for a named tuning of the
+    // selected instrument (index 0 = lowest string) — the same vocabulary as
+    // workingTuning offsets and the library's tuning_offsets. Exact MIDI notes
+    // first; the frequency ratio is the fallback. null when the name is unknown.
+    function offsetsForTuning(name) {
+        if (typeof name !== 'string' || !name) return null;
+        const key = settings.instrument + '-' + settings.string_count;
+        const midis = _tuningMidisByKey[key] || {};
+        const m = midis[name], ms = midis.Standard;
+        if (Array.isArray(m) && Array.isArray(ms) && m.length === ms.length) return m.map((v, i) => v - ms[i]);
+        const freqs = _tuningsByKey[key] || {};
+        const f = freqs[name], fs = freqs.Standard;
+        if (!Array.isArray(f) || !Array.isArray(fs) || f.length !== fs.length) return null;
+        const out = f.map((v, i) => Math.round(12 * Math.log2(Number(v) / Number(fs[i]))));
+        return out.every(Number.isFinite) ? out : null;
+    }
+
+    // The tuning the instrument card shows: the live working tuning when the
+    // host has one, else the saved profile tuning. Home's Song Library reads
+    // this to pick the songs it shuffles.
+    function currentTuning() {
+        let offsets = null;
+        try {
+            const wt = window.feedBack && window.feedBack.workingTuning;
+            const st = wt && typeof wt.get === 'function' ? wt.get() : null;
+            if (st && Array.isArray(st.offsets) && st.offsets.length) offsets = st.offsets.slice();
+        } catch (_) { /* capability absent — use the profile tuning */ }
+        if (!offsets) offsets = Array.isArray(settings.tuning) ? settings.tuning.slice() : offsetsForTuning(settings.tuning);
+        const wti = workingTuningInfo();
+        return {
+            instrument: settings.instrument,
+            stringCount: settings.string_count,
+            offsets: offsets,
+            label: wti ? wti.label : tuningLabel(),
+        };
+    }
+
+    // A tuning picked in the selector is the player saying "I'm in this tuning
+    // now", so the live working tuning follows it. Without this, the card kept
+    // the old working tuning's label after a pick. No-op without the capability.
+    function syncWorkingTuning(name) {
+        const wt = window.feedBack && window.feedBack.workingTuning;
+        const offsets = offsetsForTuning(name);
+        if (!wt || typeof wt.set !== 'function' || !offsets) return;
+        try {
+            wt.set({ offsets: offsets }, { instrument: { instrument: settings.instrument, stringCount: settings.string_count } });
+        } catch (_) { /* noop */ }
+    }
+
     // Tell the host which instrument is now selected, so workingTuning.get()
     // surfaces THIS instrument's own remembered tuning. No-op without the capability.
     function setWorkingInstrument(inst, sc) {
@@ -126,6 +179,7 @@
             // 440 and can land a semitone off at non-440 reference pitches.
             // Frequencies remain the fallback for older cached responses.
             const midisByKey = data.tuningMidis || {};
+            _tuningMidisByKey = midisByKey;
             TUNING_NOTE = {};
             for (const key of Object.keys(_tuningsByKey)) {
                 for (const [name, freqs] of Object.entries(_tuningsByKey[key])) {
@@ -532,7 +586,10 @@
             _setLeftyPref(b.getAttribute('data-val') === 'left');
             renderInstrument(); keepOpen();   // reflect the active pill; keep the menu open
         }));
-        menu.querySelector('[data-inst-tuning]').addEventListener('change', (e) => saveSettings({ tuning: e.target.value }));
+        menu.querySelector('[data-inst-tuning]').addEventListener('change', async (e) => {
+            const name = e.target.value;
+            if (await saveSettings({ tuning: name })) syncWorkingTuning(name);
+        });
         menu.querySelector('[data-inst-pathway]').addEventListener('change', (e) => saveSettings({ pathway: e.target.value }));
         const ref = menu.querySelector('[data-inst-ref]');
         ref.addEventListener('input', (e) => { menu.querySelector('[data-ref-val]').textContent = e.target.value + ' Hz'; });
@@ -568,7 +625,10 @@
             (active ? 'bg-fb-primary text-white' : 'bg-gray-800/50 text-fb-textDim hover:text-fb-text') + '">' + esc(label) + '</button>';
     }
 
-    window.v3Badges = { reload: async () => { await Promise.all([loadTunings(), loadSettings()]); renderInstrument(); renderTuner(); } };
+    window.v3Badges = {
+        reload: async () => { await Promise.all([loadTunings(), loadSettings()]); renderInstrument(); renderTuner(); },
+        currentTuning: currentTuning,
+    };
 
     async function boot() {
         await Promise.all([loadTunings(), loadSettings()]);

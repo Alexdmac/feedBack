@@ -52,6 +52,7 @@ import tailwind_rebuild
 # Extracted route modules. They import `appstate`, never `server` — one-way graph.
 from routers import audio_effects, artist_aliases, loops, playlists, ws_highway, ws_sync, chart, wanted, library_extras, shop, progression, profile, stats, version, diagnostics
 from routers import tunings as tunings_router
+from routers import vst_pictures
 import enrichment
 from routers import art as art_router
 from routers import settings as settings_router
@@ -1314,6 +1315,11 @@ app.include_router(profile.router)
 # Mounted here (registration order; /api/stats/{path} is last inside the router).
 # Implementation in lib/routers/stats.py.
 app.include_router(stats.router)
+
+
+# ── VST3 snapshot pictures for the Home VST panel ────────────────────────────
+# Implementation in lib/routers/vst_pictures.py.
+app.include_router(vst_pictures.router)
 
 
 # ── Progression (spec 010) ───────────────────────────────────────────────────

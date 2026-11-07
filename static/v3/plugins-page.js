@@ -63,6 +63,8 @@
         return f;
     }
     function frameUrl(f) { return f ? '/static/v3/pedals/' + f + '?v=' + FRAMES_VERSION : '/static/v3/pedal-frame.svg'; }
+    // The Home VST panel draws its plugins with the same pedal photos.
+    window.v3PedalSkins = { list: PEDAL_FRAMES.slice(), url: frameUrl };
 
     // Persisted collapsed state per board (category → true when collapsed).
     var COLLAPSE_KEY = 'v3.pedalboard.collapsed';

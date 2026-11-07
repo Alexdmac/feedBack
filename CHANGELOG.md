@@ -12,6 +12,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top bar is gone; RockStar no longer shows any support or donation links.
 
 ### Added
+- **VST panel on Home (desktop app).** A new panel under the hero shows the
+  VST plugins of the desktop app's plugin catalog as pictures, in a row as
+  tall as "Jump back in". The panel shows only the Neural DSP Archetype
+  plugins, and their tiles drop the word "Archetype" from the name. A
+  catalog with no Archetype plugin shows all plugins. The plugins loaded
+  last from the panel come first.
+  - A tile is a footswitch. A click on a plugin that is not in the signal
+    chain loads it and opens its window. A click on a plugin that is on
+    turns it off (bypass, so its settings stay). A click on a plugin that
+    is off turns it on again. A green rim shows "on", and a grey rim and a
+    dark picture show "off".
+  - Only one Archetype plugin is in the chain at a time. A load or a
+    turn-on removes the other Archetype plugins first.
+  - A tile in the chain has a small button that opens the plugin window.
+  - Pictures: the player's own picture comes first. Put image files (PNG,
+    JPEG or WebP) named after the plugins in one folder, for example
+    `Abasi.png` or `CoryWongX.png`. A part of the name at its start or its
+    end also matches, for example `MansoorX.png` for "Misha Mansoor X".
+    The folder is the new `vst_images_dir`
+    setting, or `vst_images` in the config folder. The new
+    `GET /api/vst/images` and `GET /api/vst/image/<file>` routes list and
+    serve these files, and only image files directly in that folder.
+  - Else a VST3 plugin with a snapshot in its bundle shows that picture.
+    The new `POST /api/vst/pictures` and `GET /api/vst/picture` routes find
+    and serve the snapshots. They serve only `*_snapshot*.png` files in the
+    `Contents/Resources/Snapshots` folder of a `.vst3` bundle.
+  - Else the tile shows a pedal photo of the Plugins page with the
+    plugin's initials.
+- **The tuning card picks the songs on Home.** The Home Song Library now
+  shows a random pick of twelve songs in the tuning on the tuning card. A new
+  tuning on the card changes the list immediately. "⇄ Shuffle" shows a new
+  pick, and "See all" opens the Song Library with a filter for that tuning.
+  When the library has no songs in the tuning, Home says so and links to the
+  full library.
 - **Night road background (3D Highway).** A new "Night road (procedural)"
   background style draws a dark city road under the fretboard, with a curb and
   sidewalk either side and street lights that pass the hit line on the beat
@@ -282,6 +316,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in that mode.
 
 ### Changed
+- **Home hero panel.** The heading, the paragraph, the "Patch Notes" line and
+  the Start Playing and Lessons buttons are gone from the hero. The hero is
+  now as tall as the Continue card. The tuner, profile and tuning cards move
+  from the top bar into the hero, in a centered row of semi-transparent glass
+  cards that scales to fill the panel. On every other screen the cards go
+  back to the top bar. A tuning pick on the tuning card now also sets the
+  working tuning, so the tuner and the Home songs follow it.
+- **"Jump back in" is 40% taller.** Its tiles are larger and show the artist
+  under the title. When the tiles do not all fit, the row scrolls sideways,
+  with paging buttons and a fade at the edges.
 - **Song Preview starts much sooner on a loose-folder song.** The first hover
   made the clip from the full song and also encoded the full song to MP3,
   which the clip never used: 2.5 to 2.7 s before the first sound. The clip
@@ -473,6 +517,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- **Empty Song Library after a tuning change.** A tuning or instrument change
+  before the first visit to the Song Library left that screen empty. The first
+  visit now builds the library.
 - **3D Highway streak effects follow the note detection skin again.** The
   tier-up ring, milestone burst and score pops read the skin from a storage
   key note detection never writes, so they stayed neon whatever skin was

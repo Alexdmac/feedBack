@@ -3841,8 +3841,14 @@
         }
         // A library scan / DLC-folder change marked the grid stale — re-fetch
         // from scratch instead of restoring a cached (possibly empty, pre-DLC)
-        // snapshot. Must win over every fast-path below.
-        if (_libraryDirty) { _libraryDirty = false; await reload(); return; }
+        // snapshot. Must win over every fast-path below. A grid that was never
+        // built has no DOM for reload() to fill, so it takes a full render().
+        if (_libraryDirty) {
+            _libraryDirty = false;
+            if (state.built && _chromeIntact()) await reload();
+            else await render();
+            return;
+        }
         // Keep the entry-point gates current (a Settings visit may have
         // toggled artist pages / external links). Fire-and-forget.
         refreshArtistPageGates();
@@ -4245,9 +4251,81 @@
     // Home (#v3-home) opens with the start of the library: the first page of
     // songs in the user's saved Songs sort, drawn with the SAME songCard() /
     // wireCards() as the grid, so play / ♥ / 🔖 / ⋮ / arrangement chips behave
-    // identically on both screens. Unfiltered on purpose (it's the front
-    // door) — search and filters live on the full Song Library page.
+    // identically on both screens. The Songs page's own search and filters do
+    // not apply here. With `opts.tuning` (the player's current tuning, from
+    // the Home tuning card) it shows a random pick of the songs in that tuning.
     let _previewToken = 0;
+
+    // Tuning offsets as numbers: the library's space-separated tuning_offsets
+    // string, or an array. null when a value is not an integer.
+    function parseTuningOffsets(v) {
+        const parts = Array.isArray(v) ? v : String(v == null ? '' : v).trim().split(/[\s,]+/);
+        if (!parts.length || parts[0] === '') return null;
+        const out = parts.map(Number);
+        return out.every(Number.isInteger) ? out : null;
+    }
+    // The /api/library/tuning-names entry for `offsets`. An exact match wins.
+    // Else the entry whose strings agree on the shared length: some imports
+    // store fewer strings than the instrument has.
+    function findTuningEntry(entries, offsets) {
+        const want = parseTuningOffsets(offsets);
+        if (!want) return null;
+        const list = (Array.isArray(entries) ? entries : [])
+            .map((t) => ({ t: t, have: parseTuningOffsets(t && t.offsets) }))
+            .filter((x) => x.have);
+        const same = (a, b, n) => { for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false; return true; };
+        const exact = list.find((x) => x.have.length === want.length && same(x.have, want, want.length));
+        if (exact) return exact.t;
+        const near = list.find((x) => Math.min(x.have.length, want.length) >= 4 &&
+            same(x.have, want, Math.min(x.have.length, want.length)));
+        return near ? near.t : null;
+    }
+    // `count` distinct random integers in [0, total).
+    function sampleIndices(total, count, rand) {
+        const r = rand || Math.random;
+        const n = Math.max(0, Math.min(count, total));
+        const picked = new Set();
+        while (picked.size < n) picked.add(Math.floor(r() * total));
+        return Array.from(picked);
+    }
+    function shuffleInPlace(arr, rand) {
+        const r = rand || Math.random;
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(r() * (i + 1));
+            const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+        }
+        return arr;
+    }
+    // A random pick of `limit` songs that match the query `p`. A set of up to
+    // 100 songs comes in one request and is shuffled here. A larger set gets
+    // one request per random index, so each song has the same chance. These
+    // requests go one at a time: under a burst of parallel requests the
+    // library endpoint sometimes answered 500. An index that fails is
+    // replaced by a new random one, up to `limit` extra tries.
+    async function fetchShuffled(p, limit) {
+        const head = new URLSearchParams(p);
+        head.set('page', '0');
+        head.set('size', '100');
+        const first = await jget('/api/library?' + head.toString());
+        if (!first) return null;
+        const total = first.total || 0;
+        const songs = first.songs || [];
+        if (total <= songs.length) return { songs: shuffleInPlace(songs.slice()).slice(0, limit), total: total };
+        const want = Math.min(limit, total);
+        const order = sampleIndices(total, Math.min(total, want * 2));
+        const seen = new Set();
+        const out = [];
+        for (let k = 0; k < order.length && out.length < want; k++) {
+            const one = new URLSearchParams(p);
+            one.set('page', String(order[k]));
+            one.set('size', '1');
+            const d = await jget('/api/library?' + one.toString());
+            const s = d && d.songs && d.songs[0];
+            if (s && !seen.has(cardKey(s))) { seen.add(cardKey(s)); out.push(s); }
+        }
+        return { songs: out, total: total };
+    }
+
     async function renderPreview(host, opts) {
         if (!host) return null;
         const limit = Math.max(1, Math.min(48, (opts && opts.limit) || 12));
@@ -4258,10 +4336,37 @@
         p.set('sort', state.sort);
         if (libInstrument() !== 'guitar-lead') p.set('instrument', libInstrument());
         if (groupingActive()) p.set('group', '1');
-        p.set('page', '0');
-        p.set('size', String(limit));
+        // Tuning filter: map the player's tuning offsets to the library's
+        // tuning key (the name for a named tuning, the offsets for a custom
+        // one). If the list does not load, show the unfiltered preview.
+        let tuning = null;
+        const want = opts && opts.tuning;
+        if (want && Array.isArray(want.offsets)) {
+            const tp = new URLSearchParams();
+            tp.set('provider', state.provider);
+            if (libInstrument() !== 'guitar-lead') tp.set('instrument', libInstrument());
+            const names = await jget('/api/library/tuning-names?' + tp.toString());
+            if (myToken !== _previewToken || !host.isConnected) return null;   // superseded
+            if (names && Array.isArray(names.tunings)) {
+                const entry = findTuningEntry(names.tunings, want.offsets);
+                tuning = {
+                    key: entry ? entry.key : null,
+                    name: entry && entry.name !== 'Custom Tuning' ? entry.name : (want.label || 'this tuning'),
+                };
+                if (!entry) {
+                    host.innerHTML = '';
+                    return { total: 0, shown: 0, sortLabel: '', tuning: tuning, shuffled: true };
+                }
+                p.set('tunings', entry.key);
+            }
+        }
+        const shuffled = !!(opts && opts.shuffle);
+        if (!shuffled) {
+            p.set('page', '0');
+            p.set('size', String(limit));
+        }
         const [data, acc] = await Promise.all([
-            jget('/api/library?' + p.toString()),
+            shuffled ? fetchShuffled(p, limit) : jget('/api/library?' + p.toString()),
             jget('/api/stats/best'),
             refreshArtistPageGates(),
         ]);
@@ -4299,14 +4404,26 @@
             total: (data && data.total) || songs.length,
             shown: songs.length,
             sortLabel: sortEntry ? sortEntry[1] : '',
+            tuning: tuning,
+            shuffled: shuffled,
         };
     }
 
     // "See all songs" from Home: land on the library browse view, not on an
-    // artist sub-page left open from an earlier visit.
-    function openLibraryFromElsewhere() {
+    // artist sub-page left open from an earlier visit. With `tuningKey` (a
+    // key from /api/library/tuning-names) the library opens filtered to that
+    // tuning, the same as a pick in its Tuning filter.
+    function openLibraryFromElsewhere(tuningKey) {
         state.pendingArtist = null;
         if (state.artistPage) closeArtistPage();
+        if (typeof tuningKey === 'string' && tuningKey) {
+            if (!_prefsRestored) { applySavedPrefs(); _prefsRestored = true; }
+            state.filters.tunings = [tuningKey];
+            state.filters.tuningMatch = 'exact';
+            // A built grid shows the old filters: re-fetch on entry. An unbuilt
+            // one reads state.filters on its first render.
+            if (state.built) _libraryDirty = true;
+        }
         if (window.showScreen) window.showScreen('v3-songs');
     }
 
@@ -4528,7 +4645,10 @@
             // the sort and the card chip speak for, so the grid must re-query —
             // re-colouring chips would leave the guitar tuning on screen and a
             // guitar-keyed filter applied. A retune within one instrument still
-            // takes the cheap in-place path below.
+            // takes the cheap in-place path below. Before the first render
+            // there is no grid or instrument to compare against: the first
+            // render reads the current instrument itself.
+            if (_lastRenderInstrument === null) return;
             const inst = libInstrument();
             if (inst !== _lastRenderInstrument) {
                 _lastRenderInstrument = inst;

@@ -247,6 +247,36 @@ def test_unresolvable_dlc_dir_does_not_block_other_keys(client, tmp_path):
     assert cfg.get("dlc_dir", "") != missing
 
 
+def test_vst_images_dir_saves_a_folder_and_clears(client, tmp_path):
+    # The folder of the player's own pictures for the Home VST panel.
+    pics = tmp_path / "VstImages"
+    pics.mkdir()
+    r = client.post("/api/settings", json={"vst_images_dir": str(pics)})
+    assert "error" not in r.json()
+    assert _read_cfg(tmp_path)["vst_images_dir"] == str(pics)
+    client.post("/api/settings", json={"vst_images_dir": None})
+    assert _read_cfg(tmp_path)["vst_images_dir"] == str(pics)
+    client.post("/api/settings", json={"vst_images_dir": ""})
+    assert _read_cfg(tmp_path)["vst_images_dir"] == ""
+
+
+def test_vst_images_dir_missing_folder_is_a_warning(client, tmp_path):
+    missing = str(tmp_path / "no-pictures")
+    r = client.post("/api/settings", json={"vst_images_dir": missing, "default_arrangement": "Lead"})
+    body = r.json()
+    assert "error" not in body
+    assert any("no-pictures" in w for w in body.get("warnings", []))
+    cfg = _read_cfg(tmp_path)
+    assert "vst_images_dir" not in cfg
+    assert cfg["default_arrangement"] == "Lead"
+
+
+@pytest.mark.parametrize("bad_value", [5, ["x"], {"a": 1}, "x" * 1025])
+def test_vst_images_dir_bad_value_rejected(client, tmp_path, bad_value):
+    r = client.post("/api/settings", json={"vst_images_dir": bad_value})
+    assert "error" in r.json()
+
+
 def test_valid_dlc_dir_still_reports_song_count(client, tmp_path):
     # The happy path is unchanged: a resolvable DLC dir persists and the
     # response message still carries the "N song files found" summary (no
