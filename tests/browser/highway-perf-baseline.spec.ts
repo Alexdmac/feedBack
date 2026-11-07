@@ -51,6 +51,8 @@ test('highway draw cost stays within its own render budget', async ({ page }) =>
     // Pin the adaptive loop so it cannot mask a regression by dropping resolution.
     hw.setRenderScale(1);
     hw.setMinRenderScale(1);
+    // ...and make sure a saved frame-rate cap can't change the frame cadence.
+    if (typeof hw.setMaxFps === 'function') hw.setMaxFps(0);
 
     // Load a real chart and get the transport ACTUALLY RUNNING.
     //

@@ -14,7 +14,7 @@
 // silently share it. That is the opposite of the app.js carve, where a single state container
 // was right because there is exactly one app.
 //
-// These 29 are pure literals: frozen numbers, strings and colour tables, never reassigned and
+// These 32 are pure literals: frozen numbers, strings and colour tables, never reassigned and
 // never mutated. Sharing them across instances is not just safe, it is what you want — one
 // copy of the shimmer LUT bounds and the string palettes rather than one per panel.
 //
@@ -72,6 +72,17 @@ export const _AUTO_ADJUST_COOLDOWN_MS = 600;
 // budget — testers saw "quality going up and down" as parts got busier (#618
 // charrette). Downscale stays prompt to protect the frame rate.
 export const _AUTO_UPSCALE_COOLDOWN_MS = 2500;
+
+// User frame-rate cap (Player > Visualization & quality > FPS cap; 0 = off).
+// A tick may draw up to _FPS_CAP_SLACK_MS early so rAF jitter can't turn a
+// 60 cap on a 60 Hz display into 30 fps. A non-zero cap is clamped to
+// [_MAX_FPS_MIN, _MAX_FPS_MAX]: the drum/keys 3D effects clamp dt at 0.05 s,
+// so they hold down to 20 fps; above the display's rate a cap does nothing.
+export const _FPS_CAP_SLACK_MS = 1;
+
+export const _MAX_FPS_MIN = 20;
+
+export const _MAX_FPS_MAX = 360;
 
 // 64-entry precomputed jitter LUT replacing Math.random() in the
 // lit-sustain shimmer hot path (drawSustains). Visually

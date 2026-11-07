@@ -46,12 +46,13 @@ const EXPECTED_USES = {
     silhouettes: { intensity: true, reactive: true },
     lights: { intensity: true, reactive: true },
     geometric: { intensity: true, reactive: true },
+    road: { intensity: true, reactive: true },
     image: { intensity: true, reactive: false },
     video: { intensity: false, reactive: false },
     butterchurn: { intensity: false, reactive: false },
 };
 
-const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video'];
+const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'road', 'butterchurn', 'image', 'video'];
 
 // Minimal DOM: only what the control touches.
 function makeDom() {
@@ -162,6 +163,10 @@ function load({ store: initialStore } = {}) {
             h3dBgSetStyle: (v) => { writes.push(['style', v]); store.style = v; emit('style'); },
             h3dBgSetReactive: (v) => { writes.push(['reactive', v]); store.reactive = v; emit('reactive'); },
             h3dBgSetIntensity: (v) => { writes.push(['intensity', v]); store.intensity = v; emit('intensity'); },
+            // Neck size is device-wide module state in screen.js, not a bg
+            // store key; modelled with the same write-then-broadcast shape.
+            h3dSetNeckSize: (v) => { writes.push(['neckSize', v]); store.neckSize = v; emit('neckSize'); },
+            h3dGetNeckSize: () => (store.neckSize == null ? 1 : store.neckSize),
         },
     };
     sandbox.globalThis = sandbox;
@@ -174,6 +179,8 @@ function load({ store: initialStore } = {}) {
         + '   get react() { return _pcReactive; },'
         + '   get intens() { return _pcIntensity; },'
         + '   get reason() { return _pcReason; },'
+        + '   get neck() { return _pcNeck; },'
+        + '   get neckLabel() { return _pcNeckLabel; },'
         + '   get refs() { return _pcRefs; } })',
         sandbox,
     );
@@ -540,4 +547,44 @@ test('the greyed-out reason reaches a hoverable wrapper', () => {
     assert.equal(api.react.parentNode.title, '');
     assert.equal(api.intens.parentNode.title, '');
     assert.equal(api.intens.style.pointerEvents, '');
+});
+
+test('the Neck size slider drives the setter live and follows outside changes', () => {
+    const { api, store, writes, emit } = load({ store: { neckSize: 1.3 } });
+    api._pcAcquire();
+    assert.ok(api.neck, 'Neck size slider was not created');
+    assert.equal(api.neck.min, '100');
+    assert.equal(api.neck.max, '160');
+    assert.equal(api.neck.value, '130', 'mounts showing the stored size');
+    assert.equal(api.neckLabel.textContent, 'Neck size 130%');
+    // Live on 'input' (a step is a cheap gem rescale + board rebuild), and the
+    // percent the slider carries is handed over as a 1.0-1.6 multiplier.
+    api.neck.value = '145';
+    api.neck.fire('input');
+    assert.deepEqual(writes.filter((w) => w[0] === 'neckSize'), [['neckSize', 1.45]]);
+    assert.equal(api.neckLabel.textContent, 'Neck size 145%');
+    // A change from the Settings page re-syncs the popover.
+    store.neckSize = 1.6;
+    emit('neckSize');
+    assert.equal(api.neck.value, '160');
+    assert.equal(api.neckLabel.textContent, 'Neck size 160%');
+});
+
+test('the Neck size slider is never greyed out (it is the fretboard, not the background)', () => {
+    for (const style of ['off', 'video', 'butterchurn']) {
+        const { api, sandbox, emit } = load({ store: { style } });
+        api._pcAcquire();
+        assert.equal(api.neck.disabled, false, `greyed under ${style}`);
+        sandbox._venueSceneOverride = true;
+        emit('venueScene');
+        assert.equal(api.neck.disabled, false, `greyed under venue (${style})`);
+    }
+});
+
+test('a host without the neck-size getter shows the default, 160%', () => {
+    const { api, sandbox } = load();
+    delete sandbox.window.h3dGetNeckSize;
+    api._pcAcquire();
+    assert.equal(api.neck.value, '160');
+    assert.equal(api.neckLabel.textContent, 'Neck size 160%');
 });
