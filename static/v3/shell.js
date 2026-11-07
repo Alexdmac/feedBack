@@ -213,10 +213,12 @@
             'text-fb-text placeholder-fb-textDim focus:border-fb-primary focus:ring-1 focus:ring-fb-primary outline-none"></div>' +
             '</div>' +
             // Row 2 — page header: title + ONLY the tuner/instrument/profile
-            // badge cluster on the same line as the header.
+            // badge cluster on the same line as the header. On Home the
+            // dashboard moves the three badge hosts into its hero panel and
+            // returns them here (by this id) when another screen opens.
             '<div class="flex items-center gap-3 px-4 md:px-8 pt-2 pb-4">' +
             '<h1 id="v3-topbar-title" class="text-2xl md:text-3xl font-bold text-fb-text truncate min-w-0 flex-1"></h1>' +
-            '<div class="flex items-center gap-2 shrink-0">' +
+            '<div id="v3-topbar-badges" class="flex items-center gap-2 shrink-0">' +
             '<span id="v3-badge-tuner" class="contents"></span>' +
             '<span id="v3-badge-instrument" class="contents"></span>' +
             '<span id="v3-badge-profile" class="contents"></span>' +
