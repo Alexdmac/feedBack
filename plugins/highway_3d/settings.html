@@ -191,6 +191,17 @@
             class="accent-accent mt-0.5">
     </div>
 
+    <!-- Night road lyrics painted on the asphalt (road style only). -->
+    <div class="mt-3 flex items-start justify-between gap-3">
+        <label for="h3d-bg-road-lyrics" class="text-xs font-medium text-gray-400">
+            Night road lyrics
+            <span class="block text-[10px] text-gray-500 font-normal">The song's lyrics are painted on the open asphalt beside the highway like road markings, each word where it is sung, and the word being sung lights up. When the track changes lanes, the next line goes to the side with more room. The lyrics banner at the top hides while the road shows them. The player's Lyrics switch turns them off.</span>
+        </label>
+        <input type="checkbox" id="h3d-bg-road-lyrics" checked
+            onchange="window.h3dBgSetRoadLyrics && window.h3dBgSetRoadLyrics(this.checked)"
+            class="accent-accent mt-0.5">
+    </div>
+
     <!-- Scene colors — TWO independent axes sharing one palette family:
          Background (clear + fog) and Highway (board surface + lit lane). Same
          id-set in both, so any background can mix with any highway; picking the
@@ -1601,6 +1612,12 @@
                 let bv = null;
                 try { bv = localStorage.getItem('h3d_bg_bridges'); } catch (_) { /* storage blocked */ }
                 brChk.checked = bv == null ? true : !(bv === 'false' || bv === '0');
+            }
+            const lyChk = document.getElementById('h3d-bg-road-lyrics');
+            if (lyChk) {
+                let lv = null;
+                try { lv = localStorage.getItem('h3d_bg_roadLyrics'); } catch (_) { /* storage blocked */ }
+                lyChk.checked = lv == null ? true : !(lv === 'false' || lv === '0');
             }
 
             if (fileInput) {

@@ -2092,8 +2092,8 @@ test('bridge wiring: deck order, valley, fog skip, Lite, setting', () => {
     // The setting reaches the road through the chart.
     assert.match(src, /_bgChart\.bridges = _bgBridgesOn;/);
     assert.match(src, /_bgBridgesOn\s*= _bgReadSetting\(panelKey, 'bridges'\);/);
-    assert.match(src, /finale: true, bridges: true \};/);
-    assert.match(src, /'finale', 'bridges'\]\);/);
+    assert.match(src, /finale: true, bridges: true, roadLyrics: true \};/);
+    assert.match(src, /'finale', 'bridges', 'roadLyrics'\]\);/);
     assert.match(src, /window\.h3dBgSetBridges\s*= \(v\) => _bgWriteGlobal\('bridges', !!v\);/);
     const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8');
     assert.match(html, /id="h3d-bg-road-bridges"[\s\S]{0,200}window\.h3dBgSetBridges\(this\.checked\)/);

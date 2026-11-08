@@ -173,6 +173,19 @@ def _arrangement_xml(arr, xml_paths: list[Path]) -> Path | None:
     return None
 
 
+def _lyrics_xml_order(xml_paths) -> list[Path]:
+    """Order XML files for the lyrics search: path order, but a Japanese
+    vocals part (arr_jvocals_*.xml) after every other file.
+
+    Rocksmith packs of Japanese songs carry two vocals parts with the same
+    timing: `vocals` in romaji and `jvocals` in Japanese script. Plain path
+    order reaches `arr_jvocals` before `arr_vocals`, so the player showed the
+    Japanese script. The romaji part is now preferred; a song with only a
+    jvocals part still gets its lyrics from it.
+    """
+    return sorted(xml_paths, key=lambda p: ("jvocals" in p.name.lower(), p))
+
+
 @router.websocket("/ws/highway/{filename:path}")
 async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                      naming_mode: str = "legacy", drum_part: str = ""):
@@ -772,7 +785,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             lyrics = list(song.lyrics or [])
             lyrics_source = getattr(song, "lyrics_source", "") or ""
         else:
-            for xml_path in sorted(_xml_walk("*.xml")):
+            for xml_path in _lyrics_xml_order(_xml_walk("*.xml")):
                 try:
                     root = ET.parse(xml_path).getroot()
                     if root.tag == "vocals":

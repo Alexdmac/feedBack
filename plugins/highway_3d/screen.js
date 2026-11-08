@@ -2449,7 +2449,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto', finale: true, bridges: true };
+    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto', finale: true, bridges: true, roadLyrics: true };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -2859,7 +2859,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'finale', 'bridges']);
+    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'finale', 'bridges', 'roadLyrics']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -3064,6 +3064,8 @@
     window.h3dBgSetFinale       = (v) => _bgWriteGlobal('finale', !!v);
     // Night road bridges over 'bridge' sections (road background only).
     window.h3dBgSetBridges      = (v) => _bgWriteGlobal('bridges', !!v);
+    // Night road lyrics painted on the asphalt (road background only).
+    window.h3dBgSetRoadLyrics   = (v) => _bgWriteGlobal('roadLyrics', !!v);
     window.h3dBgSetToneHudVisible   = (v) => _bgWriteGlobal('toneHudVisible', !!v);
     window.h3dBgSetToneHudPosition  = (v) => _bgWriteGlobal('toneHudPosition', v);
     window.h3dBgSetToneHudSize      = (v) => _bgWriteGlobal('toneHudSize', v);
@@ -4411,6 +4413,221 @@
         out.dz = dz;
         return out;
     }
+    // Lyrics painted on the road. The chart's syllables become words: a
+    // syllable ending '-' runs on into the next, one ending '+' ends the
+    // line, and a pause over ROAD_LYRIC_LINE_GAP_S starts a new line too
+    // (the banner's rules). Text is upper-cased like road paint; byte-order
+    // marks, zero-width and control characters are dropped. Returns
+    // [{ text, t, end, line }] in time order; line: the word starts a line.
+    const ROAD_LYRIC_LINE_GAP_S = 4.0;
+    function _roadLyricWords(lyrics) {
+        const out = [];
+        if (!Array.isArray(lyrics) || lyrics.length === 0) return out;
+        let cur = null, lineStart = true, prevEnd = -Infinity;
+        const close = () => {
+            if (!cur) return;
+            if (cur.text.length > 0) out.push(cur);
+            else if (cur.line) lineStart = true;   // an empty word hands its line start on
+            cur = null;
+        };
+        for (let i = 0; i < lyrics.length; i++) {
+            const l = lyrics[i];
+            if (!l) continue;
+            const t = Number(l.t);
+            if (!Number.isFinite(t)) continue;
+            let d = Number(l.d);
+            if (!(d >= 0)) d = 0;
+            let raw = l.w == null ? '' : String(l.w);
+            let endsLine = false, runsOn = false;
+            for (;;) {
+                const c = raw.charAt(raw.length - 1);
+                if (c === '+') endsLine = true;
+                else if (c === '-') runsOn = true;
+                else break;
+                raw = raw.slice(0, -1);
+            }
+            const text = raw.replace(/[\u0000-\u001f\u007f​-‍⁠﻿]/g, '')
+                .replace(/\s+/g, ' ').trim().toUpperCase();
+            if (t - prevEnd > ROAD_LYRIC_LINE_GAP_S) { close(); lineStart = true; }
+            if (!cur) { cur = { text: '', t, end: t + d, line: lineStart }; lineStart = false; }
+            cur.text += text;
+            if (t + d > cur.end) cur.end = t + d;
+            if (t + d > prevEnd) prevEnd = t + d;
+            if (!runsOn || endsLine) close();
+            if (endsLine) lineStart = true;
+        }
+        close();
+        out.sort((a, b) => a.t - b.t);
+        return out;
+    }
+    // First index in `arr` (sorted by key k) whose key is >= x.
+    function _roadLowerBy(arr, k, x) {
+        let lo = 0, hi = arr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (arr[mid][k] < x) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+    // The frets the highway uses between song times t0 and t1: every anchor
+    // lane in force in that window (the one in force at t0 included) and
+    // every fretted note or chord note whose gem or sustain trail lies in it
+    // (a sustain reaching back up to ROAD_LYRIC_SUS_LOOKBACK_S counts).
+    // Anchors, notes and chords are sorted by time. boundsOf is
+    // laneBoundsFromAnchor. Writes out.dMin / out.dMax (fret-wire indices,
+    // like a lane's) and returns out, or null when nothing is there.
+    const ROAD_LYRIC_SUS_LOOKBACK_S = 12;
+    function _roadLyricBusy(anchors, notes, chords, t0, t1, boundsOf, out) {
+        let lo = Infinity, hi = -Infinity;
+        if (anchors && anchors.length) {
+            let a = 0, b = anchors.length;
+            while (a < b) {
+                const mid = (a + b) >>> 1;
+                if (anchors[mid].time <= t0) a = mid + 1;
+                else b = mid;
+            }
+            for (let i = a === 0 ? 0 : a - 1; i < anchors.length; i++) {
+                if (i >= a && anchors[i].time > t1) break;
+                const bd = boundsOf(anchors[i]);
+                if (!bd) continue;
+                if (bd.dMin < lo) lo = bd.dMin;
+                if (bd.dMax > hi) hi = bd.dMax;
+            }
+        }
+        const fret = (n, start) => {
+            if (!n) return;
+            const sus = n.sus > 0 ? n.sus : 0;
+            if (start + sus < t0) return;
+            const f = Math.round(Number(n.f));
+            if (!(f > 0)) return;   // open strings and bad data take no fret
+            if (f - 1 < lo) lo = f - 1;
+            if (f > hi) hi = f;
+        };
+        if (notes && notes.length) {
+            for (let i = _roadLowerBy(notes, 't', t0 - ROAD_LYRIC_SUS_LOOKBACK_S); i < notes.length; i++) {
+                const n = notes[i];
+                if (n.t > t1) break;
+                fret(n, n.t);
+            }
+        }
+        if (chords && chords.length) {
+            for (let i = _roadLowerBy(chords, 't', t0 - ROAD_LYRIC_SUS_LOOKBACK_S); i < chords.length; i++) {
+                const c = chords[i];
+                if (c.t > t1) break;
+                const cn = c.notes;
+                if (!cn) continue;
+                for (let j = 0; j < cn.length; j++) fret(cn[j], c.t);
+            }
+        }
+        if (!(hi >= lo)) return null;
+        out.dMin = lo;
+        out.dMax = hi;
+        return out;
+    }
+    // Lay the words out as road paint. Each word is painted where it is
+    // sung: a row's near edge sits at its time, so the row reaches the hit
+    // line as its first word starts. A word sung before the previous row
+    // has passed (it would overlap that row) joins the row if it fits
+    // beside it, or else takes the next free row, a little late. A new
+    // lyric line always starts a new row.
+    //
+    // Side: the paint lies on the open asphalt beside the highway, against
+    // the edge of the frets in use (busy(t0, t1) -> { lo, hi } in world x,
+    // or null for none), so the camera keeps it in view. A line keeps the
+    // previous line's side while the highway's lane (laneKey(t)) stays put;
+    // when the lane has changed, the line goes to the side with more room,
+    // so the words cross over when the track does. A row moves across
+    // mid-line only when the word doesn't fit on its side. A word too wide
+    // for the room shrinks to fit, down to o.minScale; a word that fits
+    // nowhere is left out. With nothing busy, rows sit centred on the road.
+    //
+    // o: { roadLo, roadHi (world x), em (world x per cap height), depth
+    // (world z of a full-size row), ts (world z per s), gapS (s between
+    // rows), padS (s around a row checked for busy frets), gap (world x
+    // kept from the busy frets), edge (world x kept from the road's
+    // edges), space (cap heights between words), minScale,
+    // measure(text) -> width in cap heights, laneKey(t) }.
+    // Returns [{ text, t, end, tp, x, w, d }] in tp order: tp the row's
+    // song time (near edge at z = -(tp - now) * ts), x the word's centre,
+    // w its width and d its depth (world units).
+    function _roadLyricLayout(words, busy, o) {
+        const out = [];
+        if (!words || words.length === 0 || !o || !(o.ts > 0) || !(o.em > 0)) return out;
+        const spanS = o.depth / o.ts;
+        const minScale = o.minScale > 0 ? o.minScale : 1;
+        let side = 0, sideKey = NaN;
+        let row = null;
+        const finish = () => {
+            if (!row) return;
+            const sp = o.space * o.em * row.scale;
+            let x = row.side < 0 ? row.right - row.used
+                : (row.side > 0 ? row.left : (o.roadLo + o.roadHi) / 2 - row.used / 2);
+            for (let i = 0; i < row.words.length; i++) {
+                const rw = row.words[i];
+                const w = rw.need * row.scale;
+                out.push({ text: rw.text, t: rw.t, end: rw.end, tp: row.tp, x: x + w / 2, w, d: o.depth * row.scale });
+                x += w + sp;
+            }
+            row = null;
+        };
+        let nextFree = -Infinity;   // earliest start of the next row
+        for (let i = 0; i < words.length; i++) {
+            const wd = words[i];
+            const m = o.measure(wd.text);
+            if (!(m > 0)) continue;
+            const need = m * o.em;
+            if (row && !wd.line && wd.t < nextFree) {
+                const add = o.space * o.em * row.scale + need * row.scale;
+                if (row.used + add <= row.room + 1e-9) {
+                    row.words.push({ text: wd.text, t: wd.t, end: wd.end, need });
+                    row.used += add;
+                    continue;
+                }
+            }
+            finish();
+            const tp = wd.t > nextFree ? wd.t : nextFree;
+            const b = busy(tp - o.padS, tp + spanS + o.padS);
+            let left = o.roadLo + o.edge, right = o.roadHi - o.edge, s = 0;
+            if (b) {
+                const roomL = (b.lo - o.gap) - left;
+                const roomR = right - (b.hi + o.gap);
+                const key = o.laneKey ? o.laneKey(tp) : 0;
+                s = side;
+                if (s === 0 || (wd.line && key !== sideKey)) {
+                    s = roomL > roomR ? -1 : 1;
+                    sideKey = key;
+                }
+                const room = s < 0 ? roomL : roomR, other = s < 0 ? roomR : roomL;
+                if (room < need && other > room) s = -s;
+                if (s < 0) right = b.lo - o.gap;
+                else left = b.hi + o.gap;
+            }
+            const room = right - left;
+            if (!(room >= need * minScale)) continue;   // fits nowhere: left out
+            side = s;
+            const scale = room < need ? room / need : 1;
+            row = { tp, scale, side: s, left, right, room, used: need * scale,
+                words: [{ text: wd.text, t: wd.t, end: wd.end, need }] };
+            nextFree = tp + spanS * scale + o.gapS;
+        }
+        finish();
+        return out;
+    }
+    // How lit a painted word is at song time `now` (0..1): it lights as the
+    // word starts, stays lit while it is sung (at least
+    // ROAD_LYRIC_GLOW_MIN_S) and fades over ROAD_LYRIC_GLOW_FADE_S.
+    const ROAD_LYRIC_GLOW_IN_S = 0.06;
+    const ROAD_LYRIC_GLOW_MIN_S = 0.2;
+    const ROAD_LYRIC_GLOW_FADE_S = 0.45;
+    function _roadLyricGlow(now, t, end) {
+        if (!(now >= t - ROAD_LYRIC_GLOW_IN_S)) return 0;
+        if (now < t) return 1 - (t - now) / ROAD_LYRIC_GLOW_IN_S;
+        const e = end > t + ROAD_LYRIC_GLOW_MIN_S ? end : t + ROAD_LYRIC_GLOW_MIN_S;
+        if (now <= e) return 1;
+        const f = 1 - (now - e) / ROAD_LYRIC_GLOW_FADE_S;
+        return f > 0 ? f : 0;
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -4490,6 +4707,43 @@
     // panel never sits solid behind the notes being read. 1 disables it.
     const ROAD_SIGN_FADE_FAR = 2.0;
     const ROAD_SIGN_NEAR_OPACITY = 0.35;
+    // Lyrics painted on the road (see _roadLyricLayout): white stencil
+    // capitals on the open asphalt beside the highway. A cap height is
+    // ROAD_LYRIC_EM across the road and ROAD_LYRIC_STRETCH times that along
+    // it, like road markings, so the words read from the driver's seat.
+    const ROAD_LYRIC_EM = 12 * K;
+    const ROAD_LYRIC_STRETCH = 2.6;
+    const ROAD_LYRIC_GAP_S = 0.05;          // song time between rows
+    const ROAD_LYRIC_PAD_S = 0.15;          // around a row, checked for busy frets
+    const ROAD_LYRIC_SIDE_GAP = 5 * K;      // from the busy frets' edge
+    const ROAD_LYRIC_EDGE = 3 * K;          // from the board's edges
+    const ROAD_LYRIC_SPACE = 0.45;          // cap heights between words in a row
+    const ROAD_LYRIC_MIN_SCALE = 0.55;      // a long word shrinks at most this far
+    // Word slots (canvas, paint and glow mesh each). The paint stays until
+    // ROAD_LYRIC_BEHIND_S past the hit line (the road's near end); a seek
+    // redraws at most ROAD_LYRIC_REDRAW_MAX canvases a frame, nearest first.
+    const ROAD_LYRIC_POOL = 40;
+    const ROAD_LYRIC_BEHIND_S = 2;
+    const ROAD_LYRIC_REDRAW_MAX = 8;
+    // Canvas: the paint in the top half, the same blurred (the glow) in the
+    // bottom half. Letters fill ROAD_LYRIC_FILL_X of the width and their
+    // cap height ROAD_LYRIC_FILL_Y of a half's height.
+    const ROAD_LYRIC_TEX_W = 512, ROAD_LYRIC_TEX_H = 96;
+    const ROAD_LYRIC_FILL_X = 0.96, ROAD_LYRIC_FILL_Y = 0.8;
+    const ROAD_LYRIC_FONT = 'Bahnschrift, "Arial Narrow", "Roboto Condensed", "DejaVu Sans Condensed", "Liberation Sans Narrow", Arial, sans-serif';
+    // Just above the board plane, drawn after the board, its lit lanes and
+    // fret dividers and before the inlays, gantries and notes (renderOrder
+    // in the gameplay group): paint on the asphalt, under everything that
+    // moves.
+    const ROAD_LYRIC_LIFT = 0.4 * K;
+    const ROAD_LYRIC_ORDER = 2.5;
+    const ROAD_LYRIC_GLOW_ORDER = 2.6;
+    // Paint: worn off-white; the word being sung turns warm amber and
+    // glows (the blurred half, additive) by up to ROAD_LYRIC_GLOW_STR.
+    const ROAD_LYRIC_PAINT_R = 0.86, ROAD_LYRIC_PAINT_G = 0.86, ROAD_LYRIC_PAINT_B = 0.82;
+    const ROAD_LYRIC_PAINT_OPACITY = 0.9;
+    const ROAD_LYRIC_SUNG_R = 1.0, ROAD_LYRIC_SUNG_G = 0.74, ROAD_LYRIC_SUNG_B = 0.36;
+    const ROAD_LYRIC_GLOW_STR = 0.8;
     // Hills and verges either side of the road: value noise with lattice
     // cell ROAD_HILL_SCALE, positive half only, scaled to ROAD_HILL_H and
     // ramped in over ROAD_HILL_RAMP from just beyond the lamp posts, so the
@@ -4821,6 +5075,113 @@
         const tex = new T.CanvasTexture(c);
         tex.colorSpace = T.SRGBColorSpace;
         return tex;
+    }
+    // Road lyric font: the family and weight, condensed where the canvas
+    // supports it, and the cap height as a fraction of the font size
+    // (measured once, from 'H').
+    let _roadLyricCap = 0, _roadLyricMeasureCtx = null;
+    function _roadLyricSetFont(x, px) {
+        x.font = 'bold ' + px + 'px ' + ROAD_LYRIC_FONT;
+        if ('fontStretch' in x) { try { x.fontStretch = 'condensed'; } catch (_) {} }
+    }
+    function _roadLyricCapRatio() {
+        if (_roadLyricCap > 0) return _roadLyricCap;
+        let r = 0;
+        try {
+            const x = _roadLyricMeasure.ctx();
+            _roadLyricSetFont(x, 100);
+            const m = x.measureText('H');
+            r = m && m.actualBoundingBoxAscent > 0 ? m.actualBoundingBoxAscent / 100 : 0;
+        } catch (_) { r = 0; }
+        _roadLyricCap = r > 0.3 && r < 1.2 ? r : 0.72;
+        return _roadLyricCap;
+    }
+    // Width of `text` in cap heights, in the paint font (the layout's
+    // measure; see _roadLyricLayout).
+    function _roadLyricMeasure(text) {
+        if (!text) return 0;
+        const x = _roadLyricMeasure.ctx();
+        _roadLyricSetFont(x, 100);
+        const w = x.measureText(text).width;
+        return w > 0 ? w / (100 * _roadLyricCapRatio()) : 0;
+    }
+    _roadLyricMeasure.ctx = () => {
+        if (!_roadLyricMeasureCtx) {
+            const c = document.createElement('canvas');
+            c.width = 8; c.height = 8;
+            _roadLyricMeasureCtx = c.getContext('2d');
+        }
+        return _roadLyricMeasureCtx;
+    };
+    // One word of road paint drawn into a slot's canvas: white capitals
+    // filling the top half (cap height ROAD_LYRIC_FILL_Y of it, width
+    // ROAD_LYRIC_FILL_X), cut across at a third and two thirds of the cap
+    // height like a stencil, worn with seeded specks; the bottom half holds
+    // the same blurred, for the glow. An empty text leaves it clear.
+    function _roadDrawLyric(c, text, seed) {
+        const W = c.width, H = c.height / 2;
+        const x = c.getContext('2d');
+        x.setTransform(1, 0, 0, 1, 0, 0);
+        x.globalCompositeOperation = 'source-over';
+        x.globalAlpha = 1;
+        if ('filter' in x) x.filter = 'none';
+        x.clearRect(0, 0, W, c.height);
+        if (!text) return;
+        const cap = H * ROAD_LYRIC_FILL_Y;
+        const top = (H - cap) / 2;
+        _roadLyricSetFont(x, cap / _roadLyricCapRatio());
+        const tw = x.measureText(text).width;
+        if (!(tw > 0)) return;
+        x.fillStyle = '#ffffff';
+        x.textBaseline = 'alphabetic';
+        x.textAlign = 'left';
+        x.setTransform(W * ROAD_LYRIC_FILL_X / tw, 0, 0, 1, W * (1 - ROAD_LYRIC_FILL_X) / 2, 0);
+        x.fillText(text, 0, top + cap);
+        x.setTransform(1, 0, 0, 1, 0, 0);
+        x.globalCompositeOperation = 'destination-out';
+        const cut = Math.max(2, Math.round(cap * 0.05));
+        x.fillRect(0, Math.round(top + cap * 0.34 - cut / 2), W, cut);
+        x.fillRect(0, Math.round(top + cap * 0.67 - cut / 2), W, cut);
+        let r = (seed >>> 0) || 0x9e3779b9;
+        const next = () => { r ^= r << 13; r ^= r >>> 17; r ^= r << 5; return (r >>> 0) / 4294967296; };
+        for (let i = 0; i < 90; i++) {
+            const sz = 1 + Math.floor(next() * 3);
+            x.globalAlpha = 0.25 + 0.6 * next();
+            x.fillRect(Math.floor(next() * W), Math.floor(top + next() * cap), sz, sz);
+        }
+        x.globalAlpha = 1;
+        x.globalCompositeOperation = 'source-over';
+        if ('filter' in x) {
+            x.save();
+            x.beginPath();
+            x.rect(0, H, W, H);
+            x.clip();
+            x.filter = 'blur(' + Math.max(2, Math.round(H * 0.07)) + 'px)';
+            x.drawImage(c, 0, 0, W, H, 0, H, W, H);
+            x.restore();
+            x.filter = 'none';
+        }
+    }
+    // One canvas + texture per word slot for the slot's whole life (so the
+    // paint program compiled at prewarm is the one used, and memory is
+    // bounded by the pool, not the song).
+    function _roadLyricSlotTexture() {
+        const c = document.createElement('canvas');
+        c.width = ROAD_LYRIC_TEX_W; c.height = ROAD_LYRIC_TEX_H * 2;
+        const tex = new T.CanvasTexture(c);
+        tex.colorSpace = T.SRGBColorSpace;
+        tex.anisotropy = 8;   // the paint is seen at a grazing angle
+        return tex;
+    }
+    // Unit square lying flat (its top edge toward -z, away from the
+    // player) showing the top (paint) or bottom (glow) half of a slot's
+    // canvas.
+    function _roadLyricQuad(glow) {
+        const g = new T.PlaneGeometry(1, 1);
+        const uv = g.attributes.uv;
+        for (let i = 0; i < uv.count; i++) uv.setY(i, (glow ? 0 : 0.5) + 0.5 * uv.getY(i));
+        g.rotateX(-Math.PI / 2);
+        return g;
     }
     // Soft round light pool, white with an alpha falloff (additive).
     function _roadPoolTexture() {
@@ -5761,6 +6122,12 @@
                 g.renderOrder = 0;
                 for (let c = 0; c < g.children.length; c++) g.children[c].renderOrder = ROAD_GANTRY_ORDER;
             }
+            // So do the road lyrics: over the board, under the notes.
+            if (s.lyrGroup) {
+                s.lyrGroup.renderOrder = 0;
+                for (let i = 0; i < s.lyrPaint.length; i++) s.lyrPaint[i].renderOrder = ROAD_LYRIC_ORDER;
+                for (let i = 0; i < s.lyrGlow.length; i++) s.lyrGlow[i].renderOrder = ROAD_LYRIC_GLOW_ORDER;
+            }
             s.orderStamped = true;
         }
         const dur = chart && chart.duration > 0 ? chart.duration : 0;
@@ -5806,6 +6173,108 @@
             * (1 + ROAD_FIN_SKY_LIFT * fin));
     }
 
+    // The road lyrics' layout for the chart on `s` (see _roadLyricLayout):
+    // the board's span is the road, the lanes and notes are the busy frets.
+    function _bgRoadLayoutLyrics(s, chart) {
+        const words = _roadLyricWords(chart.lyrics);
+        if (words.length === 0) return [];
+        const xFret = chart.xFret, cx = s.cx;
+        const xa = xFret(0) - cx, xb = xFret(NFRETS) - cx;
+        const box = { lo: 0, hi: 0 };
+        const fb = { dMin: 0, dMax: 0 };
+        const anchors = chart.anchors, notes = chart.notes, chords = chart.chords;
+        const busy = (t0, t1) => {
+            const r = _roadLyricBusy(anchors, notes, chords, t0, t1, laneBoundsFromAnchor, fb);
+            if (!r) return null;
+            const a = xFret(r.dMin) - cx, b = xFret(r.dMax) - cx;
+            box.lo = a < b ? a : b;
+            box.hi = a < b ? b : a;
+            return box;
+        };
+        const laneKey = (t) => {
+            const lb = laneBoundsFromAnchor(getChartAnchorAt(anchors, t));
+            return lb ? lb.dMin * 64 + lb.dMax : -1;
+        };
+        return _roadLyricLayout(words, busy, {
+            roadLo: xa < xb ? xa : xb, roadHi: xa < xb ? xb : xa,
+            em: ROAD_LYRIC_EM, depth: ROAD_LYRIC_EM * ROAD_LYRIC_STRETCH, ts: TS,
+            gapS: ROAD_LYRIC_GAP_S, padS: ROAD_LYRIC_PAD_S,
+            gap: ROAD_LYRIC_SIDE_GAP, edge: ROAD_LYRIC_EDGE, space: ROAD_LYRIC_SPACE,
+            minScale: ROAD_LYRIC_MIN_SCALE, measure: _roadLyricMeasure, laneKey,
+        });
+    }
+    // Per-frame road lyrics. The layout is made once per chart, and again
+    // when the lyrics (or the Lyrics switch), the lanes or the notes change
+    // (the mastery slider, a chart transform). Words in view take slot
+    // index % ROAD_LYRIC_POOL; a slot's canvas is redrawn only when a new
+    // word takes it (nearest first, at most ROAD_LYRIC_REDRAW_MAX a frame,
+    // the rest wait a frame), and the word being sung turns amber and glows.
+    function _bgRoadUpdateLyrics(s, chart) {
+        if (!s.lyrGroup) return;
+        const ready = !!(chart && chart.isReady && typeof chart.xFret === 'function');
+        const lyr = ready && chart.lyrics && chart.lyrics.length ? chart.lyrics : null;
+        if (lyr !== s.lyrRef || (lyr && (chart.anchors !== s.lyrAnchors
+                || chart.notes !== s.lyrNotes || chart.chords !== s.lyrChords))) {
+            s.lyrRef = lyr;
+            s.lyrAnchors = lyr ? chart.anchors : undefined;
+            s.lyrNotes = lyr ? chart.notes : undefined;
+            s.lyrChords = lyr ? chart.chords : undefined;
+            s.lyrPlace = lyr ? _bgRoadLayoutLyrics(s, chart) : [];
+            for (let k = 0; k < ROAD_LYRIC_POOL; k++) s.lyrDrawn[k] = -1;
+        }
+        const pl = s.lyrPlace;
+        const used = s.lyrUsed;
+        for (let k = 0; k < ROAD_LYRIC_POOL; k++) used[k] = false;
+        let shown = 0;
+        const now = chart ? chart.time : NaN;
+        if (pl.length > 0 && Number.isFinite(now)) {
+            const back = ROAD_LYRIC_BEHIND_S + ROAD_LYRIC_EM * ROAD_LYRIC_STRETCH / TS;
+            const i0 = _roadLowerBy(pl, 'tp', now - back);
+            let i1 = _roadLowerBy(pl, 'tp', now + AHEAD + 1);
+            if (i1 - i0 > ROAD_LYRIC_POOL) i1 = i0 + ROAD_LYRIC_POOL;
+            const y = s.lyrY;
+            let redraws = 0;
+            for (let i = i0; i < i1; i++) {
+                const p = pl[i];
+                const k = i % ROAD_LYRIC_POOL;
+                if (s.lyrDrawn[k] !== i) {
+                    if (redraws >= ROAD_LYRIC_REDRAW_MAX) continue;
+                    _roadDrawLyric(s.lyrTex[k].image, p.text, (i + 1) * 2654435761);
+                    s.lyrTex[k].needsUpdate = true;
+                    s.lyrDrawn[k] = i;
+                    redraws++;
+                }
+                used[k] = true;
+                shown++;
+                const zn = -(p.tp - now) * TS;
+                const pm = s.lyrPaint[k], gm = s.lyrGlow[k];
+                pm.position.set(p.x, y, zn - p.d / 2);
+                pm.scale.set(p.w / ROAD_LYRIC_FILL_X, 1, p.d / ROAD_LYRIC_FILL_Y);
+                const g = _roadLyricGlow(now, p.t, p.end);
+                s.lyrPaintMats[k].color.setRGB(
+                    ROAD_LYRIC_PAINT_R + (ROAD_LYRIC_SUNG_R - ROAD_LYRIC_PAINT_R) * g,
+                    ROAD_LYRIC_PAINT_G + (ROAD_LYRIC_SUNG_G - ROAD_LYRIC_PAINT_G) * g,
+                    ROAD_LYRIC_PAINT_B + (ROAD_LYRIC_SUNG_B - ROAD_LYRIC_PAINT_B) * g);
+                if (!pm.visible) pm.visible = true;
+                if (g > 0.01) {
+                    gm.position.copy(pm.position);
+                    gm.scale.copy(pm.scale);
+                    const a = g * ROAD_LYRIC_GLOW_STR;
+                    s.lyrGlowMats[k].color.setRGB(ROAD_LYRIC_SUNG_R * a, ROAD_LYRIC_SUNG_G * a, ROAD_LYRIC_SUNG_B * a);
+                    if (!gm.visible) gm.visible = true;
+                } else if (gm.visible) {
+                    gm.visible = false;
+                }
+            }
+        }
+        if (shown === 0 && s.lyrShown === 0) return;
+        for (let k = 0; k < ROAD_LYRIC_POOL; k++) {
+            if (used[k]) continue;
+            if (s.lyrPaint[k].visible) s.lyrPaint[k].visible = false;
+            if (s.lyrGlow[k].visible) s.lyrGlow[k].visible = false;
+        }
+        s.lyrShown = shown;
+    }
     // Per-frame lane drawing for the road style: every distinct fret
     // position in the visible window is a full-length lane with dashed
     // edges (bright for the lane in force now), each anchor change is a
@@ -6299,6 +6768,14 @@
                     reflXSpan: halfW * (ROAD_GROUND_MUL - 1) * 0.4,
                     reflZNear: zNear * 0.25, reflZFar: zFar * 0.6,
                     headTint: false, headColor: new T.Color(1, 1, 1),
+                    // Road lyrics (see _bgRoadUpdateLyrics): the layout and
+                    // what it was made from, and the word slots.
+                    lyrRef: undefined, lyrAnchors: undefined, lyrNotes: undefined, lyrChords: undefined,
+                    lyrPlace: [], lyrGroup: null,
+                    lyrPaint: [], lyrGlow: [], lyrPaintMats: [], lyrGlowMats: [], lyrTex: [],
+                    lyrDrawn: new Array(ROAD_LYRIC_POOL).fill(-1),
+                    lyrUsed: new Array(ROAD_LYRIC_POOL).fill(false),
+                    lyrY: boardY + ROAD_LYRIC_LIFT, lyrShown: 0,
                 };
                 const geo = (g) => { s.geos.push(g); return g; };
                 const mat = (m) => { s.mats.push(m); return m; };
@@ -6576,6 +7053,45 @@
                     s.signTex.push(tex);
                 }
 
+                // Lyrics painted on the road: a pool of word slots, each a
+                // canvas texture shown by a paint quad and an additive glow
+                // quad (the canvas's two halves). update() places the words
+                // in view, redraws a slot's canvas only when a new word takes
+                // it, and lights the word being sung. The slots join the
+                // gameplay group order (ROAD_LYRIC_ORDER, stamped with the
+                // gantries) so the paint lies over the board, under the notes.
+                {
+                    s.lyrGroup = new T.Group();
+                    const paintGeo = geo(_roadLyricQuad(false));
+                    const glowGeo = geo(_roadLyricQuad(true));
+                    for (let i = 0; i < ROAD_LYRIC_POOL; i++) {
+                        const tex = _roadLyricSlotTexture();
+                        const pm = mat(new T.MeshBasicMaterial({
+                            map: tex, transparent: true, depthWrite: false, opacity: ROAD_LYRIC_PAINT_OPACITY,
+                            polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2,
+                        }));
+                        pm.color.setRGB(ROAD_LYRIC_PAINT_R, ROAD_LYRIC_PAINT_G, ROAD_LYRIC_PAINT_B);
+                        const gm = mat(new T.MeshBasicMaterial({
+                            map: tex, color: 0x000000, transparent: true, depthWrite: false,
+                            blending: T.AdditiveBlending,
+                            polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2,
+                        }));
+                        const pMesh = new T.Mesh(paintGeo, pm);
+                        const gMesh = new T.Mesh(glowGeo, gm);
+                        for (const m of [pMesh, gMesh]) {
+                            m.visible = false;
+                            m.frustumCulled = false;   // moved every frame
+                            s.lyrGroup.add(m);
+                        }
+                        s.lyrPaint.push(pMesh);
+                        s.lyrGlow.push(gMesh);
+                        s.lyrPaintMats.push(pm);
+                        s.lyrGlowMats.push(gm);
+                        s.lyrTex.push(tex);
+                    }
+                    root.add(s.lyrGroup);
+                }
+
                 // City skyline beyond the road's far end: towers, lit windows
                 // and neon strips (laid out per song from the seed in
                 // update()), and a gradient sky behind them. All fog: false
@@ -6809,6 +7325,7 @@
                 _bgRoadUpdateBridge(s, chart, lite);   // before the hills (valley) and the weather (fog over the valley)
                 _bgRoadUpdateHills(s, lite ? 0 : (chart ? chart.time : 0), !lite);
                 _bgRoadUpdateSigns(s, chart);
+                _bgRoadUpdateLyrics(s, chart);
                 _bgRoadUpdateWeather(s, chart, t);
                 let n = 0;
                 if (chart && chart.isReady && chart.beats && chart.beats.length > 0) {
@@ -6961,9 +7478,14 @@
                     s.brTowers, s.brBeacons, s.brCables, s.water, s.refl, s.farRefl]) m?.dispose?.();
                 for (const g of s.geos) g.dispose();
                 for (const m of s.mats) m.dispose();
-                // Textures this style owns: one per gantry, and the sky.
+                // Textures this style owns: one per gantry, one per lyric slot, and the sky.
                 for (let i = 0; i < s.signTex.length; i++) s.signTex[i].dispose();
                 s.signTex.length = 0;
+                for (let i = 0; i < s.lyrTex.length; i++) s.lyrTex[i].dispose();
+                s.lyrTex.length = 0;
+                s.lyrPaint.length = 0; s.lyrGlow.length = 0;
+                s.lyrPaintMats.length = 0; s.lyrGlowMats.length = 0;
+                s.lyrGroup = null; s.lyrPlace = []; s.lyrRef = undefined;
                 s.gantryMats.length = 0;
                 s.signSections = undefined;
                 if (s.skyTex) s.skyTex.dispose();
@@ -8512,6 +9034,7 @@
         let _streakFx           = BG_DEFAULTS.streakFx;
         let _bgFinOn            = BG_DEFAULTS.finale;
         let _bgBridgesOn        = BG_DEFAULTS.bridges;
+        let _bgRoadLyricsOn     = BG_DEFAULTS.roadLyrics;
         let _bloom              = BG_DEFAULTS.bloom;
         let _composer = null, _bloomPass = null, _bloomLoad = null, _bloomW = 0, _bloomH = 0;
         let _sparkPts = null, _sparkPos = null, _sparkCol = null, _sparkVel = null, _sparkLife = null;
@@ -8583,6 +9106,10 @@
             finOn: true, lastNoteT: NaN, fogFar: 0,
             // Bridges over 'bridge' sections on or off (the setting).
             bridges: true,
+            // Road lyrics: the chart's lyrics while they are painted on the
+            // road (null when the setting or the player's Lyrics switch is
+            // off), and the notes and chords that keep the paint clear.
+            lyrics: null, notes: null, chords: null,
         };
         // Road mood inputs. drawNote counts each judged note once: keys are
         // round(t * 1e4) * 16 + string (15 = the whole chord), the value
@@ -12255,7 +12782,8 @@
                     changedKey === 'projectionVisible' ||
                     changedKey === 'slideArrowApproachVisible' ||
                     changedKey === 'slideArrowNeckVisible' ||
-                    changedKey === 'slideArrowChainPreviewVisible') {
+                    changedKey === 'slideArrowChainPreviewVisible' ||
+                    changedKey === 'roadLyrics') {
                     // Flag flips don't need a mesh rebuild — just refresh
                     // the per-instance state for the next frame to consult.
                     // Same shape for showFretOnNote (#12), cameraSmoothing
@@ -12569,6 +13097,7 @@
             _streakFx            = _bgReadSetting(panelKey, 'streakFx');
             _bgFinOn             = _bgReadSetting(panelKey, 'finale');
             _bgBridgesOn         = _bgReadSetting(panelKey, 'bridges');
+            _bgRoadLyricsOn      = _bgReadSetting(panelKey, 'roadLyrics');
             _bloom               = _bgReadSetting(panelKey, 'bloom');
             _applyCinematic();
             fpsVisible           = _bgReadSetting(panelKey, 'fpsVisible');
@@ -20198,6 +20727,9 @@
                         _bgChart.beats = bundle.beats;
                         _bgChart.sections = bundle.sections;
                         _bgChart.bridges = _bgBridgesOn;
+                        _bgChart.lyrics = _bgRoadLyricsOn && bundle.lyricsVisible ? bundle.lyrics : null;
+                        _bgChart.notes = bundle.notes;
+                        _bgChart.chords = bundle.chords;
                         _bgChart.isReady = bundle.isReady;
                         _bgChart.lowerBoundTime = bundle.lowerBoundTime;
                         _bgChart.anchors = bundle.anchors;
@@ -20400,7 +20932,10 @@
                     // Capture the actual lyrics-banner bottom so overlay cards
                     // step down past every wrapped row, not just a 2-row estimate.
                     let lyricsBottom = 0;
-                    if (bundle.lyricsVisible && bundle.lyrics?.length) {
+                    // With the night road showing its painted lyrics, the
+                    // banner stays hidden: the words are on the asphalt.
+                    const _lyrOnRoad = _bgRoadLyricsOn && bgMountedStyleId === 'road' && !!bgState;
+                    if (bundle.lyricsVisible && bundle.lyrics?.length && !_lyrOnRoad) {
                         lyricsBottom = drawLyrics(bundle.lyrics, bundle.currentTime, lyricsCtx, lyricsCanvas.width, lyricsCanvas.height) || 0;
                     }
                     drawNotedetectLabels(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
