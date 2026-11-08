@@ -2449,7 +2449,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto', finale: true, bridges: true };
+    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, roadQuality: 'auto', finale: true, bridges: true, oncoming: true };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -2859,7 +2859,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'finale', 'bridges']);
+    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'finale', 'bridges', 'oncoming']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -3064,6 +3064,8 @@
     window.h3dBgSetFinale       = (v) => _bgWriteGlobal('finale', !!v);
     // Night road bridges over 'bridge' sections (road background only).
     window.h3dBgSetBridges      = (v) => _bgWriteGlobal('bridges', !!v);
+    // Night road oncoming carriageway (road background only; rebuilds it).
+    window.h3dBgSetOncoming     = (v) => _bgWriteGlobal('oncoming', !!v);
     window.h3dBgSetToneHudVisible   = (v) => _bgWriteGlobal('toneHudVisible', !!v);
     window.h3dBgSetToneHudPosition  = (v) => _bgWriteGlobal('toneHudPosition', v);
     window.h3dBgSetToneHudSize      = (v) => _bgWriteGlobal('toneHudSize', v);
@@ -4411,6 +4413,46 @@
         out.dz = dz;
         return out;
     }
+    // The road's cross-section across x (the road's own frame: 0 under the
+    // board's centre), for a carriageway of half width halfW with the
+    // oncoming carriageway on side onSide (-1 left, 1 right, 0 none).
+    // dim: { shoulder, walk, postIn, median, arm } in world units (curb
+    // width, sidewalk width, how far a post stands in from the sidewalk's
+    // outer edge, the median between the two carriageways' edges, and the
+    // reach of a median post's arm to each of its heads).
+    //
+    // With the oncoming carriageway everything on that side mirrors our
+    // own side about the median's centre line: the oncoming carriageway is
+    // as wide as ours, its outer curb, sidewalk and posts stand where ours
+    // do on the far side, and the median's shared post carries one head
+    // leaning out toward each carriageway, the same distance from the centre
+    // line (both stay over the median, clear of the board). Every
+    // |x| below is measured on its own side.
+    // Returns { onSide, onShift (the oncoming carriageway's centre is at
+    // onSide * onShift), postX (our posts on the side away from the
+    // median, and on both sides without one), medX (the median's centre
+    // line), headIn / headOut (the median heads toward our / the oncoming
+    // carriageway), farPostX (the oncoming road's outer posts), off(side)
+    // (how much further out that side's outer edge, ground, hills and
+    // weather sit: onShift on the oncoming side, else 0) }.
+    function _roadCrossSection(halfW, onSide, dim) {
+        const side = onSide < 0 ? -1 : (onSide > 0 ? 1 : 0);
+        const postX = halfW + dim.shoulder + dim.walk - dim.postIn;
+        const medX = halfW + dim.median / 2;
+        const onShift = side ? 2 * medX : 0;
+        return {
+            onSide: side, onShift, postX, medX,
+            headIn: medX - dim.arm, headOut: medX + dim.arm,
+            farPostX: onShift + postX,
+            off: (s) => (side && s === side ? onShift : 0),
+        };
+    }
+    // The same offset read off a mounted road's state (s.onSide, s.onShift;
+    // absent = no oncoming carriageway): how much further out that side's
+    // outer edge, beams, parapets, bridge towers, water and rockets sit.
+    function _roadSideOff(s, side) {
+        return s.onSide && side === s.onSide ? s.onShift : 0;
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -4430,6 +4472,26 @@
     const ROAD_SIDEWALK_JOINT_D = 0.8 * K;
     const ROAD_SIDEWALK_JOINT_COLOR = 0x1a1d22;
     const ROAD_POST_INSET = 4 * K;          // post sits this far in from the sidewalk's outer edge
+    // The oncoming carriageway (Settings > Night road oncoming carriageway;
+    // the layout is _roadCrossSection). It runs on the left, as when you
+    // drive on the right, whichever way Lefty mirrors the neck: the nut end
+    // is on the left for a right-handed player, where the camera spends
+    // most of its time, so the other carriageway is in view most of the
+    // time. Across the median: our curb, a raised strip, the oncoming
+    // carriageway's curb, and a concrete barrier on the centre line with
+    // the shared lamp posts standing on it, one head toward each carriageway.
+    const ROAD_ON_SIDE = -1;
+    const ROAD_MEDIAN_W = 40 * K;           // between the two carriageways' edges
+    const ROAD_MED_ARM = 7 * K;             // a median post's arm, from the post to each head
+    const ROAD_BARRIER_W = 5 * K, ROAD_BARRIER_TOP_W = 2.5 * K, ROAD_BARRIER_H = 8 * K;
+    const ROAD_BARRIER_HEX = 0x7e828a;
+    // Its lanes: three, fixed (the oncoming road carries no frets): two
+    // dashed dividers that move with the song like our lane dashes, and a
+    // solid line just inside each edge.
+    const ROAD_ON_LANES = 3;
+    const ROAD_ON_DASH_OPACITY = 0.22;
+    const ROAD_ON_EDGE_OPACITY = 0.16;
+    const ROAD_ON_EDGE_IN = 3 * K;          // the solid line's distance in from the carriageway's edge
     // Street lights skip every third beat counted from each bar line (see
     // _roadPostPattern): a third fewer posts, every bar line still lit.
     const ROAD_POST_SKIP_EVERY = 3;
@@ -5056,13 +5118,21 @@
         const n = ++s.fwCount;
         const seed = (s.seed ^ Math.imul(n, 0x9e3779b1)) | 0;
         const side = (n & 1) ? 1 : -1;
-        const x0abs = s.postX + (40 + 80 * _roadHash01(n, 71, seed)) * K;
+        const off = _roadSideOff(s, side);
+        const x0abs = s.postX + off + (40 + 80 * _roadHash01(n, 71, seed)) * K;
         const reach = ROAD_FW_REACH_MIN + (ROAD_FW_REACH_MAX - ROAD_FW_REACH_MIN) * _roadHash01(n, 72, seed);
         const z1 = s.zFar + (s.skyBaseZ - s.zFar) * (0.35 + 0.3 * _roadHash01(n, 73, seed));
         const target = ROAD_FW_NDC_Y + ROAD_FW_NDC_SPREAD * _roadHash01(n, 74, seed);
         let y1 = _bgRoadFwBurstY(s, side * (x0abs + reach), z1, target);
         const f = _bgRoadFwFitX(s, side, x0abs, x0abs + ROAD_FW_REACH_MAX, y1, z1, ROAD_FW_NDC_X);
-        const x1 = side * (x0abs + reach * f);
+        let x1abs = x0abs + reach * f;
+        // Beyond the oncoming carriageway a narrow view can lose the launch
+        // line itself: the burst then leans back in over that road (it
+        // carries no notes), never nearer than our own launch line.
+        if (f === 0 && off > 0) {
+            x1abs = x0abs - off + off * _bgRoadFwFitX(s, side, x0abs - off, x0abs, y1, z1, ROAD_FW_NDC_X);
+        }
+        const x1 = side * x1abs;
         if (f < 1) y1 = _bgRoadFwBurstY(s, x1, z1, target);
         // Speeds and sizes scale with the burst's distance, so every burst
         // looks about the same size on screen.
@@ -5149,8 +5219,14 @@
             d.scale.set(1, 1, zA - zB);
             d.updateMatrix();
             s.deck.setMatrixAt(nd++, d.matrix);
+            if (s.onSide) {
+                // One bridge carries both carriageways and the median.
+                d.position.x = s.onSide * s.onShift;
+                d.updateMatrix();
+                s.deck.setMatrixAt(nd++, d.matrix);
+            }
             for (let side = -1; side <= 1; side += 2) {
-                d.position.set(side * s.beamX, s.beamY, (zA + zB) / 2);
+                d.position.set(side * (s.beamX + _roadSideOff(s, side)), s.beamY, (zA + zB) / 2);
                 d.updateMatrix();
                 s.beams.setMatrixAt(nb++, d.matrix);
             }
@@ -5170,11 +5246,12 @@
                 const hr = ROAD_PARAPET_H * (mr > 0.02 ? mr : 0.02);
                 const railLen = t + ROAD_BALUSTER_DT <= sl.t1 + 1e-9 ? step : 0;
                 for (let side = -1; side <= 1; side += 2) {
-                    d.position.set(side * s.parapetX, s.baseY, z);
+                    const px = side * (s.parapetX + _roadSideOff(s, side));
+                    d.position.set(px, s.baseY, z);
                     d.scale.set(1, h, 1);
                     d.updateMatrix();
                     s.balusters.setMatrixAt(np, d.matrix);
-                    d.position.set(side * s.parapetX, s.baseY + hr, z - step / 2);
+                    d.position.set(px, s.baseY + hr, z - step / 2);
                     d.scale.set(1, 1, railLen > 0 ? railLen : 1e-4);
                     d.updateMatrix();
                     s.rails.setMatrixAt(np, d.matrix);
@@ -5217,7 +5294,7 @@
             const zA = Math.min(sl.zN, s.zNear), zB = Math.max(sl.zF, s.zFar);
             if (zA > zB) {
                 for (let side = -1; side <= 1; side += 2) {
-                    d.position.set(side * s.waterX, s.waterY, (zA + zB) / 2);
+                    d.position.set(side * (s.waterX + _roadSideOff(s, side)), s.waterY, (zA + zB) / 2);
                     d.scale.set(1, 1, zA - zB);
                     d.updateMatrix();
                     s.water.setMatrixAt(nw++, d.matrix);
@@ -5230,7 +5307,8 @@
                 // nor so far behind that its stays can't reach the view.
                 if (z < s.zFar || z > s.zNear + reach) continue;
                 for (let side = -1; side <= 1; side += 2) {
-                    const x = side * s.brTowerX, xa = side * s.parapetX;
+                    const o = _roadSideOff(s, side);
+                    const x = side * (s.brTowerX + o), xa = side * (s.parapetX + o);
                     d.position.set(x, s.brFloorY, z);
                     d.scale.set(1, topY - s.brFloorY, 1);
                     d.updateMatrix();
@@ -5282,7 +5360,7 @@
                 if (m < 0.5) continue;
                 const sh = 0.6 + 0.4 * Math.sin(2 * Math.PI * (now * rb.rate[i] + rb.phase[i]));
                 const len = (ROAD_REFL_LEN_MIN + (ROAD_REFL_LEN_MAX - ROAD_REFL_LEN_MIN) * rb.len[i]) * sh * m;
-                const x = rb.side[i] * (s.valleyX + ROAD_REFL_X_IN + rb.x[i] * s.reflXSpan);
+                const x = rb.side[i] * (s.valleyX + ROAD_REFL_X_IN + rb.x[i] * s.reflXSpan + _roadSideOff(s, rb.side[i]));
                 d.position.set(x, s.waterY + ROAD_REFL_LIFT, z);
                 d.rotation.set(0, Math.atan2(x - camX, z - camZ), 0);
                 d.scale.set(ROAD_REFL_W, 1, len);
@@ -5886,6 +5964,30 @@
         s.laneShown = nDim + nBright + nc;
     }
 
+    // Per-frame oncoming lanes: the dividers' dashes move toward the player
+    // at note speed with the song, exactly like our own lane dashes. The
+    // oncoming road is ground: it passes us at our speed; only its traffic
+    // shows the other direction. Skipped while the phase hasn't moved.
+    function _bgRoadUpdateOncoming(s, chart) {
+        if (!s.onDash) return;
+        const time = chart && Number.isFinite(chart.time) ? chart.time : 0;
+        const phase = _roadDashPhase(time, TS, ROAD_DASH_PERIOD);
+        if (phase === s.onPhase) return;
+        s.onPhase = phase;
+        const d = s.dummy, per = s.dashesPerEdge, xc = s.onSide * s.onShift;
+        let n = 0;
+        for (let k = 0; k < s.onDivX.length; k++) {
+            for (let j = 0; j < per; j++) {
+                const z = s.zNear - (j + 0.5) * ROAD_DASH_PERIOD + phase;
+                if (z < s.zFar) break;
+                d.position.set(xc + s.onDivX[k], s.markY, z);
+                d.updateMatrix();
+                s.onDash.setMatrixAt(n++, d.matrix);
+            }
+        }
+        s.onDash.count = n;
+        s.onDash.instanceMatrix.needsUpdate = true;
+    }
     // Per-frame sidewalk joints: square slabs whose joints scroll toward the
     // player at note speed (same phase rule as the lane dashes). Skipped
     // while the song time hasn't moved (paused).
@@ -5901,7 +6003,7 @@
             for (let j = 0; j < per; j++) {
                 const z = s.zNear - (j + 0.5) * ROAD_SIDEWALK_JOINT + phase;
                 if (z < s.zFar) break;
-                d.position.set(side * s.sidewalkX, s.jointY, z);
+                d.position.set(side * (s.sidewalkX + _roadSideOff(s, side)), s.jointY, z);
                 d.updateMatrix();
                 s.joints.setMatrixAt(n++, d.matrix);
             }
@@ -6179,6 +6281,16 @@
                 const zFar = -(AHEAD + 1) * TS;
                 const len = zNear - zFar;
                 const zMid = (zNear + zFar) / 2;
+                // The cross-section: where the median, the oncoming
+                // carriageway and everything beside them sit (see
+                // _roadCrossSection). off(side) moves that side's outer
+                // edge, ground and weather out past the oncoming road.
+                const xs = _roadCrossSection(halfW,
+                    settings && settings.oncoming === false ? 0 : ROAD_ON_SIDE, {
+                        shoulder: ROAD_SHOULDER_W, walk: ROAD_SIDEWALK_W, postIn: ROAD_POST_INSET,
+                        median: ROAD_MEDIAN_W, arm: ROAD_MED_ARM,
+                    });
+                const off = xs.off;
 
                 const root = new T.Group();
                 root.position.x = cx;
@@ -6200,9 +6312,18 @@
                     edgeD: new Array(ROAD_LANE_CAP * 2).fill(0),
                     edgeCur: new Array(ROAD_LANE_CAP * 2).fill(false),
                     cx,
-                    postX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W - ROAD_POST_INSET,
+                    postX: xs.postX,
                     baseY: roadY + ROAD_SIDEWALK_H,     // posts stand on the sidewalk
                     postKeep: new Array(ROAD_POST_POOL).fill(true),
+                    // The oncoming carriageway (onSide 0 = none): its centre
+                    // at onSide * onShift, the median's centre line at medX,
+                    // the shared posts' heads at headIn / headOut, the
+                    // oncoming road's outer posts at farPostX (all |x|), its
+                    // lane dividers (x from its centre) and their dashes.
+                    onSide: xs.onSide, onShift: xs.onShift, medX: xs.medX,
+                    headIn: xs.headIn, headOut: xs.headOut, farPostX: xs.farPostX,
+                    onDivX: [], onDash: null, onEdge: null, onPhase: -1, arms: null,
+                    headCap: ROAD_POST_POOL * 4,
                     sidewalkX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W / 2,
                     jointY: roadY + ROAD_SIDEWALK_H + 0.05 * K,
                     jointsPerSide: Math.ceil(len / ROAD_SIDEWALK_JOINT) + 1,
@@ -6240,7 +6361,7 @@
                     // Skyline approach: the city's node, how far along, its
                     // base line now and the pose (see _bgRoadUpdateApproach).
                     skyNode: null, approach: 0, skyBaseZ: 0, skyPose: { sc: 1, dz: 0 }, skySc: 1, skyDz: 0,
-                    groundHalfX: halfW * ROAD_GROUND_MUL,   // the ground's reach either side (the fog clamp's width)
+                    groundHalfX: halfW * ROAD_GROUND_MUL + xs.onShift,   // the ground's furthest reach (the fog clamp's width)
                     towers: null, windows: null, neon: null, sky: null,
                     windowMat: null, neonMat: null, skyMat: null, skyTex: null,
                     orderStamped: false,
@@ -6309,6 +6430,14 @@
                 asphalt.rotation.x = -Math.PI / 2;
                 asphalt.position.set(0, roadY, zMid);
                 root.add(asphalt);
+                if (s.onSide) {
+                    // The oncoming carriageway: the same asphalt (one
+                    // material, so the theme and the wet sheen reach both).
+                    const a2 = new T.Mesh(asphalt.geometry, s.asphaltMat);
+                    a2.rotation.x = -Math.PI / 2;
+                    a2.position.set(s.onSide * s.onShift, roadY, zMid);
+                    root.add(a2);
+                }
 
                 // Rolling ground either side (see _bgRoadUpdateHills): flat
                 // beside the road and lamp posts, low seeded hills further
@@ -6319,7 +6448,10 @@
                 for (const side of [-1, 1]) {
                     const g = geo(new T.PlaneGeometry(groundW, len, ROAD_HILL_SEG_X, ROAD_HILL_SEG_Z));
                     g.rotateX(-Math.PI / 2);         // lie flat: position y is the height
-                    const xOff = side * (halfW + groundW / 2);
+                    // On the oncoming side the ground (and so the hills)
+                    // starts past the oncoming road's outer edge.
+                    const xOff = side * (halfW + groundW / 2 + off(side));
+                    const hs = hillStart + off(side);
                     const pos = g.attributes.position;
                     pos.setUsage(T.DynamicDrawUsage);
                     const cnt = pos.count;
@@ -6332,7 +6464,7 @@
                         const x = pos.getX(i) + xOff;
                         hx[i] = x;
                         hz[i] = pos.getZ(i) + zMid;
-                        let r = (Math.abs(x) - hillStart) / ROAD_HILL_RAMP;
+                        let r = (Math.abs(x) - hs) / ROAD_HILL_RAMP;
                         r = r < 0 ? 0 : (r > 1 ? 1 : r);
                         ramp[i] = r * r * (3 - 2 * r);
                     }
@@ -6349,12 +6481,42 @@
                 const walkMat = mat(new T.MeshBasicMaterial({ color: ROAD_SIDEWALK_COLOR }));
                 const walkGeo = geo(new T.BoxGeometry(ROAD_SIDEWALK_W, ROAD_SIDEWALK_H, len));
                 for (const side of [-1, 1]) {
+                    // Our curb (on the median side, the median's first one).
                     const b = new T.Mesh(barrierGeo, barrierMat);
                     b.position.set(side * (halfW + ROAD_SHOULDER_W / 2), roadY + ROAD_SHOULDER_H / 2, zMid);
                     root.add(b);
+                    // The sidewalk: ours, or on the oncoming side the
+                    // oncoming road's, past its outer curb.
+                    const o = off(side);
+                    if (o > 0) {
+                        const b2 = new T.Mesh(barrierGeo, barrierMat);
+                        b2.position.set(side * (o + halfW + ROAD_SHOULDER_W / 2), roadY + ROAD_SHOULDER_H / 2, zMid);
+                        root.add(b2);
+                    }
                     const w = new T.Mesh(walkGeo, walkMat);
-                    w.position.set(side * s.sidewalkX, roadY + ROAD_SIDEWALK_H / 2, zMid);
+                    w.position.set(side * (s.sidewalkX + o), roadY + ROAD_SIDEWALK_H / 2, zMid);
                     root.add(w);
+                }
+                if (s.onSide) {
+                    // The median: the oncoming carriageway's curb, a raised
+                    // strip between the two curbs, and the concrete barrier
+                    // on its centre line (a box tapered to its top), which
+                    // the shared lamp posts stand on.
+                    const sd = s.onSide;
+                    const c2 = new T.Mesh(barrierGeo, barrierMat);
+                    c2.position.set(sd * (halfW + ROAD_MEDIAN_W - ROAD_SHOULDER_W / 2), roadY + ROAD_SHOULDER_H / 2, zMid);
+                    root.add(c2);
+                    const strip = new T.Mesh(geo(new T.BoxGeometry(ROAD_MEDIAN_W - 2 * ROAD_SHOULDER_W, ROAD_SIDEWALK_H, len)), walkMat);
+                    strip.position.set(sd * s.medX, roadY + ROAD_SIDEWALK_H / 2, zMid);
+                    root.add(strip);
+                    const bg = geo(new T.BoxGeometry(ROAD_BARRIER_W, ROAD_BARRIER_H, len));
+                    const bp = bg.attributes.position;
+                    for (let i = 0; i < bp.count; i++) {
+                        if (bp.getY(i) > 0) bp.setX(i, bp.getX(i) * ROAD_BARRIER_TOP_W / ROAD_BARRIER_W);
+                    }
+                    const barrier = new T.Mesh(bg, mat(new T.MeshBasicMaterial({ color: ROAD_BARRIER_HEX })));
+                    barrier.position.set(sd * s.medX, roadY + ROAD_SIDEWALK_H + ROAD_BARRIER_H / 2, zMid);
+                    root.add(barrier);
                 }
                 // Expansion joints across each sidewalk, placed per frame by
                 // song time (see _bgRoadUpdateSidewalks).
@@ -6378,7 +6540,7 @@
                     s.deckMat = mat(new T.MeshBasicMaterial({ color: 0x3a3e46, depthWrite: false }));
                     const deckGeo = geo(new T.PlaneGeometry(halfW * 2, 1));
                     deckGeo.rotateX(-Math.PI / 2);
-                    s.deck = new T.InstancedMesh(deckGeo, s.deckMat, ROAD_BRIDGE_POOL);
+                    s.deck = new T.InstancedMesh(deckGeo, s.deckMat, ROAD_BRIDGE_POOL * 2);   // a deck per carriageway
                     const beamMat = mat(new T.MeshBasicMaterial({ color: ROAD_BEAM_HEX }));
                     s.beams = new T.InstancedMesh(geo(new T.BoxGeometry(ROAD_BEAM_W, ROAD_BEAM_H, 1)), beamMat, ROAD_BRIDGE_POOL * 2);
                     const parMat = mat(new T.MeshBasicMaterial({ color: ROAD_PARAPET_HEX }));
@@ -6459,12 +6621,15 @@
                         m.frustumCulled = false;
                         s.farRiver.add(m);
                     }
-                    const crossGeo = geo(new T.BoxGeometry(s.brTowerX * 2 + ROAD_BR_TOWER_W, ROAD_BR_CROSS_H, ROAD_BR_TOWER_W));
+                    // From tower to tower: with the oncoming carriageway the
+                    // far tower stands past it, so the beam is longer and
+                    // centred over the median side.
+                    const crossGeo = geo(new T.BoxGeometry(s.brTowerX * 2 + s.onShift + ROAD_BR_TOWER_W, ROAD_BR_CROSS_H, ROAD_BR_TOWER_W));
                     for (let i = 0; i < ROAD_BRIDGE_POOL * 2; i++) {
                         const g = new T.Group();
                         const cm = mat(new T.MeshBasicMaterial({ color: ROAD_GANTRY_COLOR, transparent: true, depthWrite: false }));
                         const bar = new T.Mesh(crossGeo, cm);
-                        bar.position.y = s.baseY + ROAD_BR_TOWER_H * ROAD_BR_CROSS_AT;
+                        bar.position.set(s.onSide * s.onShift / 2, s.baseY + ROAD_BR_TOWER_H * ROAD_BR_CROSS_AT, 0);
                         g.add(bar);
                         g.visible = false;
                         root.add(g);
@@ -6496,22 +6661,58 @@
                 // Unit depth along z; scale.z = seam depth.
                 const seamGeo = geo(new T.PlaneGeometry(halfW * 2, 1));
                 seamGeo.rotateX(-Math.PI / 2);
-                s.seams = new T.InstancedMesh(seamGeo, seamMat, ROAD_POST_POOL);
+                s.seams = new T.InstancedMesh(seamGeo, seamMat, ROAD_POST_POOL * 2);   // both carriageways
                 for (const m of [s.seams, s.laneDim, s.laneBright, s.connectors]) {
                     m.instanceMatrix.setUsage(T.DynamicDrawUsage);
                     m.count = 0;
                     m.frustumCulled = false;
                     root.add(m);
                 }
+                // The oncoming carriageway's lanes (see ROAD_ON_LANES): the
+                // dividers' dashes, placed per frame by song time
+                // (_bgRoadUpdateOncoming), and a solid line inside each
+                // edge, placed once.
+                if (s.onSide) {
+                    for (let k = 1; k < ROAD_ON_LANES; k++) s.onDivX.push(-halfW + (2 * halfW * k) / ROAD_ON_LANES);
+                    s.onDash = new T.InstancedMesh(dashGeo, mat(new T.MeshBasicMaterial({
+                        color: 0xffffff, transparent: true, opacity: ROAD_ON_DASH_OPACITY, depthWrite: false,
+                    })), s.dashesPerEdge * s.onDivX.length);
+                    s.onDash.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                    s.onDash.count = 0;
+                    s.onDash.frustumCulled = false;
+                    root.add(s.onDash);
+                    const edgeGeo = geo(new T.PlaneGeometry(ROAD_DASH_W, len));
+                    edgeGeo.rotateX(-Math.PI / 2);
+                    s.onEdge = new T.InstancedMesh(edgeGeo, mat(new T.MeshBasicMaterial({
+                        color: 0xffffff, transparent: true, opacity: ROAD_ON_EDGE_OPACITY, depthWrite: false,
+                    })), 2);
+                    const d = s.dummy;
+                    for (let e = 0; e < 2; e++) {
+                        d.position.set(s.onSide * s.onShift + (e ? 1 : -1) * (halfW - ROAD_ON_EDGE_IN), s.markY, zMid);
+                        d.updateMatrix();
+                        s.onEdge.setMatrixAt(e, d.matrix);
+                    }
+                    d.position.set(0, 0, 0);
+                    s.onEdge.frustumCulled = false;
+                    root.add(s.onEdge);
+                }
 
                 // Street-light pools: one post mesh (both sides) and separate
                 // beat / bar head meshes so bar heads get their own brighter
                 // material colour without per-instance colour writes.
-                const cap = ROAD_POST_POOL * 2;
+                // With the oncoming carriageway a lit beat has up to three
+                // posts (ours, the median's shared one, the oncoming road's
+                // outer one), four heads (two on the median post's arm) and
+                // one arm; without it, two posts and two heads.
+                const cap = s.headCap;
                 const postGeo = geo(new T.BoxGeometry(ROAD_POST_W, 1, ROAD_POST_W));
                 postGeo.translate(0, 0.5, 0);    // base at y=0; scale.y = height
                 const postMat = mat(new T.MeshBasicMaterial({ color: 0x2a2e36 }));
-                s.posts = new T.InstancedMesh(postGeo, postMat, cap);
+                s.posts = new T.InstancedMesh(postGeo, postMat, ROAD_POST_POOL * 3);
+                // The median post's arm: centred on the post top, reaching
+                // ROAD_MED_ARM to each head.
+                s.arms = new T.InstancedMesh(geo(new T.BoxGeometry(ROAD_MED_ARM * 2, ROAD_POST_W, ROAD_POST_W)),
+                    postMat, ROAD_POST_POOL);
                 const headGeo = geo(new T.SphereGeometry(ROAD_HEAD_R, 10, 8));
                 s.beatHeadMat = mat(new T.MeshBasicMaterial({ color: 0xffffff }));
                 s.barHeadMat = mat(new T.MeshBasicMaterial({ color: 0xffffff }));
@@ -6523,7 +6724,7 @@
                     s.beatHeads.setColorAt(i, s.headColor);
                     s.barHeads.setColorAt(i, s.headColor);
                 }
-                for (const m of [s.posts, s.beatHeads, s.barHeads]) {
+                for (const m of [s.posts, s.arms, s.beatHeads, s.barHeads]) {
                     m.instanceMatrix.setUsage(T.DynamicDrawUsage);
                     m.count = 0;
                     // Instances move every frame; the cached bounding sphere
@@ -6541,6 +6742,9 @@
                 // before the notes (ROAD_GANTRY_ORDER), so notes always paint
                 // over a gantry passing overhead.
                 const gantryX = halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W + ROAD_GANTRY_W;
+                // A leg's x per side: on the median side it stands on the
+                // barrier, and the crossbar spans the legs (off centre).
+                const legX = (side) => side * (s.onSide && side === s.onSide ? s.medX : gantryX);
                 const panelW = halfW * 2 * ROAD_SIGN_W_FRAC;
                 const panelH = panelW / ROAD_SIGN_ASPECT;
                 const panelY = s.baseY + ROAD_POST_H * ROAD_BAR_H_MUL + ROAD_SIGN_CLEAR + panelH / 2;
@@ -6548,7 +6752,7 @@
                 const gPostH = barY - roadY + ROAD_GANTRY_W / 2;
                 const gPostGeo = geo(new T.BoxGeometry(ROAD_GANTRY_W, gPostH, ROAD_GANTRY_W));
                 gPostGeo.translate(0, gPostH / 2, 0);
-                const gBarGeo = geo(new T.BoxGeometry(gantryX * 2 + ROAD_GANTRY_W, ROAD_GANTRY_W, ROAD_GANTRY_W));
+                const gBarGeo = geo(new T.BoxGeometry(legX(1) - legX(-1) + ROAD_GANTRY_W, ROAD_GANTRY_W, ROAD_GANTRY_W));
                 const panelGeo = geo(new T.PlaneGeometry(panelW, panelH));
                 for (let i = 0; i < ROAD_SIGN_POOL; i++) {
                     const g = new T.Group();
@@ -6557,11 +6761,11 @@
                     }));
                     for (const side of [-1, 1]) {
                         const p = new T.Mesh(gPostGeo, gantryMat);
-                        p.position.set(side * gantryX, roadY, 0);
+                        p.position.set(legX(side), roadY, 0);
                         g.add(p);
                     }
                     const bar = new T.Mesh(gBarGeo, gantryMat);
-                    bar.position.set(0, barY, -ROAD_GANTRY_W);
+                    bar.position.set((legX(1) + legX(-1)) / 2, barY, -ROAD_GANTRY_W);
                     g.add(bar);
                     const tex = _roadSignSlotTexture();
                     const pm = mat(new T.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
@@ -6639,9 +6843,9 @@
                 }));
                 const poolGeo = geo(new T.PlaneGeometry(1, 1));
                 poolGeo.rotateX(-Math.PI / 2);
-                s.pools = new T.InstancedMesh(poolGeo, poolMat, ROAD_POST_POOL * 2);
+                s.pools = new T.InstancedMesh(poolGeo, poolMat, s.headCap);   // one per head
                 s.pools.instanceMatrix.setUsage(T.DynamicDrawUsage);
-                for (let i = 0; i < ROAD_POST_POOL * 2; i++) s.pools.setColorAt(i, s.tmpColor.setRGB(0, 0, 0));
+                for (let i = 0; i < s.headCap; i++) s.pools.setColorAt(i, s.tmpColor.setRGB(0, 0, 0));
                 s.pools.instanceColor.setUsage(T.DynamicDrawUsage);
                 s.pools.count = 0;
                 s.pools.frustumCulled = false;
@@ -6685,7 +6889,7 @@
                         const side = i % 2 === 0 ? -1 : 1, k = i >> 1;
                         const w = ROAD_FOG_SIDE_W * (0.7 + 0.6 * _roadHash01(i, 33, 5));
                         s.fogSideW[i] = w;
-                        s.fogSideX[i] = side * (fogX0 + w / 2 + ROAD_FOG_SIDE_SPREAD * _roadHash01(i, 31, 5));
+                        s.fogSideX[i] = side * (fogX0 + off(side) + w / 2 + ROAD_FOG_SIDE_SPREAD * _roadHash01(i, 31, 5));
                         s.fogSideZ[i] = zFar + len * ((k + _roadHash01(i, 32, 5) * 0.8) / ROAD_FOG_SIDE_N);
                         s.fogSideH[i] = ROAD_FOG_SIDE_H * (0.7 + 0.6 * _roadHash01(i, 34, 5));
                     }
@@ -6730,7 +6934,9 @@
                             arr[o + 14] = zFar - 30 * K - _roadHash01(i, 43, 9) * (zFar - s.skylineZ) * 0.85;
                         } else {
                             const side = _roadHash01(i, 44, 9) < 0.5 ? -1 : 1;
-                            arr[o + 12] = side * (xIn + ROAD_RAIN_SIDE_W * _roadHash01(i, 45, 9));
+                            // Over the median and the oncoming road too (never
+                            // over the board), on out over that side's hills.
+                            arr[o + 12] = side * (xIn + (ROAD_RAIN_SIDE_W + off(side)) * _roadHash01(i, 45, 9));
                             s.rainZ[i] = zFar + len * _roadHash01(i, 46, 9);
                             arr[o + 14] = s.rainZ[i];
                         }
@@ -6816,6 +7022,7 @@
                         chart.lowerBoundTime, s.slots, ROAD_POST_POOL);
                 }
                 _bgRoadUpdateLanes(s, chart);
+                _bgRoadUpdateOncoming(s, chart);
                 if (!lite) _bgRoadUpdateSidewalks(s, chart);
                 if (n > 0) {
                     _roadPostPattern(chart.beats, chart.time, BEHIND, chart.lowerBoundTime,
@@ -6824,7 +7031,7 @@
                 if (n === 0) {
                     if (s.shown !== 0) {
                         s.posts.count = 0; s.beatHeads.count = 0; s.barHeads.count = 0;
-                        s.seams.count = 0; s.pools.count = 0;
+                        s.seams.count = 0; s.pools.count = 0; s.arms.count = 0;
                         s.shown = 0;
                     }
                     return;
@@ -6851,7 +7058,14 @@
                 // On a bridge the heads and their pools take a cooler white,
                 // eased with the span's ramps (per head colour over white).
                 const tint = s.brN > 0, hc = s.headColor;
-                let np = 0, nBeat = 0, nBar = 0, nPool = 0;
+                // With the oncoming carriageway (see _roadCrossSection) the
+                // median side's post stands on the barrier with a head over
+                // each carriageway, and the oncoming road's outer edge has
+                // posts of its own (not in Lite). Pools lie under each
+                // head: toward the road from an outer post, straight below
+                // the median's heads.
+                const on = s.onSide, medX = s.medX, farX = s.farPostX;
+                let np = 0, nBeat = 0, nBar = 0, nPool = 0, na = 0;
                 for (let i = 0; i < n; i++) {
                     if (!s.postKeep[i]) continue;   // skipped beat in the bar: no light
                     const slot = s.slots[i];
@@ -6867,16 +7081,31 @@
                         hc.setRGB(tr, tg, tb);
                     }
                     for (let side = -1; side <= 1; side += 2) {
-                        d.position.set(side * x, y0, slot.z);
-                        d.scale.set(1, h, 1);
-                        d.updateMatrix();
-                        s.posts.setMatrixAt(np++, d.matrix);
-                        d.position.y = y0 + h;
-                        d.scale.set(hs, hs, hs);
-                        d.updateMatrix();
-                        const hi = slot.isBar ? nBar++ : nBeat++;
-                        heads.setMatrixAt(hi, d.matrix);
-                        if (tint) heads.setColorAt(hi, hc);
+                        const med = !!on && side === on;
+                        // Our post; on the median side the shared one, then
+                        // the oncoming road's outer one (not in Lite).
+                        const nPost = med && !lite ? 2 : 1;
+                        for (let p = 0; p < nPost; p++) {
+                            const shared = med && p === 0;
+                            d.position.set(side * (p ? farX : (shared ? medX : x)), y0, slot.z);
+                            d.scale.set(1, h, 1);
+                            d.updateMatrix();
+                            s.posts.setMatrixAt(np++, d.matrix);
+                            d.position.y = y0 + h;
+                            if (shared) {
+                                d.scale.set(1, 1, 1);
+                                d.updateMatrix();
+                                s.arms.setMatrixAt(na++, d.matrix);
+                            }
+                            d.scale.set(hs, hs, hs);
+                            for (let e = 0; e < (shared ? 2 : 1); e++) {
+                                if (shared) d.position.x = side * (e ? s.headOut : s.headIn);
+                                d.updateMatrix();
+                                const hi = slot.isBar ? nBar++ : nBeat++;
+                                heads.setMatrixAt(hi, d.matrix);
+                                if (tint) heads.setColorAt(hi, hc);
+                            }
+                        }
                     }
                     if (pools) {
                         let f = 1 - (camZ - slot.z - fogNear) / fogSpan;
@@ -6884,13 +7113,19 @@
                         const a = poolStr * f * (slot.isBar ? ROAD_POOL_BAR_MUL : 1);
                         if (a > 0.003) {
                             c.setRGB(lr * a * tr, lg * a * tg, lb * a * tb);
+                            d.scale.set(ROAD_POOL_RX * 2 * poolGrow, 1, ROAD_POOL_RZ * 2 * poolLen);
                             for (let side = -1; side <= 1; side += 2) {
-                                d.position.set(side * poolX, poolY, slot.z);
-                                d.scale.set(ROAD_POOL_RX * 2 * poolGrow, 1, ROAD_POOL_RZ * 2 * poolLen);
-                                d.updateMatrix();
-                                pools.setMatrixAt(nPool, d.matrix);
-                                pools.setColorAt(nPool, c);
-                                nPool++;
+                                const med = !!on && side === on;
+                                // Under the median's two heads, and in from the
+                                // oncoming road's outer post, toward that road.
+                                for (let e = 0; e < (med ? 3 : 1); e++) {
+                                    const px = !med ? poolX : (e === 0 ? s.headIn : (e === 1 ? s.headOut : farX - ROAD_POOL_IN));
+                                    d.position.set(side * px, poolY, slot.z);
+                                    d.updateMatrix();
+                                    pools.setMatrixAt(nPool, d.matrix);
+                                    pools.setColorAt(nPool, c);
+                                    nPool++;
+                                }
                             }
                         }
                     }
@@ -6904,6 +7139,8 @@
                 }
                 s.posts.count = np; s.beatHeads.count = nBeat; s.barHeads.count = nBar;
                 s.posts.instanceMatrix.needsUpdate = true;
+                s.arms.count = na;
+                if (na) s.arms.instanceMatrix.needsUpdate = true;
                 if (nBeat) s.beatHeads.instanceMatrix.needsUpdate = true;
                 if (nBar) s.barHeads.instanceMatrix.needsUpdate = true;
                 if (tint) {
@@ -6913,7 +7150,7 @@
                 } else if (s.headTint) {
                     // Off the bridge: every head back to white, once.
                     hc.setRGB(1, 1, 1);
-                    for (let i = 0; i < ROAD_POST_POOL * 2; i++) {
+                    for (let i = 0; i < s.headCap; i++) {
                         s.beatHeads.setColorAt(i, hc);
                         s.barHeads.setColorAt(i, hc);
                     }
@@ -6926,15 +7163,22 @@
                 // Beat seams across the carriageway, same z as the posts, so
                 // the asphalt itself reads as moving.
                 const ys = s.seamY;
+                let ns = 0;
                 for (let i = 0; i < n; i++) {
                     const slot = s.slots[i];
                     d.position.set(0, ys, slot.z);
                     d.scale.set(1, 1, slot.isBar ? ROAD_SEAM_D * ROAD_BAR_SEAM_MUL : ROAD_SEAM_D);
                     d.updateMatrix();
-                    s.seams.setMatrixAt(i, d.matrix);
+                    s.seams.setMatrixAt(ns++, d.matrix);
+                    if (on) {
+                        // The oncoming carriageway's seam, the same width.
+                        d.position.x = on * s.onShift;
+                        d.updateMatrix();
+                        s.seams.setMatrixAt(ns++, d.matrix);
+                    }
                 }
                 d.scale.set(1, 1, 1);
-                s.seams.count = n;
+                s.seams.count = ns;
                 s.seams.instanceMatrix.needsUpdate = true;
 
                 // bands is BG_ZERO_BANDS when Reactive is off, so the bass
@@ -6953,8 +7197,8 @@
             teardown(s) {
                 if (!s) return;
                 s.root.parent?.remove(s.root);
-                for (const m of [s.posts, s.beatHeads, s.barHeads,
-                    s.laneDim, s.laneBright, s.connectors, s.seams, s.joints,
+                for (const m of [s.posts, s.arms, s.beatHeads, s.barHeads,
+                    s.laneDim, s.laneBright, s.connectors, s.seams, s.joints, s.onDash, s.onEdge,
                     s.towers, s.windows, s.neon,
                     s.pools, s.fogFar, s.fogSide, s.rain,
                     s.deck, s.beams, s.balusters, s.rails,
@@ -6974,8 +7218,10 @@
                 s.hills.length = 0;
                 s.signs.length = 0;
                 s.signMats.length = 0;
-                s.posts = s.beatHeads = s.barHeads = null;
+                s.posts = s.arms = s.beatHeads = s.barHeads = null;
                 s.laneDim = s.laneBright = s.connectors = s.seams = s.joints = null;
+                s.onDash = s.onEdge = null;
+                s.onDivX.length = 0;
                 s.towers = s.windows = s.neon = s.sky = s.skyNode = null;
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;
@@ -7683,6 +7929,9 @@
     let _pcListener = null, _pcRetry = 0, _pcRetryTimer = 0;
     // Neck size slider + its label (the label shows the percentage).
     let _pcNeck = null, _pcNeckLabel = null;
+    // Night road: the oncoming carriageway on / off (shown on the road only).
+    let _pcOncoming = null;
+    const _PC_ONCOMING_TITLE = 'Night road: the oncoming carriageway on the left';
     // Neck size as a whole percent, read through the public getter so this
     // block has no hard dependency on the module variable (the default if absent).
     function _pcNeckDefaultPct() {
@@ -7828,6 +8077,13 @@
             _pcPaint(_pcReactive, !!_bgReadGlobal('reactive'), !uses.reactive,
                 uses.reactive ? 'React to the audio' : why);
         }
+        if (_pcOncoming) {
+            // A road-only switch: hidden under every other style (and under
+            // Venue) rather than greyed out.
+            const road = effectiveStyle === 'road';
+            _pcOncoming.style.display = road ? '' : 'none';
+            if (road) _pcPaint(_pcOncoming, !!_bgReadGlobal('oncoming'), false, _PC_ONCOMING_TITLE);
+        }
         // The reason shows via the wrapper (see _pcReactiveWrap); empty when
         // enabled so the control's own title takes over.
         if (_pcReactiveWrap) {
@@ -7884,6 +8140,8 @@
             if (ns) ns.value = String(pct);
             const nl = document.getElementById('h3d-neck-size-label');
             if (nl) nl.textContent = pct + '%';
+            const oc = document.getElementById('h3d-bg-road-oncoming');
+            if (oc) oc.checked = !!_bgReadGlobal('oncoming');
         } catch (e) { console.error('[3D-Hwy] settings-panel mirror failed', e); }
     }
     function _pcMount() {
@@ -7941,6 +8199,13 @@
             catch (e) { console.error('[3D-Hwy] bg reactive set failed', e); }
         });
         optWrap.appendChild(_pcReactive);
+        _pcOncoming = _pcPill('Oncoming', _PC_ONCOMING_TITLE);
+        _pcOncoming.addEventListener('click', () => {
+            if (_pcOncoming.disabled) return;
+            try { window.h3dBgSetOncoming(!_pcOncoming._on); }
+            catch (e) { console.error('[3D-Hwy] oncoming set failed', e); }
+        });
+        optWrap.appendChild(_pcOncoming);
         box.appendChild(optWrap);
 
         box.appendChild(_pcGroupLabel('Intensity'));
@@ -7993,7 +8258,7 @@
         _pcListener = (key) => {
             if (key === 'style' || key === 'reactive' || key === 'intensity'
                 || key === 'customImageDataUrl' || key === 'customVideoName'
-                || key === 'venueScene' || key === 'neckSize') {
+                || key === 'venueScene' || key === 'neckSize' || key === 'oncoming') {
                 // 'venueScene' has no dropdown/settings widget of its own, but
                 // toggling Venue changes the EFFECTIVE style, so the greying
                 // must re-evaluate (see _pcSync's effectiveStyle).
@@ -8009,7 +8274,7 @@
         if (_pcEl && _pcEl.parentNode) _pcEl.parentNode.removeChild(_pcEl);
         _pcEl = null; _pcSel = null; _pcReactive = null; _pcIntensity = null;
         _pcReactiveWrap = null; _pcIntensityWrap = null; _pcReason = null;
-        _pcNeck = null; _pcNeckLabel = null;
+        _pcNeck = null; _pcNeckLabel = null; _pcOncoming = null;
     }
     function _pcAcquire() {
         _pcRefs++;
@@ -8432,6 +8697,7 @@
         let bgMountedStyleId = null;
         let bgStyleId = 'particles', bgIntensity = 0.5, bgReactive = true;
         let bgRoadQuality = 'auto';
+        let bgRoadOncoming = BG_DEFAULTS.oncoming;
         // Active scene color theme (background + highway surface). Read in
         // _bgLoadSettings, applied by _applyBgTheme (clear + fog + board plane).
         let bgThemeId = 'default';   // BACKGROUND axis (clear + fog)
@@ -12354,6 +12620,12 @@
                     if (bgMountedStyleId === 'road') _bgRebuild();
                     return;
                 }
+                if (changedKey === 'oncoming') {
+                    // The cross-section is laid out at build.
+                    _bgLoadSettings();
+                    if (bgMountedStyleId === 'road') _bgRebuild();
+                    return;
+                }
                 if (changedKey === 'venueInstrumentPov') {
                     if (_bgEffectiveStyleId() === 'venue' && bgState) {
                         _venueSwapPlateIfNeeded(bgState);
@@ -12492,6 +12764,7 @@
             bgIntensity = _bgReadSetting(panelKey, 'intensity');
             bgReactive = _bgReadSetting(panelKey, 'reactive');
             bgRoadQuality = _bgReadSetting(panelKey, 'roadQuality');
+            bgRoadOncoming = _bgReadSetting(panelKey, 'oncoming');
             // Per-render opt-out (captured from the mount bundle in init): force
             // the reactive background off for THIS instance, overriding the shared
             // setting without writing it back. Re-applied here so it sticks across
@@ -12873,6 +13146,7 @@
                     clearHex: _bgBackgroundColors(bgThemeId).clear,
                     intensity: bgIntensity,
                     roadQuality: bgRoadQuality,
+                    oncoming: bgRoadOncoming,
                     palette: activePalette,
                     customImageDataUrl: bgCustomImageDataUrl,
                     customVideoName: bgCustomVideoName,
