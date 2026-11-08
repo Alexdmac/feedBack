@@ -4453,6 +4453,103 @@
     function _roadSideOff(s, side) {
         return s.onSide && side === s.onSide ? s.onShift : 0;
     }
+    // Oncoming traffic: each beat may send a car down the oncoming
+    // carriageway that passes the hit line exactly on that beat, so the
+    // traffic is a pure function of song time: pause, seek and practice
+    // speed land every car where it belongs, with no simulation to keep in
+    // step. A car keeps its lane, and each lane has its own speed
+    // (opt.speeds, in multiples of note speed; lane 0 is beside the median,
+    // lane 2 the outer one), so cars in a lane never run into each other.
+    // A bar line may bring a short convoy in one lane, opt.gap s apart, cut
+    // short so its last car stays opt.clear s clear of the next beat's car.
+    // These are candidates: whether one shows is the mood's call
+    // (_roadTrafficMood, _roadCarSeen). Each carries a key (beat * 4 + its
+    // place in the convoy), lane, z (z = (now - due) * speed * ts, toward the
+    // camera), the beat's roll (does a car come), convoy roll and a tone per
+    // car. Fills the preallocated buf (no allocation) and returns n.
+    function _roadMakeCarBuf(cap) {
+        return {
+            n: 0, key: new Int32Array(cap), lane: new Uint8Array(cap), j: new Uint8Array(cap),
+            z: new Float64Array(cap), roll: new Float64Array(cap), conv: new Float64Array(cap),
+            tone: new Float64Array(cap),
+        };
+    }
+    function _roadPlaceCars(beats, now, ts, zNear, zFar, lowerBoundTime, seed, opt, buf, cap) {
+        if (!buf) return 0;
+        buf.n = 0;
+        if (!beats || beats.length === 0 || !(ts > 0) || !Number.isFinite(now)) return 0;
+        const max = cap < buf.key.length ? cap : buf.key.length;
+        // Cars due at the hit line from tLo to tHi can be on the road now
+        // (the slowest lane reaches furthest); a convoy's tail runs later.
+        const tLo = now - zNear / (opt.kMin * ts), tHi = now - zFar / (opt.kMin * ts);
+        const span = (opt.convoyMax - 1) * opt.gap;
+        let i = typeof lowerBoundTime === 'function' ? lowerBoundTime(beats, tLo - span) : 0;
+        if (!(i >= 0)) i = 0;
+        let n = 0;
+        for (; i < beats.length && n < max; i++) {
+            const b = beats[i], tb = b.time;
+            if (!(tb >= tLo - span)) continue;   // linear-scan fallback
+            if (tb > tHi) break;
+            const u = _roadHash01(i, 82, seed);
+            const lane = u < opt.laneCut[0] ? 0 : (u < opt.laneCut[1] ? 1 : 2);
+            const v = opt.speeds[lane] * ts;
+            let len = 1;
+            if (b.measure >= 0 && opt.convoyMax > 1) {
+                const next = i + 1 < beats.length ? beats[i + 1].time - tb : Infinity;
+                len = 2 + Math.floor(_roadHash01(i, 84, seed) * (opt.convoyMax - 1));
+                while (len > 1 && (len - 1) * opt.gap + opt.clear > next) len--;
+            }
+            const roll = _roadHash01(i, 81, seed), conv = _roadHash01(i, 83, seed);
+            for (let j = 0; j < len && n < max; j++) {
+                const z = (now - tb - j * opt.gap) * v;
+                if (z > zNear || z < zFar) continue;
+                buf.key[n] = i * 4 + j;
+                buf.lane[n] = lane;
+                buf.j[n] = j;
+                buf.z[n] = z;
+                buf.roll[n] = roll;
+                buf.conv[n] = conv;
+                buf.tone[n] = _roadHash01(i * 4 + j, 85, seed);
+                n++;
+            }
+        }
+        buf.n = n;
+        return n;
+    }
+    // The mood's traffic, from the eased heat and gloom (0..1): out.p, the
+    // chance a beat sends a car (busier on a hot run, thinner in gloom, a
+    // third in Lite); out.pc, the chance a bar line's car leads a convoy;
+    // out.b, a car's brightness. Returns out (no allocation).
+    function _roadTrafficMood(heat, gloom, lite, opt, out) {
+        const h = heat > 0 ? (heat < 1 ? heat : 1) : 0;
+        const g = gloom > 0 ? (gloom < 1 ? gloom : 1) : 0;
+        let p = opt.p0 + opt.pHeat * h - opt.pGloom * g;
+        p = p < opt.pMin ? opt.pMin : (p > opt.pMax ? opt.pMax : p);
+        out.p = lite ? p * opt.lite : p;
+        const pc = opt.c0 + opt.cHeat * h - opt.cGloom * g;
+        out.pc = pc < 0 ? 0 : (pc > 1 ? 1 : pc);
+        out.b = (opt.b0 + opt.bHeat * h) * (1 - opt.bGloom * g);
+        return out;
+    }
+    // Whether a candidate car shows is decided the first time it is asked,
+    // with the mood of that moment (it enters at the far end, still in the
+    // fog), and kept while it stays in view, so a miss never makes a car
+    // vanish mid-road. Returns its brightness (0: no car). The cache keeps
+    // the last `size` keys (a power of two, more than a road's worth).
+    function _roadMakeCarCache(size) {
+        return { key: new Int32Array(size).fill(-1), b: new Float64Array(size) };
+    }
+    function _roadCarClear(c) {
+        c.key.fill(-1);
+    }
+    function _roadCarSeen(c, key, bright) {
+        const i = key & (c.key.length - 1);
+        if (c.key[i] !== key) {
+            c.key[i] = key;
+            c.b[i] = bright > 0 ? bright : 0;
+        }
+        return c.b[i];
+    }
     // --- end road placement ---
 
     // Road geometry, all relative to the board's width so the road keeps its
@@ -4492,6 +4589,40 @@
     const ROAD_ON_DASH_OPACITY = 0.22;
     const ROAD_ON_EDGE_OPACITY = 0.16;
     const ROAD_ON_EDGE_IN = 3 * K;          // the solid line's distance in from the carriageway's edge
+    // Its traffic: pairs of cool white headlights, each with a short light
+    // trail behind it like a long exposure, closing in at 2-3x note speed
+    // (_roadPlaceCars). The mood sets how busy and bright it is
+    // (_roadTrafficMood): a hot run fills the road, gloom thins it and
+    // blurs the headlights into halos with shorter trails. Headlights add
+    // light and skip the scene fog, fading in from the far end on their own
+    // as the rain does; they stay dimmer than the lamp heads and dim near
+    // the hit line, so nothing flares beside the notes. Lite keeps a third
+    // of the cars, without trails.
+    const ROAD_CAR_POOL = 48;               // cars drawn at most
+    const ROAD_CAR_OPT = {
+        speeds: [3, 2.5, 2], kMin: 2,       // per lane (0 beside the median), x note speed
+        laneCut: [0.3, 0.65],               // lane picks: 30% beside the median, 35% middle, 35% outer
+        convoyMax: 3, gap: 0.2, clear: 0.18,    // a convoy: up to 3 cars 0.2 s apart, 0.18 s clear of the next
+        p0: 0.6, pHeat: 0.35, pGloom: 0.4, pMin: 0.15, pMax: 0.95,  // chance a beat sends a car
+        c0: 0.15, cHeat: 0.5, cGloom: 0.15, // chance a bar line's car leads a convoy
+        b0: 0.7, bHeat: 0.3, bGloom: 0.35,  // a car's brightness
+        lite: 1 / 3,
+    };
+    const ROAD_CAR_HEX = 0xe4ecff;
+    const ROAD_CAR_HALF_W = 14 * K;         // half the gap between a car's headlights (a lane is ~88 K)
+    const ROAD_CAR_Y = 4 * K;               // headlight height above the lane marks
+    const ROAD_CAR_HEAD_SIZE = 22 * K;      // a headlight's glow, across
+    const ROAD_CAR_HEAD_STR = 0.8;
+    const ROAD_CAR_TRAIL_W = 6 * K;
+    const ROAD_CAR_TRAIL_STR = 0.6;
+    const ROAD_CAR_EXPOSURE = 0.15;         // a trail shows where its car was this many s ago
+    const ROAD_CAR_EXPO_GLOOM = 0.5;        // thick fog halves it
+    const ROAD_CAR_HALO = 0.8;              // thick fog grows a headlight's glow this much
+    const ROAD_CAR_TONE = 0.25;             // cars vary this much in brightness
+    const ROAD_CAR_FADE_AT = 1.05;          // fade in from this many times the fog's far distance
+    const ROAD_CAR_FADE = 260 * K;          // over this distance
+    const ROAD_CAR_NEAR = 0.8 * TS;         // dim over this distance before the hit line
+    const ROAD_CAR_NEAR_MIN = 0.55;         // to this
     // Street lights skip every third beat counted from each bar line (see
     // _roadPostPattern): a third fewer posts, every bar line still lit.
     const ROAD_POST_SKIP_EVERY = 3;
@@ -5988,6 +6119,93 @@
         s.onDash.count = n;
         s.onDash.instanceMatrix.needsUpdate = true;
     }
+
+    // Per-frame oncoming traffic (see ROAD_CAR_OPT): the cars in view from
+    // _roadPlaceCars, kept or not per the mood when first seen, drawn as
+    // two headlight glows (one Points draw) and, outside Lite, a trail
+    // behind each (one instanced strip). Skipped while nothing moves.
+    function _bgRoadUpdateTraffic(s, chart, lite) {
+        const pts = s.carHeads;
+        if (!pts) return;
+        if (s.seedKey !== s.carKey) {   // a new song: its beats are new cars
+            s.carKey = s.seedKey;
+            _roadCarClear(s.carCache);
+            s.carT = NaN;
+        }
+        const tr = s.carTrails;
+        if (!chart || !chart.isReady || !chart.beats || chart.beats.length === 0 || !Number.isFinite(chart.time)) {
+            if (s.carShown) {
+                pts.geometry.setDrawRange(0, 0);
+                tr.count = 0;
+                s.carShown = 0;
+            }
+            s.carT = NaN;
+            return;
+        }
+        const time = chart.time, fog = s.fogAmt;
+        if (time === s.carT && fog === s.carFog && lite === s.carLite) return;
+        s.carT = time; s.carFog = fog; s.carLite = lite;
+        const mood = _roadTrafficMood(s.mood.heat, s.mood.gloom, lite, ROAD_CAR_OPT, s.carMood);
+        const buf = s.carBuf;
+        const n = _roadPlaceCars(chart.beats, time, TS, s.zNear, s.zFar, chart.lowerBoundTime, s.seed,
+            ROAD_CAR_OPT, buf, ROAD_CAR_POOL);
+        const camZ = s.cam && s.cam.position ? s.cam.position.z : s.zNear * 0.25;
+        const fadeFrom = (chart.fogFar > 0 ? chart.fogFar : FOG_END) * ROAD_CAR_FADE_AT;
+        const halo = 1 + ROAD_CAR_HALO * fog;
+        const expo = ROAD_CAR_EXPOSURE * (1 - ROAD_CAR_EXPO_GLOOM * fog);
+        const pos = s.carPos, col = s.carCol, tcol = tr.instanceColor.array, d = s.dummy;
+        const r0 = s.carRGB[0], g0 = s.carRGB[1], b0 = s.carRGB[2];
+        let nh = 0, nt = 0;
+        for (let k = 0; k < n; k++) {
+            const on = buf.roll[k] < mood.p && (buf.j[k] === 0 || buf.conv[k] < mood.pc);
+            const b = _roadCarSeen(s.carCache, buf.key[k], on ? mood.b * (1 - ROAD_CAR_TONE * buf.tone[k]) : 0);
+            if (!(b > 0)) continue;
+            const z = buf.z[k];
+            let f = (fadeFrom - (camZ - z)) / ROAD_CAR_FADE;
+            f = f < 0 ? 0 : (f > 1 ? 1 : f);
+            if (z > -ROAD_CAR_NEAR) {
+                const u = z >= 0 ? 1 : (z + ROAD_CAR_NEAR) / ROAD_CAR_NEAR;
+                f *= 1 - (1 - ROAD_CAR_NEAR_MIN) * u;
+            }
+            const a = b * f;
+            if (a < 0.004) continue;
+            const lane = buf.lane[k];
+            const x = s.carLaneX[lane];
+            const ah = a * ROAD_CAR_HEAD_STR / halo, at = a * ROAD_CAR_TRAIL_STR;
+            const len = expo * ROAD_CAR_OPT.speeds[lane] * TS;
+            for (let e = -1; e <= 1; e += 2) {
+                const hx = x + e * ROAD_CAR_HALF_W;
+                const o = nh * 3;
+                pos[o] = hx; pos[o + 1] = s.carY; pos[o + 2] = z;
+                col[o] = r0 * ah; col[o + 1] = g0 * ah; col[o + 2] = b0 * ah;
+                nh++;
+                if (!lite) {
+                    d.position.set(hx, s.carY, z);
+                    d.scale.set(ROAD_CAR_TRAIL_W, 1, len);
+                    d.updateMatrix();
+                    tr.setMatrixAt(nt, d.matrix);
+                    const c = nt * 3;
+                    tcol[c] = r0 * at; tcol[c + 1] = g0 * at; tcol[c + 2] = b0 * at;
+                    nt++;
+                }
+            }
+        }
+        d.position.set(0, 0, 0);
+        d.scale.set(1, 1, 1);
+        const g = pts.geometry;
+        g.setDrawRange(0, nh);
+        if (nh) {
+            g.attributes.position.needsUpdate = true;
+            g.attributes.color.needsUpdate = true;
+        }
+        pts.material.size = ROAD_CAR_HEAD_SIZE * halo;
+        tr.count = nt;
+        if (nt) {
+            tr.instanceMatrix.needsUpdate = true;
+            tr.instanceColor.needsUpdate = true;
+        }
+        s.carShown = nh;
+    }
     // Per-frame sidewalk joints: square slabs whose joints scroll toward the
     // player at note speed (same phase rule as the lane dashes). Skipped
     // while the song time hasn't moved (paused).
@@ -6323,6 +6541,15 @@
                     onSide: xs.onSide, onShift: xs.onShift, medX: xs.medX,
                     headIn: xs.headIn, headOut: xs.headOut, farPostX: xs.farPostX,
                     onDivX: [], onDash: null, onEdge: null, onPhase: -1, arms: null,
+                    // Its traffic (_bgRoadUpdateTraffic): the headlight
+                    // glows (Points) and their trails, each lane's x, the
+                    // candidates, the cars already decided, and what the
+                    // last frame drew from.
+                    carHeads: null, carTrails: null, carPos: null, carCol: null,
+                    carLaneX: [0, 0, 0], carY: roadY + 0.1 * K + ROAD_CAR_Y, carRGB: [1, 1, 1],
+                    carBuf: _roadMakeCarBuf(ROAD_CAR_POOL), carCache: _roadMakeCarCache(256),
+                    carMood: { p: 0, pc: 0, b: 0 }, carKey: null, carT: NaN, carFog: -1, carLite: false,
+                    carShown: 0,
                     headCap: ROAD_POST_POOL * 4,
                     sidewalkX: halfW + ROAD_SHOULDER_W + ROAD_SIDEWALK_W / 2,
                     jointY: roadY + ROAD_SIDEWALK_H + 0.05 * K,
@@ -6851,6 +7078,57 @@
                 s.pools.frustumCulled = false;
                 root.add(s.pools);
 
+                // The oncoming traffic (with the oncoming carriageway): each
+                // headlight a soft glow (the pools' radial texture, as
+                // Points so it always faces the camera), each trail a flat
+                // strip from the headlight back, bright at the car and
+                // fading to nothing (vertex colours), both additive and
+                // unfogged; colours are set per car (_bgRoadUpdateTraffic).
+                if (s.onSide) {
+                    const lw = 2 * halfW / ROAD_ON_LANES;
+                    for (let L = 0; L < 3; L++) {
+                        s.carLaneX[L] = s.onSide * s.onShift - s.onSide * (halfW - lw * (L + 0.5));
+                    }
+                    s.tmpColor.setHex(ROAD_CAR_HEX);   // linear rgb, like the material colours
+                    s.carRGB[0] = s.tmpColor.r; s.carRGB[1] = s.tmpColor.g; s.carRGB[2] = s.tmpColor.b;
+                    const nHead = ROAD_CAR_POOL * 2;
+                    s.carPos = new Float32Array(nHead * 3);
+                    s.carCol = new Float32Array(nHead * 3);
+                    const headGeo = geo(new T.BufferGeometry());
+                    headGeo.setAttribute('position', new T.BufferAttribute(s.carPos, 3).setUsage(T.DynamicDrawUsage));
+                    headGeo.setAttribute('color', new T.BufferAttribute(s.carCol, 3).setUsage(T.DynamicDrawUsage));
+                    headGeo.setDrawRange(0, 0);
+                    s.carHeads = new T.Points(headGeo, mat(new T.PointsMaterial({
+                        map: s.poolTex, size: ROAD_CAR_HEAD_SIZE, sizeAttenuation: true, vertexColors: true,
+                        transparent: true, depthWrite: false, fog: false, blending: T.AdditiveBlending,
+                    })));
+                    s.carHeads.frustumCulled = false;
+                    root.add(s.carHeads);
+                    const trailGeo = geo(new T.PlaneGeometry(1, 1, 1, 4));
+                    trailGeo.rotateX(-Math.PI / 2);
+                    trailGeo.translate(0, 0, -0.5);   // z from 0 (the headlight) back to -1
+                    {
+                        const p = trailGeo.attributes.position;
+                        const c = new Float32Array(p.count * 3);
+                        for (let i = 0; i < p.count; i++) {
+                            const v = (1 + p.getZ(i)) * (1 + p.getZ(i));
+                            c[i * 3] = v; c[i * 3 + 1] = v; c[i * 3 + 2] = v;
+                        }
+                        trailGeo.setAttribute('color', new T.BufferAttribute(c, 3));
+                    }
+                    s.carTrails = new T.InstancedMesh(trailGeo, mat(new T.MeshBasicMaterial({
+                        color: 0xffffff, vertexColors: true, transparent: true, depthWrite: false,
+                        fog: false, blending: T.AdditiveBlending,
+                    })), nHead);
+                    s.carTrails.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                    s.tmpColor.setRGB(0, 0, 0);
+                    for (let i = 0; i < nHead; i++) s.carTrails.setColorAt(i, s.tmpColor);
+                    s.carTrails.instanceColor.setUsage(T.DynamicDrawUsage);
+                    s.carTrails.count = 0;
+                    s.carTrails.frustumCulled = false;
+                    root.add(s.carTrails);
+                }
+
                 // Fog banks: cards facing the camera, base sunk a little into
                 // the ground, unfogged (fog: false, like the skyline). Far
                 // banks are fixed between the road's end and the skyline;
@@ -7023,6 +7301,7 @@
                 }
                 _bgRoadUpdateLanes(s, chart);
                 _bgRoadUpdateOncoming(s, chart);
+                _bgRoadUpdateTraffic(s, chart, lite);
                 if (!lite) _bgRoadUpdateSidewalks(s, chart);
                 if (n > 0) {
                     _roadPostPattern(chart.beats, chart.time, BEHIND, chart.lowerBoundTime,
@@ -7198,7 +7477,7 @@
                 if (!s) return;
                 s.root.parent?.remove(s.root);
                 for (const m of [s.posts, s.arms, s.beatHeads, s.barHeads,
-                    s.laneDim, s.laneBright, s.connectors, s.seams, s.joints, s.onDash, s.onEdge,
+                    s.laneDim, s.laneBright, s.connectors, s.seams, s.joints, s.onDash, s.onEdge, s.carTrails,
                     s.towers, s.windows, s.neon,
                     s.pools, s.fogFar, s.fogSide, s.rain,
                     s.deck, s.beams, s.balusters, s.rails,
@@ -7222,6 +7501,8 @@
                 s.laneDim = s.laneBright = s.connectors = s.seams = s.joints = null;
                 s.onDash = s.onEdge = null;
                 s.onDivX.length = 0;
+                s.carHeads = s.carTrails = s.carPos = s.carCol = null;
+                s.carShown = 0;
                 s.towers = s.windows = s.neon = s.sky = s.skyNode = null;
                 s.asphaltMat = s.groundMat = s.beatHeadMat = s.barHeadMat = null;
                 s.windowMat = s.neonMat = s.skyMat = s.skyTex = null;

@@ -105,7 +105,13 @@ function load() {
         '\nthis._roadFogClampZ = _roadFogClampZ;' +
         '\nthis._roadSkylinePose = _roadSkylinePose;' +
         '\nthis._roadCrossSection = _roadCrossSection;' +
-        '\nthis._roadSideOff = _roadSideOff;', sandbox);
+        '\nthis._roadSideOff = _roadSideOff;' +
+        '\nthis._roadMakeCarBuf = _roadMakeCarBuf;' +
+        '\nthis._roadPlaceCars = _roadPlaceCars;' +
+        '\nthis._roadTrafficMood = _roadTrafficMood;' +
+        '\nthis._roadMakeCarCache = _roadMakeCarCache;' +
+        '\nthis._roadCarClear = _roadCarClear;' +
+        '\nthis._roadCarSeen = _roadCarSeen;', sandbox);
     return sandbox;
 }
 
@@ -3118,4 +3124,350 @@ test('oncoming wiring: setting, rebuild, popover pill, Settings checkbox, per-fr
     assert.match(src, /s\.joints, s\.onDash, s\.onEdge,/);
     assert.match(src, /s\.posts = s\.arms = s\.beatHeads = s\.barHeads = null;/);
     assert.match(src, /s\.onDash = s\.onEdge = null;\n\s*s\.onDivX\.length = 0;/);
+});
+
+// The oncoming traffic: headlight pairs with trails, a car per beat (or not,
+// per the mood), placed by song time.
+
+function carConsts(src) {
+    const m = src.match(/\n    const ROAD_CAR_POOL[\s\S]*?const ROAD_CAR_NEAR_MIN[^\n]*\n/);
+    assert.ok(m, 'ROAD_CAR_* constants not found');
+    return m[0];
+}
+function carOpt() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K;' + carConsts(src)
+        + 'this.opt = ROAD_CAR_OPT; this.exposure = ROAD_CAR_EXPOSURE;', sandbox);
+    return sandbox;
+}
+// A 4/4 beat grid: `n` beats `dt` s apart from t0, every fourth a bar line.
+function beatGrid(n, dt, t0 = 1, every = 4) {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ time: t0 + dt * i, measure: i % every === 0 ? i / every : -1 });
+    return out;
+}
+function lowerBound(arr, t) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+        const m = (lo + hi) >> 1;
+        if (arr[m].time < t) lo = m + 1; else hi = m;
+    }
+    return lo;
+}
+
+test('traffic constants: 2-3x note speed, the fastest lane by the median, trails shorter than the gaps', () => {
+    const { opt, exposure } = carOpt();
+    assert.deepEqual(Array.from(opt.speeds), [3, 2.5, 2]);
+    assert.equal(opt.kMin, Math.min(...opt.speeds), 'the slowest lane sets the window');
+    assert.ok(opt.clear > exposure, 'a trail never reaches the car ahead');
+    assert.ok(opt.gap >= opt.clear, 'nor inside a convoy');
+    assert.ok(opt.laneCut[0] > 0 && opt.laneCut[0] < opt.laneCut[1] && opt.laneCut[1] < 1);
+    assert.ok(opt.lite > 0.3 && opt.lite < 0.35, 'Lite keeps a third');
+});
+
+test('_roadPlaceCars: each car passes the hit line on its beat, in its lane, at its lane\'s speed', () => {
+    const r = load();
+    const { opt } = carOpt();
+    const K = 0.0075, TS = 230 * K, zNear = 2 * TS, zFar = -4 * TS;
+    const beats = beatGrid(240, 0.5);
+    const buf = r._roadMakeCarBuf(64);
+    const near = (a, b) => Math.abs(a - b) < 1e-9;
+    // On the beat, that beat's car is at the hit line.
+    const n0 = r._roadPlaceCars(beats, beats[40].time, TS, zNear, zFar, lowerBound, 3, opt, buf, 64);
+    const at = Array.from({ length: n0 }, (_, k) => k).find((k) => buf.key[k] === 40 * 4);
+    assert.ok(at !== undefined, 'beat 40\'s car is in view');
+    assert.ok(near(buf.z[at], 0), 'at the hit line on its beat');
+    const lanes = [0, 0, 0];
+    const seen = new Set();
+    for (let t = 2; t < 118; t += 0.37) {
+        const n = r._roadPlaceCars(beats, t, TS, zNear, zFar, lowerBound, 3, opt, buf, 64);
+        assert.ok(n > 0 && n < 64, `${n} candidates at ${t.toFixed(2)} s`);
+        const keys = new Set();
+        for (let k = 0; k < n; k++) {
+            const i = buf.key[k] >> 2, j = buf.j[k], lane = buf.lane[k];
+            assert.equal(buf.key[k] & 3, j);
+            assert.ok(!keys.has(buf.key[k]), 'each car once');
+            keys.add(buf.key[k]);
+            const due = beats[i].time + j * opt.gap;
+            assert.ok(near(buf.z[k], (t - due) * opt.speeds[lane] * TS), 'z by song time at its lane\'s speed');
+            assert.ok(buf.z[k] <= zNear && buf.z[k] >= zFar, 'on the road');
+            if (j > 0) assert.ok(beats[i].measure >= 0, 'convoys only on bar lines');
+            if (!seen.has(buf.key[k] >> 2)) { seen.add(buf.key[k] >> 2); lanes[lane]++; }
+            // Never into the car ahead in its lane: a trail's clearance at least.
+            for (let q = 0; q < k; q++) {
+                if (buf.lane[q] !== lane) continue;
+                assert.ok(Math.abs(buf.z[q] - buf.z[k]) >= opt.clear * opt.speeds[lane] * TS - 1e-9,
+                    `cars ${buf.key[q]} and ${buf.key[k]} in lane ${lane} too close`);
+            }
+        }
+    }
+    const total = lanes[0] + lanes[1] + lanes[2];
+    assert.ok(lanes.every((c) => c > total * 0.2), `every lane used: ${lanes}`);
+    // Pure: the same moment gives the same cars, with or without the search.
+    const a = r._roadPlaceCars(beats, 61.3, TS, zNear, zFar, lowerBound, 3, opt, buf, 64);
+    const keysA = Array.from(buf.key.slice(0, a)), zA = Array.from(buf.z.slice(0, a));
+    const b = r._roadPlaceCars(beats, 61.3, TS, zNear, zFar, null, 3, opt, buf, 64);
+    assert.equal(b, a);
+    assert.deepEqual(Array.from(buf.key.slice(0, b)), keysA);
+    assert.deepEqual(Array.from(buf.z.slice(0, b)), zA);
+    // They close in: a little later, every car still in view is nearer.
+    r._roadPlaceCars(beats, 61.35, TS, zNear, zFar, lowerBound, 3, opt, buf, 64);
+    for (let k = 0; k < buf.n; k++) {
+        const was = keysA.indexOf(buf.key[k]);
+        if (was >= 0) assert.ok(near(buf.z[k] - zA[was], 0.05 * opt.speeds[buf.lane[k]] * TS));
+    }
+    // Another song's seed, other cars; the cap holds; no beats, no cars.
+    r._roadPlaceCars(beats, 61.3, TS, zNear, zFar, lowerBound, 4, opt, buf, 64);
+    assert.notDeepEqual(Array.from(buf.lane.slice(0, buf.n)), Array.from({ length: buf.n }, () => 0));
+    assert.equal(r._roadPlaceCars(beats, 61.3, TS, zNear, zFar, lowerBound, 3, opt, buf, 3), 3);
+    assert.equal(r._roadPlaceCars([], 61.3, TS, zNear, zFar, lowerBound, 3, opt, buf, 64), 0);
+    assert.equal(r._roadPlaceCars(beats, NaN, TS, zNear, zFar, lowerBound, 3, opt, buf, 64), 0);
+});
+
+test('_roadPlaceCars: a fast song cuts convoys short of the next beat\'s car', () => {
+    const r = load();
+    const { opt } = carOpt();
+    const K = 0.0075, TS = 230 * K;
+    // Every beat a bar line, 0.45 s apart: room for two cars, never three.
+    const beats = beatGrid(200, 0.45, 1, 1);
+    const buf = r._roadMakeCarBuf(64);
+    let pairs = 0;
+    for (let t = 3; t < 55; t += 0.21) {
+        const n = r._roadPlaceCars(beats, t, TS, 2 * TS, -4 * TS, lowerBound, 9, opt, buf, 64);
+        for (let k = 0; k < n; k++) {
+            assert.ok(buf.j[k] < 2, 'no third car');
+            if (buf.j[k] === 1) pairs++;
+        }
+    }
+    assert.ok(pairs > 0, 'convoys of two still come');
+    // 0.3 s apart: none at all.
+    const quick = beatGrid(200, 0.3, 1, 1);
+    for (let t = 3; t < 50; t += 0.21) {
+        const n = r._roadPlaceCars(quick, t, TS, 2 * TS, -4 * TS, lowerBound, 9, opt, buf, 64);
+        for (let k = 0; k < n; k++) assert.equal(buf.j[k], 0);
+    }
+});
+
+test('_roadTrafficMood: a hot run is busier and brighter, gloom thinner and dimmer, Lite a third', () => {
+    const r = load();
+    const { opt } = carOpt();
+    const m = (h, g, lite = false) => ({ ...r._roadTrafficMood(h, g, lite, opt, {}) });
+    const calm = m(0, 0), hot = m(1, 0), gloomy = m(0, 1);
+    assert.ok(hot.p > calm.p && hot.pc > calm.pc && hot.b > calm.b);
+    assert.ok(gloomy.p < calm.p && gloomy.b < calm.b);
+    for (const x of [calm, hot, gloomy, m(1, 1), m(-3, 9), m(9, -3)]) {
+        assert.ok(x.p >= opt.pMin - 1e-12 && x.p <= opt.pMax + 1e-12);
+        assert.ok(x.pc >= 0 && x.pc <= 1 && x.b > 0 && x.b <= 1);
+    }
+    assert.ok(Math.abs(m(0.5, 0.2, true).p - m(0.5, 0.2).p * opt.lite) < 1e-12);
+    const out = {};
+    assert.equal(r._roadTrafficMood(0, 0, false, opt, out), out, 'fills the caller\'s object');
+});
+
+test('_roadCarSeen: decided once with the mood of that moment, kept until the key is reused', () => {
+    const r = load();
+    const c = r._roadMakeCarCache(256);
+    assert.equal(r._roadCarSeen(c, 40, 0.8), 0.8);
+    assert.equal(r._roadCarSeen(c, 40, 0), 0.8, 'a miss later does not take the car away');
+    assert.equal(r._roadCarSeen(c, 41, 0), 0);
+    assert.equal(r._roadCarSeen(c, 41, 0.9), 0, 'nor does a hot run add one already passed over');
+    // A road's worth of keys lands in distinct slots.
+    for (let k = 1000; k < 1200; k++) r._roadCarSeen(c, k, (k % 3) / 3);
+    for (let k = 1000; k < 1200; k++) assert.equal(r._roadCarSeen(c, k, 1), (k % 3) / 3);
+    r._roadCarClear(c);
+    assert.equal(r._roadCarSeen(c, 1000, 0.5), 0.5, 'a new song decides afresh');
+});
+
+function loadTraffic() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const block = src.slice(src.indexOf(START), src.indexOf(END));
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext('const K = 0.0075; const TS = 230 * K; const FOG_END = 670 * K;\n' + block + carConsts(src)
+        + sliceFn(src, '    function _bgRoadUpdateTraffic(') + '\n'
+        + 'this.update = _bgRoadUpdateTraffic; this.makeBuf = _roadMakeCarBuf; this.makeCache = _roadMakeCarCache;'
+        + 'this.c = { K, TS, FOG_END, ROAD_CAR_POOL, ROAD_CAR_OPT, ROAD_CAR_HALF_W, ROAD_CAR_HEAD_STR, ROAD_CAR_HEAD_SIZE,'
+        + ' ROAD_CAR_HALO, ROAD_CAR_TRAIL_W, ROAD_CAR_TRAIL_STR, ROAD_CAR_EXPOSURE, ROAD_CAR_FADE_AT };', sandbox);
+    return sandbox;
+}
+function trafficRoad(f) {
+    const { K, TS, ROAD_CAR_POOL } = f.c;
+    const halfW = 132 * K, onSide = -1, onShift = 304 * K, lw = 2 * halfW / 3;
+    const nHead = ROAD_CAR_POOL * 2;
+    const d = {
+        p: [0, 0, 0], sc: [1, 1, 1], matrix: null,
+        position: { set(x, y, z) { d.p = [x, y, z]; } },
+        scale: { set(x, y, z) { d.sc = [x, y, z]; } },
+        updateMatrix() { d.matrix = { p: d.p.slice(), sc: d.sc.slice() }; },
+    };
+    const geom = {
+        range: -1, setDrawRange(_a, n) { this.range = n; },
+        attributes: { position: { needsUpdate: false }, color: { needsUpdate: false } },
+    };
+    const s = {
+        dummy: d, seed: 7, seedKey: 'song-a', zNear: 2 * TS, zFar: -4 * TS, cam: { position: { z: 110 * K } },
+        mood: { heat: 0.3, gloom: 0 }, fogAmt: 0, onSide, onShift, halfW,
+        carHeads: { geometry: geom, material: { size: 0 } },
+        carTrails: {
+            count: 0, at: [], instanceMatrix: { needsUpdate: false },
+            instanceColor: { array: new Float32Array(nHead * 3), needsUpdate: false },
+            setMatrixAt(i, m) { this.at[i] = m; },
+        },
+        carPos: new Float32Array(nHead * 3), carCol: new Float32Array(nHead * 3),
+        carLaneX: [0, 1, 2].map((L) => onSide * onShift - onSide * (halfW - lw * (L + 0.5))),
+        carY: 4.1 * K, carRGB: [1, 1, 1],
+        carBuf: f.makeBuf(ROAD_CAR_POOL), carCache: f.makeCache(256),
+        carMood: { p: 0, pc: 0, b: 0 }, carKey: null, carT: NaN, carFog: -1, carLite: false, carShown: 0,
+    };
+    s.heads = () => {
+        const out = [];
+        for (let i = 0; i < geom.range; i++) {
+            out.push({ x: s.carPos[i * 3], y: s.carPos[i * 3 + 1], z: s.carPos[i * 3 + 2], c: s.carCol[i * 3] });
+        }
+        return out;
+    };
+    // Keys of the cars in view that the mood let through.
+    s.cars = () => {
+        const out = new Set();
+        for (let k = 0; k < s.carBuf.n; k++) {
+            const key = s.carBuf.key[k], i = key & 255;
+            if (s.carCache.key[i] === key && s.carCache.b[i] > 0) out.add(key);
+        }
+        return out;
+    };
+    return s;
+}
+const trafficChart = (time, beats) => ({ isReady: true, beats, time, lowerBoundTime: lowerBound, fogFar: 0 });
+
+test('_bgRoadUpdateTraffic: two headlights per car on its lane of the oncoming road, a trail behind each', () => {
+    const f = loadTraffic();
+    const { TS, FOG_END } = f.c;
+    const s = trafficRoad(f);
+    const beats = beatGrid(400, 0.5);
+    f.update(s, trafficChart(60, beats), false);
+    const heads = s.heads();
+    assert.ok(heads.length >= 4 && heads.length % 2 === 0, `${heads.length} headlights`);
+    assert.equal(s.carTrails.count, heads.length, 'a trail per headlight');
+    const xc = s.onSide * s.onShift;
+    for (let i = 0; i < heads.length; i += 2) {
+        const a = heads[i], b = heads[i + 1];
+        assert.equal(a.z, b.z);
+        assert.ok(Math.abs(b.x - a.x - 2 * f.c.ROAD_CAR_HALF_W) < 1e-6, 'a pair across the car');
+        const mid = (a.x + b.x) / 2;
+        assert.ok(s.carLaneX.some((x) => Math.abs(x - mid) < 1e-6), 'centred on a lane');
+        for (const h of [a, b]) {
+            assert.ok(Math.abs(h.x - xc) + f.c.ROAD_CAR_HEAD_SIZE / 2 < s.halfW, 'on the oncoming carriageway');
+            assert.ok(h.c > 0 && h.c <= f.c.ROAD_CAR_HEAD_STR + 1e-6, `brightness ${h.c} capped`);
+            assert.ok(s.cam.position.z - h.z < FOG_END * f.c.ROAD_CAR_FADE_AT, 'fading in from the fog');
+        }
+    }
+    for (let i = 0; i < s.carTrails.count; i++) {
+        const t = s.carTrails.at[i];
+        assert.ok(Math.abs(t.p[0] - heads[i].x) < 1e-6 && Math.abs(t.p[2] - heads[i].z) < 1e-6, 'from its headlight');
+        assert.equal(t.sc[0], f.c.ROAD_CAR_TRAIL_W);
+        assert.ok(t.sc[2] >= f.c.ROAD_CAR_EXPOSURE * 2 * TS - 1e-9 && t.sc[2] <= f.c.ROAD_CAR_EXPOSURE * 3 * TS + 1e-9,
+            'back over where it was ROAD_CAR_EXPOSURE s ago');
+        assert.ok(s.carTrails.instanceColor.array[i * 3] <= f.c.ROAD_CAR_TRAIL_STR + 1e-6);
+    }
+    assert.equal(s.carHeads.material.size, f.c.ROAD_CAR_HEAD_SIZE);
+    // Past the hit line they dim: at most the near floor of a full car.
+    for (const h of heads) {
+        if (h.z >= 0) assert.ok(h.c <= f.c.ROAD_CAR_HEAD_STR * 0.55 + 1e-6, `bright beside the hit line (${h.c})`);
+    }
+});
+
+test('_bgRoadUpdateTraffic: paused nothing is rewritten; a car let through stays when the mood sours', () => {
+    const f = loadTraffic();
+    const s = trafficRoad(f);
+    const beats = beatGrid(400, 0.5);
+    f.update(s, trafficChart(60, beats), false);
+    const before = s.cars();
+    assert.ok(before.size > 0);
+    s.carHeads.geometry.attributes.position.needsUpdate = false;
+    s.carTrails.instanceMatrix.needsUpdate = false;
+    f.update(s, trafficChart(60, beats), false);
+    assert.equal(s.carHeads.geometry.attributes.position.needsUpdate, false, 'paused: skipped');
+    assert.equal(s.carTrails.instanceMatrix.needsUpdate, false);
+    // Misses: thick fog. The cars already on the road stay; their glow
+    // blurs into a halo and the trails shorten.
+    const lenBefore = s.carTrails.at[0].sc[2] / s.carTrails.at[0].sc[0];
+    s.mood.heat = 0; s.mood.gloom = 1; s.fogAmt = 1;
+    f.update(s, trafficChart(60.02, beats), false);
+    const after = s.cars();
+    let kept = 0;
+    for (let k = 0; k < s.carBuf.n; k++) {
+        const key = s.carBuf.key[k];
+        if (before.has(key)) { assert.ok(after.has(key), `car ${key} vanished mid-road`); kept++; }
+    }
+    assert.ok(kept > 0);
+    assert.ok(Math.abs(s.carHeads.material.size - f.c.ROAD_CAR_HEAD_SIZE * (1 + f.c.ROAD_CAR_HALO)) < 1e-9, 'halos');
+    assert.ok(s.carTrails.at[0].sc[2] / s.carTrails.at[0].sc[0] < lenBefore, 'shorter trails');
+    // Over a gloomy stretch, fewer new cars come than in a hot one.
+    const count = (heat, gloom) => {
+        const r = trafficRoad(f);
+        r.mood.heat = heat; r.mood.gloom = gloom;
+        const all = new Set();
+        for (let t = 20; t < 120; t += 0.25) {
+            f.update(r, trafficChart(t, beats), false);
+            for (const k of r.cars()) all.add(k);
+        }
+        return all.size;
+    };
+    const hot = count(1, 0), gloomy = count(0, 1);
+    assert.ok(hot > gloomy * 2, `${hot} cars on a hot run, ${gloomy} in gloom`);
+});
+
+test('_bgRoadUpdateTraffic: Lite keeps about a third of the cars, without trails; a new song starts afresh', () => {
+    const f = loadTraffic();
+    const beats = beatGrid(400, 0.5);
+    const run = (lite) => {
+        const s = trafficRoad(f);
+        const all = new Set();
+        let trails = 0;
+        for (let t = 20; t < 180; t += 0.25) {
+            f.update(s, trafficChart(t, beats), lite);
+            for (const k of s.cars()) all.add(k);
+            trails += s.carTrails.count;
+        }
+        return { n: all.size, trails };
+    };
+    const full = run(false), lite = run(true);
+    assert.equal(lite.trails, 0);
+    assert.ok(full.trails > 0);
+    const ratio = lite.n / full.n;
+    assert.ok(ratio > 0.2 && ratio < 0.5, `Lite kept ${lite.n} of ${full.n}`);
+    // A new song: the decided cars are dropped and its own decided.
+    const s = trafficRoad(f);
+    f.update(s, trafficChart(60, beats), false);
+    s.seedKey = 'song-b';
+    s.seed = 8;
+    f.update(s, trafficChart(60, beats), false);
+    assert.equal(s.carKey, 'song-b');
+    const inView = new Set(Array.from(s.carBuf.key.slice(0, s.carBuf.n)));
+    for (const k of s.carCache.key) if (k >= 0) assert.ok(inView.has(k), 'only this song\'s cars decided');
+    // Not ready: nothing drawn.
+    f.update(s, { isReady: false }, false);
+    assert.equal(s.carHeads.geometry.range, 0);
+    assert.equal(s.carTrails.count, 0);
+});
+
+test('traffic wiring: built with the oncoming road only, updated after its lanes, torn down, described', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
+    const build = src.slice(src.indexOf('        road: {\n            build('), src.indexOf('            update(s, bands, dt, t, chart) {'));
+    assert.match(build, /if \(s\.onSide\) \{\n\s*const lw = 2 \* halfW \/ ROAD_ON_LANES;/);
+    assert.match(build, /s\.carHeads = new T\.Points\(headGeo, mat\(new T\.PointsMaterial\(\{\n\s*map: s\.poolTex,/);
+    assert.match(build, /transparent: true, depthWrite: false, fog: false, blending: T\.AdditiveBlending,\n\s*\}\)\)\);\n\s*s\.carHeads\.frustumCulled = false;/);
+    assert.match(build, /s\.carTrails = new T\.InstancedMesh\(trailGeo,/);
+    // The pools' texture exists by then.
+    assert.ok(build.indexOf('s.poolTex = _roadPoolTexture();') < build.indexOf('map: s.poolTex,'));
+    assert.match(src, /_bgRoadUpdateOncoming\(s, chart\);\n\s*_bgRoadUpdateTraffic\(s, chart, lite\);/);
+    // After the mood and fog are set for the frame.
+    assert.ok(src.indexOf('s.fogAmt = _roadSmooth(ROAD_FOG_START') < src.indexOf('_bgRoadUpdateTraffic(s, chart, lite);'));
+    assert.match(src, /s\.joints, s\.onDash, s\.onEdge, s\.carTrails,/);
+    assert.match(src, /s\.carHeads = s\.carTrails = s\.carPos = s\.carCol = null;/);
+    const html = fs.readFileSync(path.join(__dirname, '..', 'settings.html'), 'utf8');
+    assert.match(html, /id="h3d-bg-road-oncoming"/);
+    assert.match(html, /oncoming traffic/i);
 });
