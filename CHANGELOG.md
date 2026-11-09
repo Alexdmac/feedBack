@@ -127,6 +127,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the city as it draws nearer over the outro. The street lamps on the
   bridge turn a cooler white. Lite keeps the deck and railings only. A new "Night road bridges" setting
   (on by default) turns it off.
+- **Oncoming carriageway on the night road (3D Highway).** A second road, as
+  wide as ours, runs on the left across a median: our curb, a raised
+  strip with a concrete barrier on its centre line, and the other road's
+  curb. The median's lamp posts are shared: each carries a two-arm head, one
+  lamp toward each carriageway, and lights both. The other road has three
+  lanes with dashed dividers, a solid line inside each edge, its own outer
+  sidewalk and posts, and seams; its markings move with the song like ours.
+  The hills, valley, fog banks, rain, bridge towers, stays, railings, river
+  and rockets on that side move out past it, and a bridge spans both roads.
+  It is purely scenery: no notes, and nothing on our road or the board moves.
+  Lite drops the other road's outer posts. A new "Night road oncoming
+  carriageway" setting (on by default, also an "Oncoming" pill in the
+  player's style menu) turns it off.
+  - Oncoming traffic: pairs of cool white headlights, each with a short
+    light trail behind it like a long exposure, come toward you at two to
+    three times note speed, each lane at its own speed. A car may come on
+    each beat and passes the hit line on that beat, so pause, seek and
+    practice speed keep it in step; a bar line can bring a short convoy. A
+    good run makes the road busier and brighter; misses thin it, and the fog
+    blurs the headlights into halos with shorter trails. A car decided on
+    as it appears in the distance stays until it has passed. Headlights
+    fade in from the fog, stay dimmer than the street lamps and dim near
+    the hit line. Lite keeps about a third of the cars, without trails.
 - **Neck size (3D Highway).** A new Neck size slider (100-160%) in Settings >
   3D Highway > Fretboard, and in the player's Plugins menu, spreads the strings
   apart and makes the strings and the notes bigger, so approaching notes are
