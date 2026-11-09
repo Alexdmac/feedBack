@@ -252,8 +252,8 @@ test('glow: lights as the word starts, holds while sung, fades after', () => {
 
 test('wiring: setting, chart fields, banner hidden on the road, update and teardown', () => {
     const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
-    assert.match(src, /bridges: true, roadLyrics: true \};/);
-    assert.match(src, /'bridges', 'roadLyrics'\]\);/);
+    assert.match(src, /const BG_DEFAULTS = \{[^\n]*\broadLyrics: true\b/);
+    assert.match(src, /const _BG_BOOL_KEYS = new Set\(\[[^\n]*'roadLyrics'[,\]]/);
     assert.match(src, /window\.h3dBgSetRoadLyrics\s*= \(v\) => _bgWriteGlobal\('roadLyrics', !!v\);/);
     assert.match(src, /_bgRoadLyricsOn\s*= _bgReadSetting\(panelKey, 'roadLyrics'\);/);
     // The player's Lyrics switch and the setting both gate the paint.
