@@ -127,6 +127,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the city as it draws nearer over the outro. The street lamps on the
   bridge turn a cooler white. Lite keeps the deck and railings only. A new "Night road bridges" setting
   (on by default) turns it off.
+- **Lyrics painted on the night road (3D Highway).** The song's lyrics are
+  painted on the asphalt like road markings: white stencil capitals,
+  stretched along the road so they read from the driver's seat. Each word
+  lies where it is sung, so it reaches the strings as the singer starts it,
+  and it lights up warm amber while it is sung. The words lie on the open
+  side of the road, next to the lane in use; when the track changes lanes,
+  the next line goes to the side with more room. Words sung close together
+  share a row, and a word too long for the room shrinks to fit. While the
+  road shows the lyrics, the lyrics banner at the top stays hidden. The
+  player's Lyrics switch turns them off, and so does a new "Night road
+  lyrics" setting (on by default) in Settings > 3D Highway.
 - **Oncoming carriageway on the night road (3D Highway).** A second road, as
   wide as ours, runs on the left across a median: our curb, a raised
   strip with a concrete barrier on its centre line, and the other road's
@@ -540,6 +551,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- **Romaji lyrics for Japanese Rocksmith songs.** Rocksmith packs of Japanese
+  songs carry two vocals parts: romaji and Japanese script. The player now
+  shows the romaji part; before, it picked the Japanese script. A song with
+  only the Japanese-script part still shows it.
 - **Empty Song Library after a tuning change.** A tuning or instrument change
   before the first visit to the Song Library left that screen empty. The first
   visit now builds the library.

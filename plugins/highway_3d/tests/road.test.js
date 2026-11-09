@@ -3100,8 +3100,8 @@ test('rockets beside the oncoming carriageway launch past it and still burst in 
 test('oncoming wiring: setting, rebuild, popover pill, Settings checkbox, per-frame update and teardown', () => {
     const src = fs.readFileSync(SCREEN_JS, 'utf8').replace(/\r\n/g, '\n');
     // On by default, a per-panel boolean that reaches the road's build.
-    assert.match(src, /bridges: true, oncoming: true \};/);
-    assert.match(src, /'bridges', 'oncoming'\]\);/);
+    assert.match(src, /bridges: true, oncoming: true[,}]/);
+    assert.match(src, /'bridges', 'oncoming'[,\]]/);
     assert.match(src, /window\.h3dBgSetOncoming\s*= \(v\) => _bgWriteGlobal\('oncoming', !!v\);/);
     assert.match(src, /bgRoadOncoming = _bgReadSetting\(panelKey, 'oncoming'\);/);
     assert.match(src, /oncoming: bgRoadOncoming,/);
